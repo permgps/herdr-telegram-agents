@@ -52,15 +52,19 @@ Herdr then shows the **Telegram Agents** actions listed below and runs
 ## Setup
 
 1. Create a bot with @BotFather and copy its token.
-2. Create a supergroup, enable **Topics** in its settings, add the bot and
-   promote it to administrator with **Manage topics** enabled. The person who
-   promotes the bot becomes the operator.
-3. In Herdr run the action **Telegram Agents: setup**. A popup asks for the
-   token (typed visibly; the popup closes when setup ends), waits for the
-   promotion from step 2, shows the group and operator it found, and saves
-   `config.json`. Promotions done before the wizard runs are picked up as well.
-4. The wizard starts the daemon. From now on the daemon starts automatically
-   with Herdr while a configuration exists.
+2. Create a supergroup and enable **Topics** in its settings (this makes it a
+   forum). You must be its owner or an administrator who can add admins.
+3. In Herdr run the action **Telegram Agents: setup** (from a Herdr pane:
+   `herdr plugin action invoke permgps.telegram-agents.setup`). A popup asks
+   for the token (typed visibly; the popup closes when setup ends) and prints
+   a `https://t.me/<bot>?start=setup` link.
+4. Open the link, press **Start** and tap **Choose group**. Telegram lists your
+   forum groups and adds the bot to the one you pick as an administrator with
+   **Manage topics**. The person who picks the group becomes the operator.
+   Adding the bot to a forum group by hand with that right works as well.
+5. Back in the popup confirm the group. The wizard saves `config.json` and
+   starts the daemon. From now on the daemon starts automatically with Herdr
+   while a configuration exists.
 
 What gets stored:
 

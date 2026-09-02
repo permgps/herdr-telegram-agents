@@ -20,6 +20,7 @@ type scriptUI struct {
 	confirms []bool
 	choices  []int
 	printed  []string
+	opened   []string
 	prompts  []string
 }
 
@@ -56,6 +57,17 @@ func (u *scriptUI) AskSecret(prompt string) (string, error) {
 	s := u.secrets[0]
 	u.secrets = u.secrets[1:]
 	return s, nil
+}
+func (u *scriptUI) OpenLink(url string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.opened = append(u.opened, url)
+	return nil
+}
+func (u *scriptUI) Opened() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.opened...)
 }
 func (u *scriptUI) Confirm(prompt string) (bool, error) {
 	u.mu.Lock()
@@ -300,7 +312,7 @@ func TestSetupHintAndCancel(t *testing.T) {
 	for time.Now().Before(deadline) && !strings.Contains(f.ui.Printed(), "Nothing seen yet") {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !strings.Contains(f.ui.Printed(), "remove its admin rights") {
+	if !strings.Contains(f.ui.Printed(), "Open the link above") {
 		t.Fatalf("hint not printed: %v", f.ui.Printed())
 	}
 	cancel()

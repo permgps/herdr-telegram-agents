@@ -81,8 +81,13 @@ func (s *Setup) Run(ctx context.Context) (domain.Config, bool, error) {
 		defer c.Close()
 	}
 	s.ui.Print(fmt.Sprintf("Token accepted: @%s.", identity.Username))
-	s.ui.Print("Now add the bot to your Telegram forum group (a supergroup with Topics enabled)")
-	s.ui.Print("as an administrator with the \"Manage topics\" right. Waiting for that to happen...")
+	link := domain.SetupLink(identity.Username)
+	if err := s.ui.OpenLink(link); err != nil {
+		s.log.Debug("setup: could not open the link", slog.String("err", err.Error()))
+	}
+	s.ui.Print(fmt.Sprintf("Open %s in Telegram, press Start and tap \"Choose group\".", link))
+	s.ui.Print("Telegram adds the bot to the group you pick as an administrator with the \"Manage topics\" right.")
+	s.ui.Print("Adding the bot to a forum group by hand with that right works too. Waiting...")
 
 	candidate, err := s.pickCandidate(ctx, probe)
 	if err != nil {
@@ -157,14 +162,14 @@ func (s *Setup) pickCandidate(ctx context.Context, probe domain.SetupProbe) (dom
 				return domain.GroupCandidate{}, fmt.Errorf("telegram updates stopped: %w", ErrSetupCancelled)
 			}
 			s.log.Debug("setup candidate", slog.Int64("chat_id", c.ChatID), slog.Int64("from_id", c.FromID))
-			s.ui.Print(fmt.Sprintf("Seen: %q (chat %d), promoted by %s.", c.Title, c.ChatID, describeUser(c)))
+			s.ui.Print(fmt.Sprintf("Seen: %q (chat %d), chosen by %s.", c.Title, c.ChatID, describeUser(c)))
 			found = append(found, c)
 			if siblings == nil {
 				siblings = s.clock.After(s.SiblingWait)
 			}
 		case <-hint:
 			hint = nil
-			s.ui.Print("Nothing seen yet. If the bot was added before you ran setup, remove its admin rights and grant them again.")
+			s.ui.Print("Nothing seen yet. Open the link above and choose a group; if the bot was added by hand earlier, grant it the \"Manage topics\" right again.")
 		case <-siblings:
 			return s.choose(found)
 		}
@@ -187,7 +192,7 @@ func (s *Setup) choose(found []domain.GroupCandidate) (domain.GroupCandidate, er
 	for i, c := range found {
 		options[i] = fmt.Sprintf("%q (chat %d), operator %s", c.Title, c.ChatID, describeUser(c))
 	}
-	idx, err := s.ui.Choose("Several groups promoted the bot. Which one should be mirrored?", options)
+	idx, err := s.ui.Choose("Several groups were chosen. Which one should be mirrored?", options)
 	if err != nil {
 		return domain.GroupCandidate{}, err
 	}

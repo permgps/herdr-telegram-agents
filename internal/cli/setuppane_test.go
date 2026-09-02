@@ -15,7 +15,7 @@ import (
 func TestConsoleUI(t *testing.T) {
 	in := strings.NewReader("  123:abc \nY\nn\nx\n2\n")
 	var out bytes.Buffer
-	ui := newConsoleUI(in, &out)
+	ui := newConsoleUI(in, &out, nil)
 	if got, err := ui.AskSecret("Token:"); err != nil || got != "123:abc" {
 		t.Fatalf("AskSecret = %q, %v", got, err)
 	}

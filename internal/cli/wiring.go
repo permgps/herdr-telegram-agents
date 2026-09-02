@@ -33,6 +33,8 @@ type wiring struct {
 	buildSupervisor func(env compose.PluginEnv, log *slog.Logger) supervisor
 	buildSetup      func(env compose.PluginEnv, ui domain.SetupUI, log *slog.Logger) setupRunner
 	paneOpener      func(env compose.PluginEnv, log *slog.Logger) domain.PaneOpener
+	openURL         func(ctx context.Context, url string) error
+	teeLogger       func(loggers ...*slog.Logger) *slog.Logger
 }
 
 var wire = defaultWiring()
@@ -52,6 +54,8 @@ func defaultWiring() wiring {
 			return compose.BuildSetup(env, ui, log)
 		},
 		paneOpener: compose.PaneOpener,
+		openURL:    compose.OpenURL,
+		teeLogger:  compose.TeeLogger,
 	}
 }
 

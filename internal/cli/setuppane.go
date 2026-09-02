@@ -26,17 +26,25 @@ type setupRunner interface {
 // token is typed visibly: the popup runs without raw-mode support and the
 // pane closes as soon as setup ends.
 type consoleUI struct {
-	in  *bufio.Reader
-	out io.Writer
+	in   *bufio.Reader
+	out  io.Writer
+	open func(url string) error
 }
 
 var _ domain.SetupUI = (*consoleUI)(nil)
 
-func newConsoleUI(in io.Reader, out io.Writer) *consoleUI {
-	return &consoleUI{in: bufio.NewReader(in), out: out}
+// newConsoleUI builds the UI; open launches a link in the browser and may
+// be nil, in which case links are only printed.
+func newConsoleUI(in io.Reader, out io.Writer, open func(url string) error) *consoleUI {
+	if open == nil {
+		open = func(string) error { return errors.New("no link opener") }
+	}
+	return &consoleUI{in: bufio.NewReader(in), out: out, open: open}
 }
 
 func (u *consoleUI) Print(text string) { fmt.Fprintln(u.out, text) }
+
+func (u *consoleUI) OpenLink(url string) error { return u.open(url) }
 
 func (u *consoleUI) Ask(prompt string) (string, error) {
 	fmt.Fprint(u.out, prompt+" ")
@@ -102,11 +110,21 @@ func runSetupPane(rc *runContext, _ []string) int {
 		fmt.Fprintf(rc.stderr, "herdr-tg setup-pane: %v\n", err)
 		return exitError
 	}
-	ui := newConsoleUI(rc.stdin, rc.stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ui := newConsoleUI(rc.stdin, rc.stdout, func(url string) error { return wire.openURL(ctx, url) })
 
-	cfg, saved, err := wire.buildSetup(env, ui, rc.log).Run(ctx)
+	// The popup is gone once the wizard ends, so its log also goes to
+	// daemon.log where a failure can be read afterwards.
+	log := rc.log
+	if flog, closer, err := wire.fileLogger(env, ""); err != nil {
+		rc.log.Warn("setup pane: file log unavailable", slog.String("err", err.Error()))
+	} else {
+		defer closer.Close()
+		log = wire.teeLogger(rc.log, flog).With(slog.String("component", "setup"))
+	}
+
+	cfg, saved, err := wire.buildSetup(env, ui, log).Run(ctx)
 	switch {
 	case errors.Is(err, ErrSetupCancelled):
 		ui.Print("Setup cancelled; nothing was changed.")

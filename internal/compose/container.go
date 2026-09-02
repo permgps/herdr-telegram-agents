@@ -74,6 +74,9 @@ func NewFileLogger(env PluginEnv, configLevel string) (*slog.Logger, io.Closer, 
 	return log, closer, nil
 }
 
+// TeeLogger writes to every given logger; nil loggers are skipped.
+func TeeLogger(loggers ...*slog.Logger) *slog.Logger { return logging.Tee(loggers...) }
+
 // ConfigStore returns the config.json store.
 func ConfigStore(env PluginEnv, log *slog.Logger) domain.ConfigStore {
 	return state.NewConfigStore(env.ConfigDir, log)
@@ -100,6 +103,9 @@ func Notify(ctx context.Context, env PluginEnv, body string, log *slog.Logger) e
 }
 
 // PaneOpener returns the herdr CLI runner used to open manifest panes.
+// OpenURL opens a link in the user's browser (best effort).
+func OpenURL(ctx context.Context, url string) error { return system.OpenURL(ctx, url) }
+
 func PaneOpener(env PluginEnv, log *slog.Logger) domain.PaneOpener {
 	return herdr.NewCLI(env.BinPath, env.Root, env.Path, log)
 }
