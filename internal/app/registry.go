@@ -225,14 +225,17 @@ func (r *Registry) applyUpdate(ev domain.HerdrEvent) ([]AgentEvent, bool) {
 		// snapshot introduce it so the old key is retired in the same pass.
 		return nil, true
 	}
-	// Pane events carry no workspace or tab labels; keep the ones the last
-	// snapshot resolved so the label does not flap between event and pass.
+	// Pane events carry no workspace or tab labels and no agent name
+	// (pane.updated has no name field at all, verified against Herdr
+	// 0.7.5); keep what the last snapshot resolved so the label does not
+	// flap between event and pass. Names change only through snapshots.
 	if a.WorkspaceLabel == "" {
 		a.WorkspaceLabel = old.WorkspaceLabel
 	}
 	if a.TabLabel == "" {
 		a.TabLabel = old.TabLabel
 	}
+	a.Name = old.Name
 	r.agents[a.Key] = a
 	if !differs(old, a) {
 		return nil, false

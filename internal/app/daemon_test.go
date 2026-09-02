@@ -359,6 +359,18 @@ func TestDaemonTopicRenameCloseReopen(t *testing.T) {
 		t.Fatalf("Renames = %+v", r)
 	}
 	waitFor(t, "snapshot after rename", func() bool { return f.herdr.ListCalls() > lists })
+	// A pane.updated event, which never carries the name, must not flap
+	// the topic back to the old label.
+	stale := agent("p1", "t1", "", domain.StatusIdle)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &stale})
+	time.Sleep(50 * time.Millisecond)
+	f.clock.Advance(4 * time.Second)
+	time.Sleep(50 * time.Millisecond)
+	for _, c := range f.tg.Calls() {
+		if strings.Contains(c, "name=reviewer") {
+			t.Fatalf("topic flapped back after rename: %v", f.tg.Calls())
+		}
+	}
 
 	f.tg.Push(domain.TopicClosed{ThreadID: 101})
 	waitFor(t, "mute", func() bool {

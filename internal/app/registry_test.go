@@ -124,9 +124,14 @@ func TestRegistryApplyStatusAndUpdate(t *testing.T) {
 	if evs, structural = r.Apply(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &same}); structural || len(evs) != 0 {
 		t.Fatalf("identical pane.updated emitted %v", kinds(evs))
 	}
-	renamed := agent("p1", "t1", "b", domain.StatusIdle)
-	if evs, _ = r.Apply(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &renamed}); !equal(kinds(evs), []string{"changed:p1/t1"}) || evs[0].Agent.Label() != "b" {
-		t.Fatalf("renamed pane.updated = %v", evs)
+	// pane.updated carries no name (verified against Herdr 0.7.5): the
+	// name from the last snapshot stays, whatever the event says.
+	unnamed := agent("p1", "t1", "", domain.StatusIdle)
+	if evs, _ = r.Apply(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &unnamed}); len(evs) != 0 {
+		t.Fatalf("nameless pane.updated emitted %v", evs)
+	}
+	if a, _ := r.Agent(domain.Key{PaneID: "p1", TerminalID: "t1"}); a.Name != "a" {
+		t.Fatalf("name after nameless pane.updated = %q", a.Name)
 	}
 	replacement := agent("p1", "t2", "c", domain.StatusWorking)
 	if evs, structural = r.Apply(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &replacement}); !structural || len(evs) != 0 {
