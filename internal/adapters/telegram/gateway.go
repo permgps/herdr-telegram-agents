@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -250,6 +251,36 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) error {
 
 // React puts one emoji reaction on a message. Telegram addresses reactions
 // by message id alone; threadID only labels the log line.
+// SendDocument uploads one file as a single silent message. ThreadID 0
+// addresses the General topic. Content type detection is disabled so a
+// .txt stays a plain file instead of being previewed as something else.
+func (g *Gateway) SendDocument(ctx context.Context, doc domain.Document) error {
+	params := &bot.SendDocumentParams{
+		ChatID:                      g.chatID,
+		MessageThreadID:             doc.ThreadID,
+		Document:                    &models.InputFileUpload{Filename: doc.Name, Data: bytes.NewReader(doc.Data)},
+		Caption:                     doc.Caption,
+		DisableNotification:         true,
+		DisableContentTypeDetection: true,
+	}
+	if doc.ReplyTo != 0 {
+		params.ReplyParameters = &models.ReplyParameters{MessageID: doc.ReplyTo, AllowSendingWithoutReply: true}
+	}
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.SendDocument(ctx, params)
+		return translate(err)
+	})
+	if err != nil {
+		g.log.Warn("sendDocument failed",
+			slog.Int("thread_id", doc.ThreadID), slog.String("name", doc.Name), slog.Int("bytes", len(doc.Data)), slog.Any("err", err))
+		return fmt.Errorf("sendDocument thread %d %q: %w", doc.ThreadID, doc.Name, err)
+	}
+	g.log.Debug("sendDocument",
+		slog.Int("thread_id", doc.ThreadID), slog.String("name", doc.Name), slog.Int("bytes", len(doc.Data)),
+		slog.Int("reply_to", doc.ReplyTo), slog.Int("caption_len", len(doc.Caption)))
+	return nil
+}
+
 func (g *Gateway) React(ctx context.Context, threadID, messageID int, emoji string) error {
 	err := g.queue.Do(ctx, func(ctx context.Context) error {
 		_, err := g.api.SetMessageReaction(ctx, &bot.SetMessageReactionParams{

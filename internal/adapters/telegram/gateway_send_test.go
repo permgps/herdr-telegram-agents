@@ -188,3 +188,63 @@ func TestReactFailureIsTranslated(t *testing.T) {
 		t.Errorf("err = %v, want the method name", err)
 	}
 }
+
+func TestSendDocument(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendDocument", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 5}) })
+	body := []byte("line one\nline two\n")
+	doc := domain.Document{ThreadID: 42, Name: "screen-w1-p1-101500.txt", Data: body, Caption: "2 lines since your last message", ReplyTo: 7}
+	if err := h.gw.SendDocument(h.ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("sendDocument")
+	if len(calls) != 1 {
+		t.Fatalf("sendDocument calls = %d, want 1", len(calls))
+	}
+	c := calls[0]
+	if got := c.form.Get("message_thread_id"); got != "42" {
+		t.Errorf("message_thread_id = %q", got)
+	}
+	if got := c.form.Get("caption"); got != doc.Caption {
+		t.Errorf("caption = %q", got)
+	}
+	if got := c.form.Get("disable_notification"); got != "true" {
+		t.Errorf("disable_notification = %q, want true", got)
+	}
+	if got := c.form.Get("disable_content_type_detection"); got != "true" {
+		t.Errorf("disable_content_type_detection = %q, want true", got)
+	}
+	if !strings.Contains(c.form.Get("reply_parameters"), `"message_id":7`) {
+		t.Errorf("reply_parameters = %q", c.form.Get("reply_parameters"))
+	}
+	file, ok := c.files["document"]
+	if !ok {
+		t.Fatalf("no document file part; files = %v", c.files)
+	}
+	if file.name != doc.Name || string(file.data) != string(body) {
+		t.Errorf("file = %q %q", file.name, file.data)
+	}
+	if strings.Contains(h.buf.String(), "line one") {
+		t.Error("document body must not be logged")
+	}
+}
+
+func TestSendDocumentToGeneralAndErrors(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendDocument", func(form url.Values) apiReply {
+		if form.Get("caption") == "fail" {
+			return errReply(400, "Bad Request: message thread not found")
+		}
+		return okReply(map[string]any{"message_id": 6})
+	})
+	if err := h.gw.SendDocument(h.ctx, domain.Document{Name: "general.txt", Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.api.callsOf("sendDocument")[0].form.Get("message_thread_id"); got != "" {
+		t.Errorf("General must omit message_thread_id, got %q", got)
+	}
+	err := h.gw.SendDocument(h.ctx, domain.Document{ThreadID: 9, Name: "x.txt", Data: []byte("x"), Caption: "fail"})
+	if !errors.Is(err, domain.ErrTopicGone) {
+		t.Fatalf("err = %v, want ErrTopicGone", err)
+	}
+}

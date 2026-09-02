@@ -112,7 +112,7 @@ func Poll(ctx context.Context, b *bot.Bot, log *slog.Logger) {
 // Descriptions are one line each; the commands work in topics and, for
 // status and help, in General.
 var botCommands = []models.BotCommand{
-	{Command: "screen", Description: "Show the agent screen (add N for the last N lines)"},
+	{Command: "screen", Description: "Show the agent screen (N: last N lines, all: output since your last message)"},
 	{Command: "keys", Description: "Send raw keys to the agent, e.g. /keys esc"},
 	{Command: "focus", Description: "Bring the agent's pane to the front in Herdr"},
 	{Command: "status", Description: "Agent status here, all agents in General"},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,14 @@ const (
 type call struct {
 	method string
 	form   url.Values
+	// files holds the multipart file parts by field name, if any.
+	files map[string]upload
+}
+
+// upload is one multipart file part a fake API received.
+type upload struct {
+	name string
+	data []byte
 }
 
 // apiReply describes one canned Bot API response. code 0 is success.
@@ -72,8 +81,27 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 				t.Errorf("parse form for %s: %v", method, err)
 			}
 		}
+		var files map[string]upload
+		if r.MultipartForm != nil {
+			for field, headers := range r.MultipartForm.File {
+				if len(headers) == 0 {
+					continue
+				}
+				fh, err := headers[0].Open()
+				if err != nil {
+					t.Errorf("open multipart file %s: %v", field, err)
+					continue
+				}
+				data, _ := io.ReadAll(fh)
+				_ = fh.Close()
+				if files == nil {
+					files = map[string]upload{}
+				}
+				files[field] = upload{name: headers[0].Filename, data: data}
+			}
+		}
 		f.mu.Lock()
-		f.calls = append(f.calls, call{method, r.Form})
+		f.calls = append(f.calls, call{method: method, form: r.Form, files: files})
 		fn := f.reply[method]
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
