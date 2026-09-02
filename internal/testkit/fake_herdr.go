@@ -33,26 +33,33 @@ type RenameCall struct {
 	Name   *string
 }
 
+// TabRenameCall is one RenameTab call a fake recorded.
+type TabRenameCall struct {
+	TabID string
+	Label string
+}
+
 // FakeHerdr is an in-memory domain.HerdrGateway. Tests script the agent
 // list and the screens, push socket events and inspect what the application
 // asked for. FailNext fails the next call of a method (read, prompt, keys,
 // focus, rename) once.
 type FakeHerdr struct {
-	mu       sync.Mutex
-	agents   []domain.Agent
-	listErr  error
-	listN    int
-	watches  [][]string
-	notifies []Notification
-	prompts  []string
-	screens  map[string]string
-	reads    []ReadCall
-	keys     []KeysCall
-	focused  []string
-	renames  []RenameCall
-	failNext map[string]error
-	events   chan domain.Event
-	log      *slog.Logger
+	mu         sync.Mutex
+	agents     []domain.Agent
+	listErr    error
+	listN      int
+	watches    [][]string
+	notifies   []Notification
+	prompts    []string
+	screens    map[string]string
+	reads      []ReadCall
+	keys       []KeysCall
+	focused    []string
+	renames    []RenameCall
+	tabRenames []TabRenameCall
+	failNext   map[string]error
+	events     chan domain.Event
+	log        *slog.Logger
 }
 
 var _ domain.HerdrGateway = (*FakeHerdr)(nil)
@@ -105,6 +112,13 @@ func (f *FakeHerdr) Focused() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.focused...)
+}
+
+// TabRenames returns every RenameTab call, in order.
+func (f *FakeHerdr) TabRenames() []TabRenameCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TabRenameCall(nil), f.tabRenames...)
 }
 
 // Renames returns every Rename call, in order.
@@ -229,6 +243,14 @@ func (f *FakeHerdr) Rename(_ context.Context, target string, name *string) error
 	f.renames = append(f.renames, RenameCall{Target: target, Name: name})
 	f.log.Debug("fake herdr rename", slog.String("target", target), slog.Any("name", name))
 	return f.fail("rename")
+}
+
+func (f *FakeHerdr) RenameTab(_ context.Context, tabID, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tabRenames = append(f.tabRenames, TabRenameCall{TabID: tabID, Label: label})
+	f.log.Debug("fake herdr rename tab", slog.String("tab_id", tabID), slog.String("label", label))
+	return f.fail("rename_tab")
 }
 
 func (f *FakeHerdr) Notify(_ context.Context, title, body string, _ domain.NotifySound) error {

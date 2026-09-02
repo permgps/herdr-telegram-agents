@@ -125,9 +125,11 @@ the Windows milestone.
   into the topic. The daemon deletes its own notices right away, which needs
   **Delete messages**; without that right they stay and the log says so once.
   Topic creation notices cannot be deleted and remain.
-- Rename a topic by hand and the agent is renamed in Herdr (`agent.rename`):
-  the `<workspace> · ` prefix is optional, an empty or default remainder
-  clears the custom name, and the topic settles on the canonical form.
+- Rename a topic by hand and the change goes back to Herdr: the tab is
+  renamed (`tab.rename`), which is what the Agents panel shows on its first
+  line, or the custom agent name when the agent has one (`agent.rename`).
+  The `<workspace> · ` prefix is optional; an empty remainder is ignored for
+  a tab and clears a custom name. The topic settles on the canonical form.
 - Close a topic by hand and the mirror goes quiet for that agent: no icon
   edits, no screen posts, until you reopen it. Reopening refreshes name and
   icon; if the agent exited meanwhile the topic gets 🏁 and is closed again.

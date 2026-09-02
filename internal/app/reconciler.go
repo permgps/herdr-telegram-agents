@@ -402,12 +402,15 @@ func (r *Reconciler) forced(fn func() error) error {
 }
 
 // OnTopicRenamed mirrors an operator's topic rename back to Herdr. The
-// "<workspace> · " prefix is stripped when present; an empty remainder, or
-// one equal to the tab label or the agent kind, clears the custom name.
-// The mapping keeps the new topic name so no edit is sent for the name the
-// operator just typed, and the caller requests a snapshot so the reconciler
-// settles the topic on the canonical "<workspace> · <name>" form. It
-// reports whether that snapshot is wanted.
+// "<workspace> · " prefix is stripped when present. The remainder goes to
+// whatever forms the agent part of the label: the tab label for an agent
+// without a custom name (tab.rename; an empty remainder or the current
+// label is ignored), the custom name otherwise (agent.rename; an empty
+// remainder, the tab label or the agent kind clears it). The mapping keeps
+// the new topic name so no edit is sent for the name the operator just
+// typed; a snapshot, requested by the caller when Herdr was changed, or a
+// scheduled edit settles the topic on the canonical form. It reports
+// whether that snapshot is wanted.
 func (r *Reconciler) OnTopicRenamed(ctx context.Context, threadID int, name string) (bool, error) {
 	key, ok := r.mapping.KeyForThread(threadID)
 	if !ok {
@@ -421,6 +424,9 @@ func (r *Reconciler) OnTopicRenamed(ctx context.Context, threadID int, name stri
 		return false, nil
 	}
 	rest := agentPart(a, name)
+	if a.Name == "" && a.TabID != "" {
+		return r.renameTab(ctx, key, a, entry, name, rest)
+	}
 	var wire *string
 	if rest != "" && rest != a.TabLabel && rest != a.Kind {
 		wire = &rest
@@ -428,12 +434,7 @@ func (r *Reconciler) OnTopicRenamed(ctx context.Context, threadID int, name stri
 		rest = ""
 	}
 	if err := r.herdr.Rename(ctx, key.PaneID, wire); err != nil {
-		r.log.Warn("agent rename from telegram failed", slog.String("key", key.String()), slog.Int("thread_id", threadID),
-			slog.String("name", name), slog.String("err", err.Error()))
-		if sendErr := r.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "rename failed: " + failureReason(err)}); sendErr != nil {
-			r.log.Warn("rename failure note not sent", slog.String("key", key.String()), slog.String("err", sendErr.Error()))
-		}
-		return false, nil
+		return false, r.renameFailed(ctx, key, entry, name, "agent", err)
 	}
 	a.Name = rest
 	r.agents[key] = a
@@ -443,6 +444,43 @@ func (r *Reconciler) OnTopicRenamed(ctx context.Context, threadID int, name stri
 	r.log.Info("agent renamed from telegram", slog.String("key", key.String()), slog.Int("thread_id", threadID),
 		slog.String("name", name), slog.String("agent_name", rest))
 	return true, nil
+}
+
+// renameTab is the tab-label half of OnTopicRenamed. An ignored rename
+// still records the typed name and schedules an edit, so a topic renamed
+// to something the tab already means goes back to the canonical form.
+func (r *Reconciler) renameTab(ctx context.Context, key domain.Key, a domain.Agent, entry *domain.TopicEntry, name, label string) (bool, error) {
+	if label == "" || label == a.TabLabel {
+		entry.Name = name
+		entry.UpdatedAt = r.clock.Now()
+		r.save(ctx)
+		r.deb.Schedule(key)
+		r.log.Debug("topic rename ignored, tab label unchanged", slog.String("key", key.String()),
+			slog.Int("thread", entry.ThreadID), slog.String("name", name))
+		return false, nil
+	}
+	if err := r.herdr.RenameTab(ctx, a.TabID, label); err != nil {
+		return false, r.renameFailed(ctx, key, entry, name, "tab", err)
+	}
+	a.TabLabel = label
+	r.agents[key] = a
+	entry.Name = name
+	entry.UpdatedAt = r.clock.Now()
+	r.save(ctx)
+	r.deb.Schedule(key)
+	r.log.Info("tab renamed from telegram", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
+		slog.String("tab_id", a.TabID), slog.String("name", name), slog.String("label", label))
+	return true, nil
+}
+
+// renameFailed logs a Herdr rename failure and tells the operator why.
+func (r *Reconciler) renameFailed(ctx context.Context, key domain.Key, entry *domain.TopicEntry, name, what string, err error) error {
+	r.log.Warn(what+" rename from telegram failed", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
+		slog.String("name", name), slog.String("err", err.Error()))
+	if sendErr := r.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "rename failed: " + failureReason(err)}); sendErr != nil {
+		r.log.Warn("rename failure note not sent", slog.String("key", key.String()), slog.String("err", sendErr.Error()))
+	}
+	return nil
 }
 
 // agentPart strips the workspace prefix Herdr's panel shows from a topic

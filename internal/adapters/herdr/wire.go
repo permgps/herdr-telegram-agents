@@ -144,6 +144,11 @@ type renameParams struct {
 	Name   *string `json:"name"`
 }
 
+type tabRenameParams struct {
+	TabID string `json:"tab_id"`
+	Label string `json:"label"`
+}
+
 type notifyParams struct {
 	Title string `json:"title"`
 	Body  string `json:"body,omitempty"`

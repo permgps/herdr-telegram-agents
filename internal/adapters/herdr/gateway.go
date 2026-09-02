@@ -194,6 +194,11 @@ func (g *Gateway) Rename(ctx context.Context, target string, name *string) error
 	return g.call(ctx, "agent.rename", target, renameParams{Target: target, Name: name}, nil)
 }
 
+// RenameTab sets a tab label through tab.rename.
+func (g *Gateway) RenameTab(ctx context.Context, tabID, label string) error {
+	return g.call(ctx, "tab.rename", tabID, tabRenameParams{TabID: tabID, Label: label}, nil)
+}
+
 // Notify shows a desktop notification through Herdr.
 func (g *Gateway) Notify(ctx context.Context, title, body string, sound domain.NotifySound) error {
 	return g.call(ctx, "notification.show", "", notifyParams{

@@ -45,6 +45,9 @@ type HerdrGateway interface {
 	SendKeys(ctx context.Context, target string, keys []string) error
 	// Rename sets the agent name; nil clears it back to the default.
 	Rename(ctx context.Context, target string, name *string) error
+	// RenameTab sets the label of the tab holding the agent; a tab always
+	// has a label, so there is no clearing.
+	RenameTab(ctx context.Context, tabID, label string) error
 	// Focus brings the agent's pane to the front in Herdr.
 	Focus(ctx context.Context, target string) error
 	// Notify shows a desktop notification through Herdr.

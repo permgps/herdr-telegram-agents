@@ -336,9 +336,87 @@ func TestResyncRewritesEveryLiveTopic(t *testing.T) {
 func wsAgent(pane, term, name string, st domain.Status) domain.Agent {
 	a := agent(pane, term, name, st)
 	a.WorkspaceLabel = "V3Jobs"
+	a.TabID = "w3:t1"
 	a.TabLabel = "claude"
 	a.Kind = "claude"
 	return a
+}
+
+// TestReconcilerRenameTabFromTelegram: an agent without a custom name is
+// labelled by its tab, so a topic rename goes to the tab label. A name the
+// tab already has, or nothing at all, changes nothing in Herdr but the
+// topic is still settled back on the canonical form.
+func TestReconcilerRenameTabFromTelegram(t *testing.T) {
+	tests := []struct {
+		name  string
+		typed string
+		want  string // "" = no tab.rename
+	}{
+		{"with prefix", "V3Jobs · review", "review"},
+		{"without prefix", "review", "review"},
+		{"prefix and spaces", "  V3Jobs ·   review  ", "review"},
+		{"same as tab label", "V3Jobs · claude", ""},
+		{"bare tab label", "claude", ""},
+		{"only workspace", "V3Jobs", ""},
+		{"empty", "   ", ""},
+		{"legacy status prefix stripped", "🏁 V3Jobs · review", "review"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRec(t)
+			a := wsAgent("p1", "t1", "", domain.StatusWorking)
+			f.handle(t, app.AgentAppeared, a)
+			f.tg.Reset()
+			snapshot, err := f.rec.OnTopicRenamed(f.ctx, 101, tt.typed)
+			if err != nil || snapshot != (tt.want != "") {
+				t.Fatalf("OnTopicRenamed = %v, %v", snapshot, err)
+			}
+			if n := len(f.herdr.Renames()); n != 0 {
+				t.Fatalf("agent renamed %d times, want the tab instead", n)
+			}
+			tabs := f.herdr.TabRenames()
+			switch {
+			case tt.want == "" && len(tabs) != 0:
+				t.Fatalf("TabRenames = %+v, want none", tabs)
+			case tt.want != "" && (len(tabs) != 1 || tabs[0].TabID != "w3:t1" || tabs[0].Label != tt.want):
+				t.Fatalf("TabRenames = %+v, want %q", tabs, tt.want)
+			}
+			e, _ := f.rec.Mapping().TopicFor(a.Key)
+			if e.Name != tt.typed {
+				t.Fatalf("entry name = %q, want the typed name %q", e.Name, tt.typed)
+			}
+			// The topic settles on "<workspace> · <tab>" either way.
+			f.fireDue(t, 1)
+			wantLabel := "V3Jobs · claude"
+			if tt.want != "" {
+				wantLabel = "V3Jobs · " + tt.want
+			}
+			calls := f.tg.Calls()
+			if strings.TrimSpace(tt.typed) == wantLabel {
+				if len(calls) != 0 {
+					t.Fatalf("canonical name still edited: %v", calls)
+				}
+				return
+			}
+			if len(calls) != 1 || !strings.Contains(calls[0], "name="+wantLabel) {
+				t.Fatalf("settle edit = %v, want name=%s", calls, wantLabel)
+			}
+		})
+	}
+}
+
+func TestReconcilerRenameTabFailed(t *testing.T) {
+	f := newRec(t)
+	a := wsAgent("p1", "t1", "", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+	f.herdr.FailNext("rename_tab", domain.ErrDisconnected)
+	if snapshot, err := f.rec.OnTopicRenamed(f.ctx, 101, "review"); err != nil || snapshot {
+		t.Fatalf("failed tab rename: %v, %v", snapshot, err)
+	}
+	assertCalls(t, f.tg, "create:V3Jobs · claude:working", "send:101:rename failed: herdr is unreachable")
+	if e, _ := f.rec.Mapping().TopicFor(a.Key); e.Name != "V3Jobs · claude" {
+		t.Fatalf("entry renamed despite failure: %q", e.Name)
+	}
 }
 
 func TestReconcilerMuteOnCloseAndReopen(t *testing.T) {

@@ -220,6 +220,18 @@ func TestGatewayFocusNotFoundIsAgentGone(t *testing.T) {
 	}
 }
 
+func TestGatewayRenameTab(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("tab.rename", ackHandler)
+	g := newGateway(t, s)
+	if err := g.RenameTab(ctxT(t), "w1:t2", "review"); err != nil {
+		t.Fatalf("RenameTab: %v", err)
+	}
+	if got := lastParams(t, s, "tab.rename"); got["tab_id"] != "w1:t2" || got["label"] != "review" {
+		t.Fatalf("tab.rename params = %v", got)
+	}
+}
+
 func TestGatewayRename(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("agent.rename", ackHandler)
