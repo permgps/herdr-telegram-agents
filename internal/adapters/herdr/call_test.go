@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,31 +14,7 @@ import (
 	"github.com/permgps/herdr-telegram-agents/internal/testkit"
 )
 
-func testLogger(t *testing.T) *slog.Logger {
-	t.Helper()
-	return slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Log(string(p))
-	return len(p), nil
-}
-
-func newClient(t *testing.T, s *testkit.NDJSONServer) *Client {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	c, err := Connect(ctx, s.Path(), testLogger(t))
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	return c
-}
-
-func TestClientCallSuccess(t *testing.T) {
+func TestCallSuccessAndPing(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("ping", func(id string, params json.RawMessage) (any, *testkit.APIError) {
 		if string(params) != "{}" {
@@ -46,33 +22,31 @@ func TestClientCallSuccess(t *testing.T) {
 		}
 		return map[string]any{"type": "pong", "version": "0.7.5", "protocol": 17}, nil
 	})
-	c := newClient(t, s)
-	pong, err := c.Ping(context.Background())
+	pong, err := ping(context.Background(), dial, s.Path(), testLogger(t))
 	if err != nil {
 		t.Fatalf("ping: %v", err)
 	}
 	if pong.Version != "0.7.5" || pong.Protocol != 17 {
 		t.Fatalf("pong = %+v", pong)
 	}
-	if reqs := s.Requests(); len(reqs) != 1 || reqs[0].ID != "r1" {
+	if reqs := s.Requests(); len(reqs) != 1 || !strings.HasPrefix(reqs[0].ID, "r") {
 		t.Fatalf("requests = %+v", reqs)
 	}
 }
 
-func TestClientAPIError(t *testing.T) {
+func TestCallAPIError(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("agent.get", func(id string, params json.RawMessage) (any, *testkit.APIError) {
 		return nil, &testkit.APIError{Code: "not_found", Message: "no such agent"}
 	})
-	c := newClient(t, s)
-	err := c.Call(context.Background(), "agent.get", map[string]string{"target": "x"}, nil)
+	err := call(context.Background(), dial, s.Path(), testLogger(t), "agent.get", map[string]string{"target": "x"}, nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != "not_found" || apiErr.Message != "no such agent" {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestClientCallTimeout(t *testing.T) {
+func TestCallTimeout(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	block := make(chan struct{})
 	s.Handle("slow", func(id string, params json.RawMessage) (any, *testkit.APIError) {
@@ -80,29 +54,26 @@ func TestClientCallTimeout(t *testing.T) {
 		return nil, nil
 	})
 	t.Cleanup(func() { close(block) })
-	c := newClient(t, s)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err := c.Call(ctx, "slow", nil, nil)
+	err := call(ctx, dial, s.Path(), testLogger(t), "slow", nil, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want deadline exceeded", err)
 	}
 }
 
-func TestClientConcurrentCalls(t *testing.T) {
+func TestCallConcurrent(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("echo", func(id string, params json.RawMessage) (any, *testkit.APIError) {
 		var p struct {
 			N int `json:"n"`
 		}
 		_ = json.Unmarshal(params, &p)
-		// Interleave replies by delaying odd requests a little.
 		if p.N%2 == 1 {
 			time.Sleep(2 * time.Millisecond)
 		}
 		return map[string]int{"n": p.N}, nil
 	})
-	c := newClient(t, s)
 	const calls = 50
 	var wg sync.WaitGroup
 	errs := make(chan error, calls)
@@ -113,7 +84,7 @@ func TestClientConcurrentCalls(t *testing.T) {
 			var out struct {
 				N int `json:"n"`
 			}
-			if err := c.Call(context.Background(), "echo", map[string]int{"n": n}, &out); err != nil {
+			if err := call(context.Background(), dial, s.Path(), testLogger(t), "echo", map[string]int{"n": n}, &out); err != nil {
 				errs <- err
 				return
 			}
@@ -132,7 +103,7 @@ func TestClientConcurrentCalls(t *testing.T) {
 	}
 }
 
-func TestClientDisconnect(t *testing.T) {
+func TestCallServerClosesBeforeReply(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	block := make(chan struct{})
 	s.Handle("hang", func(id string, params json.RawMessage) (any, *testkit.APIError) {
@@ -140,50 +111,40 @@ func TestClientDisconnect(t *testing.T) {
 		return nil, nil
 	})
 	t.Cleanup(func() { close(block) })
-	c := newClient(t, s)
 
 	errc := make(chan error, 1)
-	go func() { errc <- c.Call(context.Background(), "hang", nil, nil) }()
+	go func() { errc <- call(context.Background(), dial, s.Path(), testLogger(t), "hang", nil, nil) }()
 	s.WaitRequests("hang", 1, time.Second)
 	s.CloseAll()
 
 	select {
 	case err := <-errc:
 		if !errors.Is(err, domain.ErrDisconnected) {
-			t.Fatalf("pending call err = %v", err)
+			t.Fatalf("err = %v, want ErrDisconnected", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("pending call did not fail after server closed")
-	}
-	select {
-	case <-c.Done():
-	case <-time.After(time.Second):
-		t.Fatal("Done() not closed")
-	}
-	if err := c.Call(context.Background(), "ping", nil, nil); !errors.Is(err, domain.ErrDisconnected) {
-		t.Fatalf("call after disconnect err = %v", err)
+		t.Fatal("call did not fail after server closed")
 	}
 }
 
-func TestClientCloseUnblocksCallers(t *testing.T) {
+func TestCallDialFailure(t *testing.T) {
+	err := call(context.Background(), dial, "/nonexistent/herdr.sock", testLogger(t), "ping", nil, nil)
+	if !errors.Is(err, errDial) {
+		t.Fatalf("err = %v, want errDial", err)
+	}
+}
+
+func TestCallLargeReply(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
-	block := make(chan struct{})
-	s.Handle("hang", func(id string, params json.RawMessage) (any, *testkit.APIError) {
-		<-block
-		return nil, nil
+	big := strings.Repeat("x", 300<<10)
+	s.Handle("agent.read", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "pane_read", "read": map[string]any{"text": big}}, nil
 	})
-	t.Cleanup(func() { close(block) })
-	c := newClient(t, s)
-	errc := make(chan error, 1)
-	go func() { errc <- c.Call(context.Background(), "hang", nil, nil) }()
-	s.WaitRequests("hang", 1, time.Second)
-	_ = c.Close()
-	select {
-	case err := <-errc:
-		if !errors.Is(err, domain.ErrDisconnected) {
-			t.Fatalf("err = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not unblock the caller")
+	var res paneReadResult
+	if err := call(context.Background(), dial, s.Path(), testLogger(t), "agent.read", nil, &res); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if len(res.Read.Text) != len(big) {
+		t.Fatalf("text len = %d, want %d", len(res.Read.Text), len(big))
 	}
 }

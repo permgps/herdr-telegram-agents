@@ -23,10 +23,9 @@ lint:
 	sh scripts/check-imports.sh
 	$(MAKE) crosscheck
 
-# Stub until go-winio lands with the Herdr adapter: host build only.
-# Replaced by scripts/crosscheck.sh (all release targets) in the same milestone.
+# Builds and vets every release target (see scripts/crosscheck.sh).
 crosscheck:
-	CGO_ENABLED=0 go build -o /dev/null ./...
+	sh scripts/crosscheck.sh
 
 clean:
 	rm -rf bin

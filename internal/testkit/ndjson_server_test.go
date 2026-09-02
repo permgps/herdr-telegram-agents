@@ -55,14 +55,19 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("result = %v", got["result"])
 	}
 
-	send(t, conn, `{"id":"r2","method":"nope","params":{}}`)
-	got = readJSON(t, sc)
+	// Herdr hangs up after one reply; so does the fake.
+	if sc.Scan() {
+		t.Fatalf("connection still open after reply: %s", sc.Text())
+	}
+	conn2, sc2 := dial(t, s.Path())
+	send(t, conn2, `{"id":"r2","method":"nope","params":{}}`)
+	got = readJSON(t, sc2)
 	if e, _ := got["error"].(map[string]any); e["code"] != "unknown_method" {
 		t.Fatalf("error = %v", got["error"])
 	}
 
 	reqs := s.Requests()
-	if len(reqs) != 2 || reqs[0].Method != "ping" || reqs[1].ID != "r2" || reqs[1].Conn != 1 {
+	if len(reqs) != 2 || reqs[0].Method != "ping" || reqs[1].ID != "r2" || reqs[1].Conn != 2 {
 		t.Fatalf("requests = %+v", reqs)
 	}
 }

@@ -70,6 +70,53 @@ type agentListResult struct {
 	Agents []agentInfo `json:"agents"`
 }
 
+// paneReadResult is the `pane_read` result of agent.read.
+type paneReadResult struct {
+	Type string `json:"type"`
+	Read struct {
+		PaneID      string `json:"pane_id"`
+		WorkspaceID string `json:"workspace_id"`
+		TabID       string `json:"tab_id"`
+		Source      string `json:"source"`
+		Format      string `json:"format"`
+		Text        string `json:"text"`
+		Revision    int64  `json:"revision"`
+		Truncated   bool   `json:"truncated"`
+	} `json:"read"`
+}
+
+// Request params for the agent and notification methods.
+type readParams struct {
+	Target    string `json:"target"`
+	Source    string `json:"source"`
+	Lines     int    `json:"lines,omitempty"`
+	Format    string `json:"format"`
+	StripANSI bool   `json:"strip_ansi"`
+}
+
+type promptParams struct {
+	Target string `json:"target"`
+	Text   string `json:"text"`
+}
+
+type sendKeysParams struct {
+	Target string   `json:"target"`
+	Keys   []string `json:"keys"`
+}
+
+// renameParams always carries name so a nil pointer serialises as null,
+// which is how Herdr clears a custom name.
+type renameParams struct {
+	Target string  `json:"target"`
+	Name   *string `json:"name"`
+}
+
+type notifyParams struct {
+	Title string `json:"title"`
+	Body  string `json:"body,omitempty"`
+	Sound string `json:"sound,omitempty"`
+}
+
 // subscription is one entry of events.subscribe params.
 type subscription struct {
 	Type   string `json:"type"`

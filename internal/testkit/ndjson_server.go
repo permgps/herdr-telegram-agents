@@ -61,10 +61,11 @@ type connState struct {
 // NDJSONServer is a fake Herdr socket server speaking the newline-delimited
 // JSON protocol on a temporary Unix socket.
 //
-// It mirrors the verified Herdr behaviour that matters to the adapter:
-// `events.subscribe` answers `subscription_started` and turns the
-// connection into a write-once stream, and any further request on that
-// connection makes the server close it.
+// It mirrors the verified Herdr 0.7.5 behaviour that matters to the
+// adapter: a plain request gets exactly one reply and the server then
+// closes the connection; `events.subscribe` answers `subscription_started`
+// and turns the connection into a write-once stream, and any further
+// request on that connection makes the server close it.
 type NDJSONServer struct {
 	tb  testing.TB
 	log *slog.Logger
@@ -313,9 +314,10 @@ func (s *NDJSONServer) serve(c *connState) {
 				resp = responseLine{ID: req.ID, Result: result}
 			}
 		}
-		if err := s.reply(c, resp); err != nil {
-			return
-		}
+		_ = s.reply(c, resp)
+		// Herdr serves one request per connection and hangs up after the
+		// reply; the deferred close mirrors that.
+		return
 	}
 }
 
