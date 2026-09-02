@@ -86,7 +86,7 @@ func (s *Setup) Run(ctx context.Context) (domain.Config, bool, error) {
 		s.log.Debug("setup: could not open the link", slog.String("err", err.Error()))
 	}
 	s.ui.Print(fmt.Sprintf("Open %s in Telegram, press Start and tap \"Choose group\".", link))
-	s.ui.Print("Telegram adds the bot to the group you pick as an administrator with the \"Manage topics\" right.")
+	s.ui.Print("Telegram adds the bot to the group you pick as an administrator with the \"Manage topics\" and \"Delete messages\" rights.")
 	s.ui.Print("Adding the bot to a forum group by hand with that right works too. Waiting...")
 
 	candidate, err := s.pickCandidate(ctx, probe)

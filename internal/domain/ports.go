@@ -66,7 +66,8 @@ type TelegramGateway interface {
 	// SendText posts text into the topic; code renders it as a code block.
 	SendText(ctx context.Context, threadID int, text string, code bool) error
 	// Rights reports whether the chat is a forum and the bot may manage
-	// its topics; the daemon checks it on start and after RightsChanged.
+	// its topics and delete messages; the daemon checks it on start and
+	// after RightsChanged.
 	Rights(ctx context.Context) (Rights, error)
 	// Events streams TopicMessage, TopicRenamed, TopicClosed, TopicReopened
 	// and RightsChanged values until the gateway is closed.
@@ -78,6 +79,10 @@ type Rights struct {
 	IsForum         bool
 	IsAdmin         bool
 	CanManageTopics bool
+	// CanDeleteMessages lets the gateway remove the "changed the topic
+	// icon" notices its own edits cause; without it they stay, nothing
+	// else is affected.
+	CanDeleteMessages bool
 }
 
 // ConfigStore persists the plugin configuration. Load returns

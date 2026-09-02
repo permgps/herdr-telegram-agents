@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
@@ -41,6 +42,9 @@ type Gateway struct {
 	events    chan domain.Event
 	stopped   chan struct{}
 	log       *slog.Logger
+	// deleteWarned is set after the first failed service-message deletion
+	// so a missing right is reported once, not per edit.
+	deleteWarned atomic.Bool
 }
 
 var _ domain.TelegramGateway = (*Gateway)(nil)
@@ -178,10 +182,12 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 		}
 		rights.IsAdmin = member.Type == models.ChatMemberTypeAdministrator || member.Type == models.ChatMemberTypeOwner
 		rights.CanManageTopics = canManageTopics(*member) || member.Type == models.ChatMemberTypeOwner
+		rights.CanDeleteMessages = canDeleteMessages(*member) || member.Type == models.ChatMemberTypeOwner
 		return nil
 	})
 	return rights, g.finish("getChatMember", err,
-		slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin), slog.Bool("manage_topics", rights.CanManageTopics))
+		slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin),
+		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages))
 }
 
 // SendText posts text into the topic, split into parts below Telegram's

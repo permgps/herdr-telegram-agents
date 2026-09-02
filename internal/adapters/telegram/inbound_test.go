@@ -2,6 +2,8 @@ package telegram_test
 
 import (
 	"context"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,18 @@ import (
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
+
+// testBotID is the gateway's own user id in the harness.
+const testBotID int64 = 42
+
+// ownService builds a service message Telegram posts when the bot itself
+// changes a topic; the sender is the bot.
+func ownService(id, thread int, mutate func(*models.Message)) *models.Update {
+	u := service(thread, mutate)
+	u.Message.ID = id
+	u.Message.From = &models.User{ID: testBotID, IsBot: true}
+	return u
+}
 
 func topicMessage(chatID, fromID int64, thread int, text string) *models.Update {
 	m := &models.Message{
@@ -164,5 +178,91 @@ func TestEmitDoesNotBlockPastContext(t *testing.T) {
 	}
 	if !strings.Contains(h.buf.String(), "telegram event dropped, context done") {
 		t.Errorf("drop not logged: %s", h.buf.String())
+	}
+}
+
+// TestInboundDeletesOwnServiceMessages: "X changed the topic name/icon"
+// notices caused by the bot's own edits are deleted instead of piling up
+// in the topic, and never become events. Topic creation notices cannot be
+// deleted through the Bot API and are left alone.
+func TestInboundDeletesOwnServiceMessages(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	deleted := make(chan int, 8)
+	h.api.on("deleteMessage", func(f url.Values) apiReply {
+		id, _ := strconv.Atoi(f.Get("message_id"))
+		deleted <- id
+		return okReply(true)
+	})
+	expectDeleted := func(t *testing.T, want int) {
+		t.Helper()
+		select {
+		case id := <-deleted:
+			if id != want {
+				t.Fatalf("deleted message %d, want %d", id, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("service message %d not deleted", want)
+		}
+	}
+	tests := []struct {
+		name   string
+		update *models.Update
+		want   int
+	}{
+		{"icon changed", ownService(11, 42, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{IconCustomEmojiID: "x"} }), 11},
+		{"renamed", ownService(12, 42, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{Name: "V3Jobs · claude"} }), 12},
+		{"closed", ownService(13, 42, func(m *models.Message) { m.ForumTopicClosed = &models.ForumTopicClosed{} }), 13},
+		{"reopened", ownService(14, 42, func(m *models.Message) { m.ForumTopicReopened = &models.ForumTopicReopened{} }), 14},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h.bot.ProcessUpdate(ctx, tc.update)
+			expectNoEvent(t, h.gw.Events())
+			expectDeleted(t, tc.want)
+		})
+	}
+
+	t.Run("created is kept", func(t *testing.T) {
+		h.bot.ProcessUpdate(ctx, ownService(15, 42, func(m *models.Message) { m.ForumTopicCreated = &models.ForumTopicCreated{Name: "n"} }))
+		expectNoEvent(t, h.gw.Events())
+		select {
+		case id := <-deleted:
+			t.Fatalf("creation notice %d deleted", id)
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+
+	t.Run("operator rename still an event", func(t *testing.T) {
+		h.bot.ProcessUpdate(ctx, service(42, func(m *models.Message) { m.ID = 16; m.ForumTopicEdited = &models.ForumTopicEdited{Name: "by hand"} }))
+		if ev, ok := expectEvent(t, h.gw.Events()).(domain.TopicRenamed); !ok || ev.Name != "by hand" {
+			t.Fatalf("event = %#v", ev)
+		}
+		select {
+		case id := <-deleted:
+			t.Fatalf("operator's notice %d deleted", id)
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+}
+
+// TestInboundServiceDeleteWithoutRight: without "Delete messages" the first
+// failure is a warning naming the right, later ones stay at debug.
+func TestInboundServiceDeleteWithoutRight(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.api.on("deleteMessage", func(url.Values) apiReply { return errReply(400, "Bad Request: message can't be deleted") })
+	h.bot.ProcessUpdate(ctx, ownService(21, 42, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{IconCustomEmojiID: "x"} }))
+	h.bot.ProcessUpdate(ctx, ownService(22, 42, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{IconCustomEmojiID: "y"} }))
+	expectNoEvent(t, h.gw.Events())
+	if !h.buf.contains("Delete messages", 2*time.Second) {
+		t.Fatalf("no hint about the missing right: %s", h.buf.String())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(h.api.callsOf("deleteMessage")) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := strings.Count(h.buf.String(), "level=WARN msg=\"service message not deleted"); n != 1 {
+		t.Fatalf("warned %d times, want 1: %s", n, h.buf.String())
 	}
 }

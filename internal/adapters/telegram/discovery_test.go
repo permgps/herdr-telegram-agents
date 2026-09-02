@@ -191,10 +191,10 @@ func TestProbeStartSendsGroupButton(t *testing.T) {
 	if req["chat_is_channel"] != false {
 		t.Fatalf("chat_is_channel = %v", req["chat_is_channel"])
 	}
-	if rights := req["bot_administrator_rights"].(map[string]any); rights["can_manage_topics"] != true {
+	if rights := req["bot_administrator_rights"].(map[string]any); rights["can_manage_topics"] != true || rights["can_delete_messages"] != true {
 		t.Fatalf("bot rights = %v", rights)
 	}
-	if rights := req["user_administrator_rights"].(map[string]any); rights["can_manage_topics"] != true || rights["can_promote_members"] != true {
+	if rights := req["user_administrator_rights"].(map[string]any); rights["can_manage_topics"] != true || rights["can_delete_messages"] != true || rights["can_promote_members"] != true {
 		t.Fatalf("user rights = %v", rights)
 	}
 }

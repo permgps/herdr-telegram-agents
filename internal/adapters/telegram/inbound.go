@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/go-telegram/bot"
@@ -10,12 +11,28 @@ import (
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
-// registerHandlers installs the two match functions. The allow-list (chat
-// id, then operator id) is enforced in the match funcs so nothing else runs
-// for foreign traffic; unmatched updates reach the no-op default handler.
+// registerHandlers installs the match functions. The allow-list (chat id,
+// then operator id) is enforced in the match funcs so nothing else runs for
+// foreign traffic; unmatched updates reach the no-op default handler. The
+// bot's own service messages are matched first so they never reach the
+// operator check.
 func (g *Gateway) registerHandlers() {
+	g.api.RegisterHandlerMatchFunc(g.matchOwnService, g.onOwnService)
 	g.api.RegisterHandlerMatchFunc(g.matchOurTopic, g.onTopicUpdate)
 	g.api.RegisterHandlerMatchFunc(g.matchMyChatMember, g.onMyChatMember)
+}
+
+// matchOwnService accepts the notices Telegram posts into a topic when the
+// bot itself edits, closes or reopens it ("X changed the topic icon"). With
+// a status change per agent event they bury the conversation, so they are
+// deleted. Creation notices are excluded: the Bot API refuses to delete
+// them.
+func (g *Gateway) matchOwnService(u *models.Update) bool {
+	m := u.Message
+	if m == nil || m.From == nil || g.botID == 0 || m.From.ID != g.botID || m.Chat.ID != g.chatID {
+		return false
+	}
+	return m.ForumTopicEdited != nil || m.ForumTopicClosed != nil || m.ForumTopicReopened != nil
 }
 
 // matchOurTopic accepts new messages posted by an operator inside a topic
@@ -87,6 +104,38 @@ func (g *Gateway) onTopicUpdate(ctx context.Context, _ *bot.Bot, u *models.Updat
 	}
 }
 
+// onOwnService deletes one of the bot's own topic notices. The call is
+// queued from a goroutine so the poller is not held behind the rate limit;
+// the update context ends with polling, which bounds the goroutine.
+func (g *Gateway) onOwnService(ctx context.Context, _ *bot.Bot, u *models.Update) {
+	m := u.Message
+	g.log.Debug("telegram own service message", slog.Int("thread_id", m.MessageThreadID), slog.Int("message_id", m.ID))
+	go g.deleteServiceMessage(ctx, m.MessageThreadID, m.ID)
+}
+
+// deleteServiceMessage runs deleteMessage through the queue. Deleting in a
+// supergroup needs the "Delete messages" administrator right, which setup
+// requests but an operator may withhold, so a failure is reported once at
+// warn level with the right named and afterwards at debug only.
+func (g *Gateway) deleteServiceMessage(ctx context.Context, threadID, messageID int) {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: g.chatID, MessageID: messageID})
+		return translate(err)
+	})
+	attrs := []any{slog.Int("thread_id", threadID), slog.Int("message_id", messageID)}
+	switch {
+	case err == nil:
+		g.log.Debug("service message deleted", attrs...)
+	case errors.Is(err, context.Canceled):
+		g.log.Debug("service message not deleted, context done", attrs...)
+	case g.deleteWarned.CompareAndSwap(false, true):
+		g.log.Warn("service message not deleted: grant the bot the \"Delete messages\" right to keep topics free of edit notices",
+			append(attrs, slog.Any("err", err))...)
+	default:
+		g.log.Debug("service message not deleted", append(attrs, slog.Any("err", err))...)
+	}
+}
+
 // onMyChatMember reports whether the bot can still manage topics.
 func (g *Gateway) onMyChatMember(ctx context.Context, _ *bot.Bot, u *models.Update) {
 	g.emit(ctx, "rights_changed", 0, domain.RightsChanged{CanManageTopics: canManageTopics(u.MyChatMember.NewChatMember)})
@@ -94,6 +143,10 @@ func (g *Gateway) onMyChatMember(ctx context.Context, _ *bot.Bot, u *models.Upda
 
 func canManageTopics(m models.ChatMember) bool {
 	return m.Type == models.ChatMemberTypeAdministrator && m.Administrator != nil && m.Administrator.CanManageTopics
+}
+
+func canDeleteMessages(m models.ChatMember) bool {
+	return m.Type == models.ChatMemberTypeAdministrator && m.Administrator != nil && m.Administrator.CanDeleteMessages
 }
 
 // emit hands an event to the application without blocking past the update

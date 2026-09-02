@@ -156,7 +156,8 @@ func (d *Daemon) checkRights(ctx context.Context) error {
 		d.log.Warn("rights check failed, assuming ok", slog.String("err", err.Error()))
 		return nil
 	}
-	d.log.Info("telegram rights", slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin), slog.Bool("manage_topics", rights.CanManageTopics))
+	d.log.Info("telegram rights", slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin),
+		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages))
 	switch {
 	case !rights.IsForum:
 		d.reconciler.SetReadOnly(true)

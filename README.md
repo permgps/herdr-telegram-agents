@@ -60,8 +60,9 @@ Herdr then shows the **Telegram Agents** actions listed below and runs
    a `https://t.me/<bot>?start=setup` link.
 4. Open the link, press **Start** and tap **Choose group**. Telegram lists your
    forum groups and adds the bot to the one you pick as an administrator with
-   **Manage topics**. The person who picks the group becomes the operator.
-   Adding the bot to a forum group by hand with that right works as well.
+   **Manage topics** and **Delete messages**. The person who picks the group
+   becomes the operator. Adding the bot to a forum group by hand with those
+   rights works as well.
 5. Back in the popup confirm the group. The wizard saves `config.json` and
    starts the daemon. From now on the daemon starts automatically with Herdr
    while a configuration exists.
@@ -112,6 +113,10 @@ the Windows milestone.
   bot token is rejected, when another process polls the same bot, or when the
   bot is removed from the group. Losing **Manage topics** only pauses edits
   until the right is granted again.
+- Every status change makes Telegram post a "changed the topic icon" notice
+  into the topic. The daemon deletes its own notices right away, which needs
+  **Delete messages**; without that right they stay and the log says so once.
+  Topic creation notices cannot be deleted and remain.
 
 ## Logs and state
 

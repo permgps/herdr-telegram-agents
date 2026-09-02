@@ -65,7 +65,7 @@ func newHarness(t *testing.T) *harness {
 	})
 	rec := &sleepRecorder{}
 	q := telegram.NewQueue(log, telegram.QueueConfig{Sleep: rec.Sleep})
-	gw := telegram.NewGateway(b, telegram.Config{ChatID: testChatID, Operators: []int64{testOperator}, Icons: icons}, q, log)
+	gw := telegram.NewGateway(b, telegram.Config{ChatID: testChatID, Operators: []int64{testOperator}, Icons: icons, BotID: testBotID}, q, log)
 	ctx, cancel := context.WithCancel(ctxT(t))
 	done := make(chan struct{})
 	go func() {

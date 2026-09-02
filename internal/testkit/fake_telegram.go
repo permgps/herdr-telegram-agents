@@ -42,7 +42,7 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 		topics:   map[int]*domain.Topic{},
 		nextID:   100,
 		failNext: map[string]error{},
-		rights:   domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true},
+		rights:   domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true},
 		events:   make(chan domain.Event, 64),
 		log:      log,
 	}
