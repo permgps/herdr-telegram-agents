@@ -269,6 +269,10 @@ func (r *Reconciler) fail(ctx context.Context, key domain.Key, method string, er
 	case errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrBotUnauthorized), errors.Is(err, domain.ErrPollerConflict):
 		r.log.Error("fatal telegram error", attrs...)
 		return fmt.Errorf("%s: %w", method, err)
+	case errors.Is(err, domain.ErrChatMigrated):
+		// The daemon rewrites the config; the entry is retried afterwards.
+		r.log.Warn("chat migrated", attrs...)
+		return fmt.Errorf("%s: %w", method, err)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("%s: %w", method, err)
 	default:

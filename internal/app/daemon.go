@@ -1,0 +1,299 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/permgps/herdr-telegram-agents/internal/domain"
+)
+
+const (
+	// socketGrace is how long the Herdr socket may be unreachable before
+	// the daemon exits.
+	socketGrace = 60 * time.Second
+	// healthInterval is how often the daemon checks socket reachability.
+	healthInterval = 5 * time.Second
+	// flushTimeout bounds the final edits on shutdown.
+	flushTimeout = 5 * time.Second
+	// notifyTitle is the title of every Herdr notification the daemon shows.
+	notifyTitle = "Telegram Agents"
+)
+
+// Daemon is the event loop: registry events go to the reconciler, debounced
+// edits fire, Telegram membership changes pause or resume writes, resync
+// requests replay the desired state, and socket health decides when to
+// give up.
+type Daemon struct {
+	cfg        domain.Config
+	herdr      domain.HerdrGateway
+	tg         domain.TelegramGateway
+	registry   *Registry
+	reconciler *Reconciler
+	configs    domain.ConfigStore
+	clock      domain.Clock
+	log        *slog.Logger
+
+	SocketGrace    time.Duration
+	HealthInterval time.Duration
+
+	resync chan struct{}
+}
+
+// NewDaemon wires the loop. The registry and reconciler are built by the
+// caller so the composition root can share the clock and logger.
+func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
+	registry *Registry, reconciler *Reconciler, configs domain.ConfigStore, clock domain.Clock, log *slog.Logger) *Daemon {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Daemon{
+		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler,
+		configs: configs, clock: clock, log: log,
+		SocketGrace: socketGrace, HealthInterval: healthInterval,
+		resync: make(chan struct{}, 1),
+	}
+}
+
+// Resync asks the loop for a full reconcile. It never blocks.
+func (d *Daemon) Resync() {
+	select {
+	case d.resync <- struct{}{}:
+	default:
+	}
+}
+
+// Run executes the loop until ctx is done, the Herdr socket stays gone for
+// SocketGrace, or a fatal Telegram error occurs. A cancelled context with a
+// cause other than plain cancellation (the poller's fatal errors) is
+// returned as that cause.
+func (d *Daemon) Run(ctx context.Context) error {
+	start := d.clock.Now()
+	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle))
+
+	if err := d.checkRights(ctx); err != nil {
+		return err
+	}
+	if _, err := d.registry.Snapshot(ctx); err != nil {
+		d.log.Warn("initial agent snapshot failed, will retry", slog.String("err", err.Error()))
+	}
+	if err := d.reconciler.Reconcile(ctx, d.registry.Live()); err != nil {
+		if err := d.handleErr(ctx, err); err != nil {
+			return err
+		}
+	}
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	events := make(chan AgentEvent, 256)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = d.registry.Run(loopCtx, events)
+	}()
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	health := d.clock.After(d.HealthInterval)
+	for {
+		select {
+		case <-ctx.Done():
+			d.shutdown()
+			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+				d.log.Info("daemon exit", slog.String("reason", cause.Error()))
+				return cause
+			}
+			d.log.Info("daemon exit", slog.String("reason", "stopped"))
+			return nil
+		case ev := <-events:
+			if err := d.reconciler.Handle(ctx, ev); err != nil {
+				if err := d.handleErr(ctx, err); err != nil {
+					return err
+				}
+			}
+		case key := <-d.reconciler.Due():
+			if err := d.reconciler.Fire(ctx, key); err != nil {
+				if err := d.handleErr(ctx, err); err != nil {
+					return err
+				}
+			}
+		case raw, ok := <-d.tg.Events():
+			if !ok {
+				continue
+			}
+			if err := d.onTelegramEvent(ctx, raw); err != nil {
+				return err
+			}
+		case <-d.resync:
+			d.log.Info("resync requested")
+			if err := d.replay(ctx); err != nil {
+				return err
+			}
+		case <-health:
+			health = d.clock.After(d.HealthInterval)
+			if gone := d.socketGone(start); gone {
+				d.shutdown()
+				d.log.Info("daemon exit", slog.String("reason", "herdr socket gone"))
+				return nil
+			}
+		}
+	}
+}
+
+// checkRights verifies the bot's standing once at start. Missing rights
+// put the reconciler in read-only mode; fatal errors end the daemon.
+func (d *Daemon) checkRights(ctx context.Context) error {
+	rights, err := d.tg.Rights(ctx)
+	if err != nil {
+		if isFatal(err) {
+			return d.fatal(ctx, err)
+		}
+		d.log.Warn("rights check failed, assuming ok", slog.String("err", err.Error()))
+		return nil
+	}
+	d.log.Info("telegram rights", slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin), slog.Bool("manage_topics", rights.CanManageTopics))
+	switch {
+	case !rights.IsForum:
+		d.reconciler.SetReadOnly(true)
+		d.notify(ctx, fmt.Sprintf("%q is not a forum group: enable Topics in the group settings", d.cfg.ChatTitle))
+	case !rights.CanManageTopics:
+		d.reconciler.SetReadOnly(true)
+		d.notify(ctx, fmt.Sprintf("the bot cannot manage topics in %q: grant it the \"Manage topics\" right", d.cfg.ChatTitle))
+	}
+	return nil
+}
+
+func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
+	switch ev := raw.(type) {
+	case domain.RightsChanged:
+		d.log.Info("telegram rights changed", slog.Bool("manage_topics", ev.CanManageTopics))
+		if !ev.CanManageTopics {
+			d.reconciler.SetReadOnly(true)
+			d.notify(ctx, fmt.Sprintf("the bot lost the \"Manage topics\" right in %q; topics are not updated until it is granted again", d.cfg.ChatTitle))
+			return nil
+		}
+		if d.reconciler.ReadOnly() {
+			d.reconciler.SetReadOnly(false)
+			return d.replay(ctx)
+		}
+		return nil
+	default:
+		d.log.Debug("telegram event ignored in this milestone", slog.String("type", fmt.Sprintf("%T", raw)))
+		return nil
+	}
+}
+
+// replay takes a fresh snapshot, flushes pending edits and runs the drift
+// pass, so the mapping matches Herdr again.
+func (d *Daemon) replay(ctx context.Context) error {
+	evs, err := d.registry.Snapshot(ctx)
+	if err != nil {
+		d.log.Warn("snapshot for replay failed", slog.String("err", err.Error()))
+	}
+	for _, ev := range evs {
+		if err := d.reconciler.Handle(ctx, ev); err != nil {
+			if err := d.handleErr(ctx, err); err != nil {
+				return err
+			}
+		}
+	}
+	if err := d.reconciler.Flush(ctx); err != nil {
+		if err := d.handleErr(ctx, err); err != nil {
+			return err
+		}
+	}
+	if err := d.reconciler.Reconcile(ctx, d.registry.Live()); err != nil {
+		return d.handleErr(ctx, err)
+	}
+	return nil
+}
+
+// handleErr deals with errors the reconciler could not absorb: chat
+// migration is recorded and survived, everything else is fatal.
+func (d *Daemon) handleErr(ctx context.Context, err error) error {
+	var migrated *domain.ChatMigratedError
+	if errors.As(err, &migrated) {
+		d.log.Warn("chat migrated, updating config; restart the daemon to use the new id",
+			slog.Int64("old", d.cfg.ChatID), slog.Int64("new", migrated.NewChatID))
+		d.cfg.ChatID = migrated.NewChatID
+		if err := d.configs.Save(ctx, d.cfg); err != nil {
+			d.log.Error("save migrated config failed", slog.String("err", err.Error()))
+		}
+		d.notify(ctx, "the Telegram group id changed; restart Telegram Agents to continue")
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return d.fatal(ctx, err)
+}
+
+// fatal notifies the user with a one-line reason and returns the error.
+func (d *Daemon) fatal(ctx context.Context, err error) error {
+	var reason string
+	switch {
+	case errors.Is(err, domain.ErrBotUnauthorized):
+		reason = "Telegram rejected the bot token. Run the setup action."
+	case errors.Is(err, domain.ErrPollerConflict):
+		reason = "another process is polling this bot. Stop it, then start Telegram Agents again."
+	case errors.Is(err, domain.ErrForbidden):
+		reason = fmt.Sprintf("the bot was removed from %q. Add it back as an administrator or run the setup action.", d.cfg.ChatTitle)
+	default:
+		reason = "stopped: " + err.Error()
+	}
+	d.log.Error("daemon fatal", slog.String("err", err.Error()))
+	d.notify(ctx, reason)
+	return err
+}
+
+func isFatal(err error) bool {
+	return errors.Is(err, domain.ErrBotUnauthorized) || errors.Is(err, domain.ErrPollerConflict) || errors.Is(err, domain.ErrForbidden)
+}
+
+// socketGone reports whether snapshots have been failing for longer than
+// the grace period. It also asks for a retry so recovery is noticed within
+// one health interval rather than one reconcile interval.
+func (d *Daemon) socketGone(start time.Time) bool {
+	h := d.registry.Health()
+	if h.LastErr == nil {
+		return false
+	}
+	since := h.LastOK
+	if since.IsZero() || since.Before(start) {
+		since = start
+	}
+	down := d.clock.Now().Sub(since)
+	d.log.Warn("herdr socket unreachable", slog.Int64("down_for_ms", down.Milliseconds()), slog.String("err", h.LastErr.Error()))
+	if down >= d.SocketGrace {
+		return true
+	}
+	d.registry.RequestSnapshot()
+	return false
+}
+
+// shutdown flushes pending edits with a bounded real-time budget. It uses
+// a fresh context because the daemon's own context is already done.
+func (d *Daemon) shutdown() {
+	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+	if err := d.reconciler.Flush(ctx); err != nil {
+		d.log.Warn("flush on shutdown failed", slog.String("err", err.Error()))
+	}
+}
+
+// notify shows a Herdr desktop notification; failures are only logged
+// because the socket may be the thing that is broken.
+func (d *Daemon) notify(ctx context.Context, body string) {
+	nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if err := d.herdr.Notify(nctx, notifyTitle, body, domain.NotifySoundDefault); err != nil {
+		d.log.Warn("notification failed", slog.String("body", body), slog.String("err", err.Error()))
+		return
+	}
+	d.log.Info("notification shown", slog.String("body", body))
+}
