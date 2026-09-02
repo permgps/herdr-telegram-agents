@@ -26,12 +26,15 @@ const (
 // sequence of them means.
 //
 // Which fields are set depends on Kind:
-//   - PaneAgentDetected, PaneAgentStatusChanged, PaneUpdated: Agent (and
-//     PaneID, WorkspaceID, TabID copied from it).
-//   - PaneClosed: PaneID, WorkspaceID, TabID.
-//   - PaneExited: PaneID, WorkspaceID, TabID, FinalStatus, Released.
+//   - PaneAgentDetected: PaneID, WorkspaceID; Agent carries only Kind when
+//     Herdr names one; Released and FinalStatus say whether the agent was
+//     released rather than detected (Herdr reuses one event for both).
+//   - PaneAgentStatusChanged: PaneID, WorkspaceID; Agent carries Kind,
+//     Status and Title (no TerminalID: the wire event omits it).
+//   - PaneUpdated: full Agent, plus PaneID, WorkspaceID, TabID from it.
+//   - PaneClosed, PaneExited: PaneID, WorkspaceID.
 //   - TabRenamed: TabID, Label.
-//   - StreamReset: nothing.
+//   - StreamReset: nothing; the stream reconnected and events may be lost.
 type HerdrEvent struct {
 	Kind        HerdrEventKind
 	PaneID      string
