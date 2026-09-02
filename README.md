@@ -1,13 +1,13 @@
 # Telegram Agents for Herdr
 
-> One Telegram forum topic per live Herdr agent: status in the topic name and icon, messages both ways.
+> One Telegram forum topic per live Herdr agent: status in the topic icon, messages both ways.
 
 A [Herdr](https://herdr.dev) plugin that mirrors the Herdr **Agents** panel into a
 Telegram forum supergroup. Every coding agent Herdr detects (Claude Code, Codex,
-Gemini, ...) gets its own topic; the topic name carries a status emoji, the topic
-icon follows the status, and messages written in a topic are delivered to the
-agent as prompts. The goal is a remote control surface for your agents from a
-phone, installed with one command and no extra toolchain.
+Gemini, ...) gets its own topic; the topic icon follows the status, the agent's
+questions land in the topic, and what you write there goes back to the agent.
+The goal is a remote control surface for your agents from a phone, installed
+with one command and no extra toolchain.
 
 ## Status
 
@@ -27,9 +27,15 @@ Early development. Done so far:
 - **Agent to topic sync** — one topic per agent, renamed on label or status change
   (debounced), closed with a 🏁 marker when the agent exits, drift healed on
   start and on `resync`.
+- **Herdr to Telegram messages** — the screen tail is posted when an agent gets
+  blocked (with a notification) or done (silently), `/screen` on demand.
+- **Telegram to Herdr control** — topic text becomes a prompt, short replies
+  answer dialogs, `/keys` `/focus` `/status` `/help`, rename and close a topic
+  to rename or mute the agent.
+- **General topic panel** — `/status` with links to every topic, `/help`, daemon
+  start / stop / rights notices.
 
-Not there yet: messages from agents into topics, prompts from topics back to
-agents, release binaries, Windows daemon control.
+Not there yet: release binaries, Windows daemon control.
 
 ## Requirements
 
@@ -117,6 +123,43 @@ the Windows milestone.
   into the topic. The daemon deletes its own notices right away, which needs
   **Delete messages**; without that right they stay and the log says so once.
   Topic creation notices cannot be deleted and remain.
+- Rename a topic by hand and the agent is renamed in Herdr (`agent.rename`):
+  the `<workspace> · ` prefix is optional, an empty or default remainder
+  clears the custom name, and the topic settles on the canonical form.
+- Close a topic by hand and the mirror goes quiet for that agent: no icon
+  edits, no screen posts, until you reopen it. Reopening refreshes name and
+  icon; if the agent exited meanwhile the topic gets 🏁 and is closed again.
+
+## Talking to agents
+
+When an agent turns **blocked** (a question or an approval dialog) the daemon
+waits 1.5 s and posts the last 25 lines of the screen into its topic with a
+notification. When it turns **done** the last 12 lines are posted silently. A
+screen identical to the previous post for that agent is skipped. Agents that
+are already blocked when the daemon starts are posted too.
+
+Anything you write in a topic reaches the agent:
+
+| You write | The agent gets |
+|-----------|----------------|
+| plain text | typed as a prompt and submitted (`agent.prompt`) |
+| `y`, `n`, `yes`, `no`, `1`..`9`, `enter`, `ok`, `esc` while the agent is blocked | the matching key (`agent.send_keys`); in any other status these are prompts |
+| `/keys esc enter` | raw key names |
+| `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200) |
+| `/focus` | the pane is brought to the front in Herdr |
+| `/status` | `<emoji> <status> · <label> · pane <id>` |
+| `/help` | the command list |
+
+A 👍 reaction on your message means Herdr took it; a quoted `⚠️ ...` reply
+explains why it did not (agent gone, socket down). Messages in the topic of an
+exited agent get `agent has exited`. Only the configured group and the operator
+ids from setup are accepted; everything else is dropped and logged.
+
+The **General** topic is the control panel: `/status` lists every live agent
+with its status emoji and a link to its topic, `/help` shows the commands, and
+the daemon posts silent notices there when it starts, stops, loses or regains
+the **Manage topics** right, or gives up on the Herdr socket. Other messages in
+General are ignored. The commands appear in Telegram's `/` menu for the group.
 
 ## Logs and state
 
@@ -154,8 +197,8 @@ The socket path comes from `HERDR_SOCKET_PATH` and falls back to
 | Path | Purpose |
 |------|---------|
 | `cmd/herdr-tg/` | Binary entry point |
-| `internal/domain/` | Agents, statuses, topics, mapping, config, events and the ports (standard library only) |
-| `internal/app/` | Use cases: agent registry, reconciler, debounce, setup wizard, supervisor, daemon loop |
+| `internal/domain/` | Agents, statuses, topics, mapping, commands, config, events and the ports (standard library only) |
+| `internal/app/` | Use cases: agent registry, reconciler, debounce, bridge (screens out, commands in), setup wizard, supervisor, daemon loop |
 | `internal/adapters/herdr/` | Herdr socket adapter: dialers, one-shot calls, event stream, `herdr` CLI runner |
 | `internal/adapters/telegram/` | Telegram Bot API adapter: bot, queue, formatting, icons, inbound updates, setup probe |
 | `internal/adapters/state/` | `config.json`, `mapping.json` and pid file stores |
