@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,25 +20,46 @@ const cliTimeout = 10 * time.Second
 // HERDR_BIN_PATH. The socket has no call for opening plugin panes, so this
 // is the only way an action can show a pane.
 type CLI struct {
-	bin string
-	log *slog.Logger
+	bin  string
+	root string
+	path string
+	log  *slog.Logger
 }
 
 var _ domain.PaneOpener = (*CLI)(nil)
 
-// NewCLI returns a runner for the herdr binary at bin.
-func NewCLI(bin string, log *slog.Logger) *CLI {
+// NewCLI returns a runner for the herdr binary at bin. root is the plugin
+// checkout (HERDR_PLUGIN_ROOT) and path the caller's PATH; both may be
+// empty, in which case panes are opened with Herdr's own environment.
+func NewCLI(bin, root, path string, log *slog.Logger) *CLI {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &CLI{bin: bin, log: log}
+	return &CLI{bin: bin, root: root, path: path, log: log}
 }
 
 // OpenPane runs `herdr plugin pane open --plugin <id> --entrypoint <pane>`.
 // The manifest decides placement and size; stderr becomes the error text.
+//
+// Herdr 0.7.5 spawns pane commands like a terminal program: command[0] is
+// looked up in PATH, not against the plugin directory the way actions and
+// hooks are (verified 2026-09-02: "No viable candidates found in PATH").
+// The pane inherits the PATH given here, so the plugin root goes first and
+// the manifest's relative "bin/herdr-tg" resolves to <root>/bin/herdr-tg.
 func (c *CLI) OpenPane(ctx context.Context, pluginID, entrypoint string) error {
 	args := []string{"plugin", "pane", "open", "--plugin", pluginID, "--entrypoint", entrypoint}
+	if c.root != "" {
+		args = append(args, "--env", "PATH="+panePath(c.root, c.path))
+	}
 	return c.run(ctx, args)
+}
+
+// panePath prepends root to a PATH list.
+func panePath(root, path string) string {
+	if path == "" {
+		return root
+	}
+	return root + string(os.PathListSeparator) + path
 }
 
 func (c *CLI) run(ctx context.Context, args []string) error {

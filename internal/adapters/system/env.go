@@ -29,6 +29,9 @@ type PluginEnv struct {
 	BinPath string
 	// LogLevel is the raw LOG_LEVEL value, empty when unset.
 	LogLevel string
+	// Path is the process PATH, forwarded to plugin panes so that the
+	// manifest's relative command resolves (see herdr.CLI.OpenPane).
+	Path string
 	// InsideHerdr is true when HERDR_ENV=1.
 	InsideHerdr bool
 }
@@ -56,6 +59,7 @@ func ReadEnvFrom(lookup Lookup, home func() (string, error)) (PluginEnv, error) 
 		StateDir:    get("HERDR_PLUGIN_STATE_DIR"),
 		BinPath:     get("HERDR_BIN_PATH"),
 		LogLevel:    get("LOG_LEVEL"),
+		Path:        get("PATH"),
 		InsideHerdr: get("HERDR_ENV") == "1",
 	}
 	if env.PluginID == "" {

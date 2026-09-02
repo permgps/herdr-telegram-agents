@@ -101,7 +101,7 @@ func Notify(ctx context.Context, env PluginEnv, body string, log *slog.Logger) e
 
 // PaneOpener returns the herdr CLI runner used to open manifest panes.
 func PaneOpener(env PluginEnv, log *slog.Logger) domain.PaneOpener {
-	return herdr.NewCLI(env.BinPath, log)
+	return herdr.NewCLI(env.BinPath, env.Root, env.Path, log)
 }
 
 // NewPidFile returns the daemon pid file with process liveness checks.

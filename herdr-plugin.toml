@@ -55,6 +55,8 @@ command = ["bin/herdr-tg", "action", "logs"]
 
 # Interactive setup wizard; opened by the setup action through
 # `herdr plugin pane open --plugin permgps.telegram-agents --entrypoint setup`.
+# Pane commands are looked up in PATH rather than the plugin directory
+# (Herdr 0.7.5), so the action passes --env PATH=<plugin root>:$PATH.
 [[panes]]
 id = "setup"
 title = "Telegram Agents setup"

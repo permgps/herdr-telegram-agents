@@ -28,13 +28,14 @@ func TestReadEnvFromFullSet(t *testing.T) {
 		"HERDR_BIN_PATH":          "/usr/local/bin/herdr",
 		"HERDR_ENV":               "1",
 		"LOG_LEVEL":               "debug",
+		"PATH":                    "/usr/bin",
 	}), home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := system.PluginEnv{
 		PluginID: "x.y", Root: "/root", ConfigDir: "/cfg", StateDir: "/state",
-		SocketPath: "/tmp/h.sock", BinPath: "/usr/local/bin/herdr", LogLevel: "debug", InsideHerdr: true,
+		SocketPath: "/tmp/h.sock", BinPath: "/usr/local/bin/herdr", LogLevel: "debug", Path: "/usr/bin", InsideHerdr: true,
 	}
 	if env != want {
 		t.Fatalf("env = %+v\nwant %+v", env, want)
