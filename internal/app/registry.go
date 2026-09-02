@@ -177,7 +177,7 @@ func (r *Registry) Apply(ev domain.HerdrEvent) (events []AgentEvent, structural 
 		return r.applyStatus(ev)
 	case domain.PaneUpdated:
 		return r.applyUpdate(ev)
-	case domain.StreamReset, domain.PaneAgentDetected, domain.PaneClosed, domain.PaneExited, domain.TabRenamed:
+	case domain.StreamReset, domain.PaneAgentDetected, domain.PaneClosed, domain.PaneExited, domain.TabRenamed, domain.WorkspaceRenamed:
 		return nil, true
 	default:
 		return nil, false
@@ -215,6 +215,14 @@ func (r *Registry) applyUpdate(ev domain.HerdrEvent) ([]AgentEvent, bool) {
 		// New key (new agent, or a replacement in a known pane): let the
 		// snapshot introduce it so the old key is retired in the same pass.
 		return nil, true
+	}
+	// Pane events carry no workspace or tab labels; keep the ones the last
+	// snapshot resolved so the label does not flap between event and pass.
+	if a.WorkspaceLabel == "" {
+		a.WorkspaceLabel = old.WorkspaceLabel
+	}
+	if a.TabLabel == "" {
+		a.TabLabel = old.TabLabel
 	}
 	r.agents[a.Key] = a
 	if !differs(old, a) {

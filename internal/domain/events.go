@@ -16,6 +16,7 @@ const (
 	PaneExited             HerdrEventKind = "pane.exited"
 	PaneUpdated            HerdrEventKind = "pane.updated"
 	TabRenamed             HerdrEventKind = "tab.renamed"
+	WorkspaceRenamed       HerdrEventKind = "workspace.renamed"
 	// StreamReset is synthesised by the adapter when the subscription
 	// connection drops and is re-established; consumers should reconcile.
 	StreamReset HerdrEventKind = "stream.reset"
@@ -34,6 +35,7 @@ const (
 //   - PaneUpdated: full Agent, plus PaneID, WorkspaceID, TabID from it.
 //   - PaneClosed, PaneExited: PaneID, WorkspaceID.
 //   - TabRenamed: TabID, Label.
+//   - WorkspaceRenamed: WorkspaceID, Label.
 //   - StreamReset: nothing; the stream reconnected and events may be lost.
 type HerdrEvent struct {
 	Kind        HerdrEventKind

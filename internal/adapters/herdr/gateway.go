@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -112,15 +113,40 @@ func (g *Gateway) WatchPanes(_ context.Context, paneIDs []string) error {
 	return nil
 }
 
-// ListAgents returns every agent Herdr currently tracks.
+// ListAgents returns every agent Herdr currently tracks, with the labels of
+// its workspace and tab resolved from workspace.list and tab.list (AgentInfo
+// carries only ids). A failed label lookup fails the whole listing so a
+// pass never sees agents without labels and renames topics back and forth.
 func (g *Gateway) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 	var res agentListResult
 	if err := g.call(ctx, "agent.list", "", nil, &res); err != nil {
 		return nil, err
 	}
+	if len(res.Agents) == 0 {
+		return []domain.Agent{}, nil
+	}
+	var wsRes workspaceListResult
+	if err := g.call(ctx, "workspace.list", "", nil, &wsRes); err != nil {
+		return nil, err
+	}
+	var tabRes tabListResult
+	if err := g.call(ctx, "tab.list", "", nil, &tabRes); err != nil {
+		return nil, err
+	}
+	wsLabel := make(map[string]string, len(wsRes.Workspaces))
+	for _, w := range wsRes.Workspaces {
+		wsLabel[w.WorkspaceID] = strings.TrimSpace(w.Label)
+	}
+	tabLabel := make(map[string]string, len(tabRes.Tabs))
+	for _, t := range tabRes.Tabs {
+		tabLabel[t.TabID] = strings.TrimSpace(t.Label)
+	}
 	agents := make([]domain.Agent, 0, len(res.Agents))
 	for _, a := range res.Agents {
-		agents = append(agents, toDomainAgent(a))
+		d := toDomainAgent(a)
+		d.WorkspaceLabel = wsLabel[d.WorkspaceID]
+		d.TabLabel = tabLabel[d.TabID]
+		agents = append(agents, d)
 	}
 	return agents, nil
 }

@@ -56,6 +56,7 @@ var globalKinds = []string{
 	"pane.exited",
 	"pane.updated",
 	"tab.renamed",
+	"workspace.renamed",
 }
 
 // subscribeTimeout bounds the wait for subscription_started after dialing.
@@ -401,6 +402,12 @@ func translateEvent(line []byte, log *slog.Logger) (domain.HerdrEvent, bool) {
 			return bad(log, kind, err)
 		}
 		return domain.HerdrEvent{Kind: domain.TabRenamed, TabID: d.TabID, Label: d.Label}, true
+	case "workspace_renamed":
+		var d workspaceRenamedData
+		if err := json.Unmarshal(env.Data, &d); err != nil {
+			return bad(log, kind, err)
+		}
+		return domain.HerdrEvent{Kind: domain.WorkspaceRenamed, WorkspaceID: d.WorkspaceID, Label: d.Label}, true
 	default:
 		log.Debug("herdr stream unknown event", slog.String("kind", env.Event))
 		return domain.HerdrEvent{}, false

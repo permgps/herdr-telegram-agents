@@ -50,8 +50,9 @@ func ParseKey(s string) (Key, bool) {
 }
 
 // Desired returns the topic name and status an agent should have right now.
+// The name carries no status marker; the status drives the topic icon.
 func Desired(a Agent) (string, Status) {
-	return DisplayName(a.Label(), a.Status), a.Status
+	return DisplayName(a.Label()), a.Status
 }
 
 // TopicFor returns the entry for the key, if any.
@@ -83,7 +84,10 @@ func (m *Mapping) Diff(k Key, a Agent) (TopicPatch, bool) {
 	name, status := Desired(a)
 	var p TopicPatch
 	if name != e.Name {
-		p.Name = &name
+		// A rename re-sends the icon in the same call: it costs nothing
+		// extra and heals topics written by older releases, whose stored
+		// status may match while the icon on Telegram does not.
+		p.Name, p.Status = &name, &status
 	}
 	if status != e.Status {
 		p.Status = &status
@@ -106,23 +110,13 @@ func (m *Mapping) Apply(k Key, p TopicPatch, now time.Time) {
 	e.UpdatedAt = now
 }
 
-// ExitedName returns the topic name to write when the agent behind the key
-// exits: the stored label with the exited prefix.
-func (m *Mapping) ExitedName(k Key) (string, bool) {
-	e, ok := m.Topics[k.String()]
-	if !ok {
-		return "", false
-	}
-	return DisplayName(e.Label(), StatusExited), true
-}
-
-// MarkExited records that the exited name was written to Telegram.
+// MarkExited records that the exited icon was written to Telegram. The
+// name stays as it was.
 func (m *Mapping) MarkExited(k Key, now time.Time) {
 	e, ok := m.Topics[k.String()]
 	if !ok {
 		return
 	}
-	e.Name = DisplayName(e.Label(), StatusExited)
 	e.Status = StatusExited
 	e.UpdatedAt = now
 }

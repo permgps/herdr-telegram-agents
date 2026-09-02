@@ -25,6 +25,7 @@ type Reconciler struct {
 	deb      *debouncer
 	agents   map[domain.Key]domain.Agent // last known agent per key, for fire-time diffs
 	readOnly bool
+	force    bool // set by Resync for the duration of one pass
 }
 
 // NewReconciler wires the reconciler around a loaded mapping.
@@ -114,6 +115,17 @@ func (r *Reconciler) Flush(ctx context.Context) error {
 // Reconcile replays the desired state for the live agents: duplicates and
 // orphans are cleaned, missing topics created, drifted names fixed,
 // unclosed exited topics closed, old entries pruned. It is idempotent.
+// Resync is Reconcile with every live topic rewritten: name and icon are
+// sent again even when the mapping thinks they match. That heals edits
+// made by hand in Telegram and icon changes between releases, which the
+// mapping cannot see because it stores statuses, not emoji ids. It is the
+// resync action and costs one editForumTopic per live topic.
+func (r *Reconciler) Resync(ctx context.Context, live []domain.Agent) error {
+	r.force = true
+	defer func() { r.force = false }()
+	return r.Reconcile(ctx, live)
+}
+
 func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 	if r.readOnly {
 		r.log.Info("reconcile skipped, writes paused", slog.Int("agents", len(live)))
@@ -194,6 +206,10 @@ func (r *Reconciler) edit(ctx context.Context, key domain.Key) error {
 		return r.create(ctx, a)
 	}
 	patch, changed := r.mapping.Diff(key, a)
+	if r.force && entry.Status.Live() {
+		name, status := domain.Desired(a)
+		patch, changed = domain.TopicPatch{Name: &name, Status: &status}, true
+	}
 	if !changed {
 		return nil
 	}
@@ -223,9 +239,8 @@ func (r *Reconciler) exit(ctx context.Context, key domain.Key) error {
 		return nil
 	}
 	if entry.Status.Live() {
-		name, _ := r.mapping.ExitedName(key)
 		status := domain.StatusExited
-		if err := r.tg.EditTopic(ctx, entry.ThreadID, domain.TopicPatch{Name: &name, Status: &status}); err != nil {
+		if err := r.tg.EditTopic(ctx, entry.ThreadID, domain.TopicPatch{Status: &status}); err != nil {
 			return r.fail(ctx, key, "editForumTopic", err)
 		}
 		r.mapping.MarkExited(key, r.clock.Now())

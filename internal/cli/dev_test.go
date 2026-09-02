@@ -45,6 +45,16 @@ func newDevServer(t *testing.T) *testkit.NDJSONServer {
 	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
 		return json.RawMessage(devAgentList), nil
 	})
+	s.Handle("workspace.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "workspace_list", "workspaces": []map[string]any{
+			{"workspace_id": "w3", "label": "V3Jobs"}, {"workspace_id": "w1", "label": "Build"},
+		}}, nil
+	})
+	s.Handle("tab.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "tab_list", "tabs": []map[string]any{
+			{"tab_id": "w3:t2", "workspace_id": "w3", "label": "claude"}, {"tab_id": "w1:t1", "workspace_id": "w1", "label": "1"},
+		}}, nil
+	})
 	socketPathOverride = s.Path()
 	t.Cleanup(func() { socketPathOverride = "" })
 	return s
@@ -80,8 +90,8 @@ func TestDevAgents(t *testing.T) {
 	if got := Run([]string{"dev", "agents"}, "x", &stdout, &stderr); got != exitOK {
 		t.Fatalf("exit = %d, stderr = %s", got, stderr.String())
 	}
-	want := "w3:p2 idle Review (claude, term term_1)\n" +
-		"w1:p1 working builder (codex, term term_2)\n"
+	want := "w3:p2 idle V3Jobs · claude (claude, term term_1)\n" +
+		"w1:p1 working Build · builder (codex, term term_2)\n"
 	if stdout.String() != want {
 		t.Fatalf("stdout =\n%s\nwant\n%s", stdout.String(), want)
 	}

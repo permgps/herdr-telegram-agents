@@ -41,7 +41,7 @@ func TestMappingLinkStoresDesiredOrConfirmedName(t *testing.T) {
 	m := domain.NewMapping(-1)
 	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
 	e := m.Link(a.Key, domain.Topic{ThreadID: 5}, a, t0)
-	if e.Name != "⚙️ reviewer" || e.Status != domain.StatusWorking || e.ThreadID != 5 {
+	if e.Name != "reviewer" || e.Status != domain.StatusWorking || e.ThreadID != 5 {
 		t.Fatalf("entry = %+v", *e)
 	}
 	e = m.Link(a.Key, domain.Topic{ThreadID: 6, Name: "⚙️ rev"}, a, t0)
@@ -59,8 +59,9 @@ func TestMappingDiff(t *testing.T) {
 		wantStatus bool
 	}{
 		{"no change", agent("p1", "t1", "reviewer", domain.StatusWorking), false, false, false},
-		{"label change", agent("p1", "t1", "fixer", domain.StatusWorking), true, true, false},
-		{"status change", agent("p1", "t1", "reviewer", domain.StatusIdle), true, true, true},
+		{"label change", agent("p1", "t1", "fixer", domain.StatusWorking), true, true, true},
+		{"status change", agent("p1", "t1", "reviewer", domain.StatusIdle), true, false, true},
+		{"both", agent("p1", "t1", "fixer", domain.StatusIdle), true, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,12 +93,8 @@ func TestMappingApplyAndExit(t *testing.T) {
 		t.Fatalf("after Apply: %+v", *e)
 	}
 
-	exited, ok := m.ExitedName(a.Key)
-	if !ok || exited != "🏁 reviewer" {
-		t.Fatalf("ExitedName = %q,%v", exited, ok)
-	}
 	m.MarkExited(a.Key, t0.Add(2*time.Second))
-	if e.Status != domain.StatusExited || e.Name != "🏁 reviewer" {
+	if e.Status != domain.StatusExited || e.Name != name {
 		t.Fatalf("after MarkExited: %+v", *e)
 	}
 	if _, changed := m.Diff(a.Key, agent("p1", "t1", "reviewer", domain.StatusWorking)); changed {

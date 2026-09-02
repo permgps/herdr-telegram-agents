@@ -58,6 +58,12 @@ func TestTranslate(t *testing.T) {
 			notIs: []error{domain.ErrTopicGone},
 		},
 		{
+			name:  "400 TOPIC_NOT_MODIFIED",
+			in:    lib(bot.ErrorBadRequest, "Bad Request: TOPIC_NOT_MODIFIED"),
+			is:    []error{ErrTopicNotModified, bot.ErrorBadRequest},
+			notIs: []error{domain.ErrTopicGone, domain.ErrTopicClosed},
+		},
+		{
 			name:    "400 TOPIC_NAME_INVALID stays APIError",
 			in:      lib(bot.ErrorBadRequest, "Bad Request: TOPIC_NAME_INVALID"),
 			notIs:   []error{domain.ErrTopicGone, domain.ErrTopicClosed},

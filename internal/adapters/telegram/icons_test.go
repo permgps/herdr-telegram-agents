@@ -27,6 +27,9 @@ func TestIconSetFor(t *testing.T) {
 		nil,
 		sticker("🏁", "flag1"),
 		sticker("❔", "q1"),
+		sticker("☕️", "coffee"), // with U+FE0F, as the live pack sends it
+		sticker("👀", "eyes"),
+		sticker("🏆", "cup"),
 	})
 
 	tests := []struct {
@@ -35,10 +38,10 @@ func TestIconSetFor(t *testing.T) {
 		color  int
 	}{
 		{domain.StatusWorking, "bolt1", 7322096},
-		{domain.StatusIdle, "", 16766590},
+		{domain.StatusIdle, "coffee", 16766590},
 		{domain.StatusBlocked, "", 16478047},
-		{domain.StatusDone, "flag1", 9367192},
-		{domain.StatusUnknown, "q1", 13338331},
+		{domain.StatusDone, "cup", 9367192},
+		{domain.StatusUnknown, "eyes", 13338331},
 		{domain.StatusExited, "flag1", 13338331},
 		{domain.Status("weird"), "", 13338331},
 	}
@@ -78,7 +81,7 @@ func (f *fakeIconSource) GetForumTopicIconStickers(context.Context) ([]*models.S
 func TestLoadIcons(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	src := &fakeIconSource{stickers: []*models.Sticker{sticker("✅", "ok1"), sticker("🚀", "rocket")}}
+	src := &fakeIconSource{stickers: []*models.Sticker{sticker("🏆", "ok1"), sticker("🚀", "rocket")}}
 
 	set, err := LoadIcons(context.Background(), src, log)
 	if err != nil {

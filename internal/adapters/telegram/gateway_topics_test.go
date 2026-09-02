@@ -239,3 +239,16 @@ func TestTopicRetriesAfter429(t *testing.T) {
 		t.Errorf("retry not logged: %s", h.buf.String())
 	}
 }
+
+func TestEditTopicUnchangedIsSuccess(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editForumTopic", func(url.Values) apiReply { return errReply(400, "Bad Request: TOPIC_NOT_MODIFIED") })
+	name := "V3Jobs · claude"
+	st := domain.StatusIdle
+	if err := h.gw.EditTopic(h.ctx, 42, domain.TopicPatch{Name: &name, Status: &st}); err != nil {
+		t.Fatalf("EditTopic = %v, want nil for TOPIC_NOT_MODIFIED", err)
+	}
+	if n := len(h.api.callsOf("editForumTopic")); n != 1 {
+		t.Fatalf("editForumTopic calls = %d, want 1 (no retry)", n)
+	}
+}

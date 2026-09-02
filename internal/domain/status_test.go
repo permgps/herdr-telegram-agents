@@ -32,28 +32,6 @@ func TestParseStatus(t *testing.T) {
 	}
 }
 
-func TestStatusPrefix(t *testing.T) {
-	tests := []struct {
-		st   domain.Status
-		want string
-	}{
-		{domain.StatusWorking, "⚙️"},
-		{domain.StatusIdle, "💤"},
-		{domain.StatusBlocked, "❓"},
-		{domain.StatusDone, "✅"},
-		{domain.StatusUnknown, "❔"},
-		{domain.StatusExited, "🏁"},
-		{domain.Status("bogus"), "❔"},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.st), func(t *testing.T) {
-			if got := tt.st.Prefix(); got != tt.want {
-				t.Fatalf("Prefix() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestStatusLive(t *testing.T) {
 	for _, st := range []domain.Status{
 		domain.StatusWorking, domain.StatusIdle, domain.StatusBlocked,
@@ -88,35 +66,24 @@ func TestStatusReadyForInput(t *testing.T) {
 }
 
 func TestDisplayName(t *testing.T) {
-	t.Run("short label", func(t *testing.T) {
-		if got := domain.DisplayName("reviewer", domain.StatusWorking); got != "⚙️ reviewer" {
-			t.Fatalf("got %q", got)
-		}
-	})
-	t.Run("exited prefix", func(t *testing.T) {
-		if got := domain.DisplayName("reviewer", domain.StatusExited); got != "🏁 reviewer" {
+	t.Run("short label is untouched", func(t *testing.T) {
+		if got := domain.DisplayName("V3Jobs · claude"); got != "V3Jobs · claude" {
 			t.Fatalf("got %q", got)
 		}
 	})
 	t.Run("clamp counts runes", func(t *testing.T) {
 		label := strings.Repeat("ж", 200)
-		got := domain.DisplayName(label, domain.StatusIdle)
+		got := domain.DisplayName(label)
 		if n := utf8.RuneCountInString(got); n != 128 {
 			t.Fatalf("rune count = %d, want 128", n)
-		}
-		if !strings.HasPrefix(got, "💤 ж") {
-			t.Fatalf("prefix lost: %q", got[:16])
 		}
 		if !utf8.ValidString(got) {
 			t.Fatalf("clamp produced invalid UTF-8")
 		}
 	})
 	t.Run("exactly at limit is untouched", func(t *testing.T) {
-		// "⚙️" is two runes (gear + variation selector), plus a space.
-		prefixRunes := utf8.RuneCountInString(domain.StatusWorking.Prefix()) + 1
-		label := strings.Repeat("a", 128-prefixRunes)
-		got := domain.DisplayName(label, domain.StatusWorking)
-		if got != "⚙️ "+label {
+		label := strings.Repeat("a", 128)
+		if got := domain.DisplayName(label); got != label {
 			t.Fatalf("name changed: %q", got)
 		}
 	})
@@ -136,6 +103,7 @@ func TestStripPrefix(t *testing.T) {
 		{"🏁   spaced", "spaced"},
 		{"🏁reviewer", "reviewer"},
 		{"reviewer", "reviewer"},
+		{"V3Jobs · claude", "V3Jobs · claude"},
 		{"🚀 reviewer", "🚀 reviewer"},
 		{"", ""},
 	}
@@ -145,16 +113,5 @@ func TestStripPrefix(t *testing.T) {
 				t.Fatalf("StripPrefix(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestStripPrefixInvertsDisplayName(t *testing.T) {
-	for _, st := range []domain.Status{
-		domain.StatusWorking, domain.StatusIdle, domain.StatusBlocked,
-		domain.StatusDone, domain.StatusUnknown, domain.StatusExited,
-	} {
-		if got := domain.StripPrefix(domain.DisplayName("claude@ws", st)); got != "claude@ws" {
-			t.Errorf("%s: round trip gave %q", st, got)
-		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/go-telegram/bot/models"
 
@@ -20,15 +21,22 @@ type Icon struct {
 }
 
 // preferredEmoji lists, per status, the sticker emoji to look for in the
-// free topic-icon pack; the first one present wins. Whether each emoji
-// exists in the current pack is unverified, hence the runtime lookup.
+// free topic-icon pack; the first one present wins. Checked against the
+// live pack on 2026-09-02 (112 stickers): the first choice of every status
+// exists there. Emoji are compared without the U+FE0F presentation
+// selector, which the pack uses inconsistently ("⚡️" but "✅").
 var preferredEmoji = map[domain.Status][]string{
 	domain.StatusWorking: {"⚡", "🔥", "🚀"},
-	domain.StatusIdle:    {"💤", "😴", "⏸"},
-	domain.StatusBlocked: {"❓", "⚠️", "🛑"},
-	domain.StatusDone:    {"✅", "🏁", "🎉"},
-	domain.StatusUnknown: {"❔", "👀", "🤔"},
-	domain.StatusExited:  {"🏁", "🔚", "⛔"},
+	domain.StatusIdle:    {"✅", "☕", "⛅"}, // the green check Herdr shows for idle
+	domain.StatusBlocked: {"❓", "❗", "⁉"},
+	domain.StatusDone:    {"🏆", "🎉", "🎖"},
+	domain.StatusUnknown: {"👀", "🔮", "🤖"},
+	domain.StatusExited:  {"🏁", "⛔", "🔚"},
+}
+
+// emojiKey normalises an emoji for lookups by dropping variation selectors.
+func emojiKey(e string) string {
+	return strings.ReplaceAll(e, "\uFE0F", "")
 }
 
 // statusColor is the icon_color per status, from the six values Telegram
@@ -55,8 +63,9 @@ func NewIconSet(stickers []*models.Sticker) IconSet {
 		if s == nil || s.CustomEmojiID == "" || s.Emoji == "" {
 			continue
 		}
-		if _, dup := m[s.Emoji]; !dup {
-			m[s.Emoji] = s.CustomEmojiID
+		key := emojiKey(s.Emoji)
+		if _, dup := m[key]; !dup {
+			m[key] = s.CustomEmojiID
 		}
 	}
 	return IconSet{byEmoji: m}
@@ -70,7 +79,7 @@ func (s IconSet) For(status domain.Status) Icon {
 	}
 	icon := Icon{Color: color}
 	for _, e := range preferredEmoji[status] {
-		if id, ok := s.byEmoji[e]; ok {
+		if id, ok := s.byEmoji[emojiKey(e)]; ok {
 			icon.EmojiID = id
 			break
 		}

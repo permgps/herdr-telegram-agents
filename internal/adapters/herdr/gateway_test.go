@@ -75,6 +75,16 @@ func TestGatewayListAgents(t *testing.T) {
 	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
 		return json.RawMessage(agentListSample), nil
 	})
+	s.Handle("workspace.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "workspace_list", "workspaces": []map[string]any{
+			{"workspace_id": "w3", "label": " V3Jobs ", "number": 1}, {"workspace_id": "w9", "label": "Other"},
+		}}, nil
+	})
+	s.Handle("tab.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "tab_list", "tabs": []map[string]any{
+			{"tab_id": "w3:t2", "workspace_id": "w3", "label": "claude"}, {"tab_id": "w3:tA", "workspace_id": "w3", "label": "term"},
+		}}, nil
+	})
 	g := newGateway(t, s)
 
 	agents, err := g.ListAgents(ctxT(t))
@@ -84,11 +94,37 @@ func TestGatewayListAgents(t *testing.T) {
 	if len(agents) == 0 {
 		t.Fatal("no agents decoded")
 	}
-	if got := lastParams(t, s, "agent.list"); len(got) != 0 {
-		t.Fatalf("agent.list params = %v, want {}", got)
+	for _, m := range []string{"agent.list", "workspace.list", "tab.list"} {
+		if got := lastParams(t, s, m); len(got) != 0 {
+			t.Fatalf("%s params = %v, want {}", m, got)
+		}
 	}
-	if agents[0].PaneID == "" || agents[0].Status == "" {
-		t.Fatalf("agent not translated: %+v", agents[0])
+	a := agents[0]
+	if a.PaneID == "" || a.Status == "" {
+		t.Fatalf("agent not translated: %+v", a)
+	}
+	if a.WorkspaceLabel != "V3Jobs" || a.TabLabel != "claude" || a.Label() != "V3Jobs · claude" {
+		t.Fatalf("labels not resolved: %+v", a)
+	}
+
+	// A failed label lookup fails the listing instead of yielding bare ids.
+	s.Handle("tab.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "internal", Message: "boom"}
+	})
+	if _, err := g.ListAgents(ctxT(t)); err == nil {
+		t.Fatal("ListAgents should fail when tab.list fails")
+	}
+
+	// No agents: the label calls are skipped.
+	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "agent_list", "agents": []any{}}, nil
+	})
+	before := len(s.Requests())
+	if agents, err := g.ListAgents(ctxT(t)); err != nil || len(agents) != 0 {
+		t.Fatalf("empty ListAgents = %v, %v", agents, err)
+	}
+	if n := len(s.Requests()) - before; n != 1 {
+		t.Fatalf("requests for an empty list = %d, want 1", n)
 	}
 }
 

@@ -88,7 +88,7 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
 	f.start(t)
 	f.waitCalls(t, 2)
-	assertCalls(t, f.tg, "rights", "create:⚙️ reviewer:working")
+	assertCalls(t, f.tg, "rights", "create:reviewer:working")
 	if w := f.herdr.WatchCalls(); len(w) != 1 || w[0][0] != "p1" {
 		t.Fatalf("WatchPanes = %v", w)
 	}
@@ -99,7 +99,7 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 3 }) // registry tick, health, debounce
 	f.clock.Advance(3 * time.Second)
 	f.waitCalls(t, 3)
-	assertCalls(t, f.tg, "rights", "create:⚙️ reviewer:working", "edit:101:name=💤 reviewer,status=idle")
+	assertCalls(t, f.tg, "rights", "create:reviewer:working", "edit:101:status=idle")
 
 	if err := f.stop(t); err != nil {
 		t.Fatalf("Run = %v", err)
@@ -123,7 +123,7 @@ func TestDaemonRightsLostAndRegained(t *testing.T) {
 
 	f.tg.Push(domain.RightsChanged{CanManageTopics: true})
 	f.waitCalls(t, 2)
-	assertCalls(t, f.tg, "rights", "create:⚙️ a:working")
+	assertCalls(t, f.tg, "rights", "create:a:working")
 
 	f.tg.Push(domain.RightsChanged{CanManageTopics: false})
 	waitFor(t, "second notification", func() bool { return len(f.herdr.Notifications()) == 2 })
@@ -131,11 +131,11 @@ func TestDaemonRightsLostAndRegained(t *testing.T) {
 	f.daemon.Resync()
 	waitFor(t, "resync snapshot", func() bool { return f.herdr.ListCalls() >= 2 })
 	time.Sleep(20 * time.Millisecond)
-	assertCalls(t, f.tg, "rights", "create:⚙️ a:working")
+	assertCalls(t, f.tg, "rights", "create:a:working")
 
 	f.tg.Push(domain.RightsChanged{CanManageTopics: true})
 	f.waitCalls(t, 3)
-	assertCalls(t, f.tg, "rights", "create:⚙️ a:working", "create:💤 b:idle")
+	assertCalls(t, f.tg, "rights", "create:a:working", "create:b:idle")
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestDaemonResyncHealsDrift(t *testing.T) {
 	f.herdr.SetAgents(nil)
 	f.daemon.Resync()
 	f.waitCalls(t, 4)
-	assertCalls(t, f.tg, "rights", "create:⚙️ a:working", "edit:101:name=🏁 a,status=exited", "close:101")
+	assertCalls(t, f.tg, "rights", "create:a:working", "edit:101:status=exited", "close:101")
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestDaemonRecoversWhenSocketReturns(t *testing.T) {
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "a", domain.StatusWorking)})
 	f.clock.Advance(5 * time.Second)
 	f.waitCalls(t, 2)
-	assertCalls(t, f.tg, "rights", "create:⚙️ a:working")
+	assertCalls(t, f.tg, "rights", "create:a:working")
 	for range 20 {
 		f.clock.Advance(5 * time.Second)
 		time.Sleep(2 * time.Millisecond)
@@ -269,7 +269,7 @@ func TestDaemonChatMigration(t *testing.T) {
 	// The daemon keeps running and the next pass retries the create.
 	f.daemon.Resync()
 	f.waitCalls(t, 3)
-	assertCalls(t, f.tg, "rights", "create:⚙️ a:working", "create:⚙️ a:working")
+	assertCalls(t, f.tg, "rights", "create:a:working", "create:a:working")
 	if err := f.stop(t); err != nil {
 		t.Fatalf("Run = %v", err)
 	}

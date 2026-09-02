@@ -36,7 +36,7 @@ func TestMappingStoreRoundTrip(t *testing.T) {
 	}
 	e, ok := got.TopicFor(a.Key)
 	if !ok || got.ChatID != -1001 || got.Version != domain.MappingVersion ||
-		e.ThreadID != 42 || e.Name != "🏁 reviewer" || e.Status != domain.StatusExited || e.Closed || !e.UpdatedAt.Equal(at.Add(time.Minute)) {
+		e.ThreadID != 42 || e.Name != "reviewer" || e.Status != domain.StatusExited || e.Closed || !e.UpdatedAt.Equal(at.Add(time.Minute)) {
 		t.Fatalf("round trip: chat=%d version=%d entry=%+v ok=%v", got.ChatID, got.Version, e, ok)
 	}
 	raw, _ := os.ReadFile(s.Path())

@@ -68,6 +68,11 @@ func translate(err error) error {
 // badRequestPrefix is how the library renders a 400: "bad request, <desc>".
 var badRequestPrefix = bot.ErrorBadRequest.Error() + ", "
 
+// ErrTopicNotModified is Telegram's answer to an edit that changes nothing
+// (400 TOPIC_NOT_MODIFIED). The gateway treats it as success; it is exported
+// for tests only.
+var ErrTopicNotModified = errors.New("topic not modified")
+
 // description400 extracts Telegram's description from a wrapped 400.
 func description400(err error) string {
 	return strings.TrimPrefix(err.Error(), badRequestPrefix)
@@ -79,6 +84,8 @@ func description400(err error) string {
 // skips instead of deleting the mapping and recreating the topic in a loop.
 // Matching is case-insensitive on the description.
 //
+// Verified on a live forum group 2026-09-02: editForumTopic with the same
+// name and icon answers "Bad Request: TOPIC_NOT_MODIFIED".
 // TODO: 2026-09-02 — confirm the exact 400 descriptions for a deleted, a
 // closed, and an unknown message_thread_id on a real forum group and adjust
 // the matchers.
@@ -90,6 +97,8 @@ func classify400(err error) error {
 		return fmt.Errorf("%w: %w", domain.ErrTopicGone, err)
 	case strings.Contains(lower, "topic_closed"):
 		return fmt.Errorf("%w: %w", domain.ErrTopicClosed, err)
+	case strings.Contains(lower, "topic_not_modified"):
+		return fmt.Errorf("%w: %w", ErrTopicNotModified, err)
 	}
 	return &APIError{Code: 400, Description: desc, Err: err}
 }

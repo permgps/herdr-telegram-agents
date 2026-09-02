@@ -22,7 +22,9 @@ func (k Key) String() string {
 type Agent struct {
 	Key
 	WorkspaceID    string
+	WorkspaceLabel string
 	TabID          string
+	TabLabel       string
 	Kind           string
 	Name           string
 	Title          string
@@ -32,15 +34,34 @@ type Agent struct {
 	Focused        bool
 }
 
-// Label is the human-readable name used for the topic. The explicit agent
-// name wins, then the pane title, then a synthetic "<kind>@<workspace>" so a
-// topic always has something recognisable in it.
+// labelSeparator joins the workspace and the agent part of a label, the
+// way Herdr's Agents panel does.
+const labelSeparator = " · "
+
+// Label is the topic name for the agent, mirroring the row Herdr shows in
+// its Agents panel: "<workspace> · <agent>". The workspace part is the
+// workspace label, else its id. The agent part is the custom agent name,
+// else the tab label, else the agent kind. Missing parts are dropped, so a
+// bare agent name or a bare workspace is still a usable label. The terminal
+// title is deliberately not used: agents rewrite it for every task and a
+// topic name should stay put.
 func (a Agent) Label() string {
-	if a.Name != "" {
-		return a.Name
+	ws := a.WorkspaceLabel
+	if ws == "" {
+		ws = a.WorkspaceID
 	}
-	if a.Title != "" {
-		return a.Title
+	who := a.Name
+	if who == "" {
+		who = a.TabLabel
 	}
-	return a.Kind + "@" + a.WorkspaceID
+	if who == "" {
+		who = a.Kind
+	}
+	switch {
+	case ws == "":
+		return who
+	case who == "":
+		return ws
+	}
+	return ws + labelSeparator + who
 }

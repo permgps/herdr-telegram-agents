@@ -96,12 +96,16 @@ the Windows milestone.
 
 ## How the sync behaves
 
-- A topic is named `<status emoji> <agent label>`: ⚙️ working, 💤 idle,
-  ❓ blocked, ✅ done, ❔ unknown, 🏁 exited. The topic icon follows the status
-  when the group's icon pack has a matching emoji.
+- A topic is named like the row in Herdr's Agents panel: `<workspace> ·
+  <agent>`, where the agent part is the custom agent name, else the tab label,
+  else the agent kind (for example `V3Jobs · claude`). The terminal title is
+  not used, so a topic keeps its name while the agent works through tasks.
+- The status is the topic icon: ⚡ working, ✅ idle (the check Herdr shows),
+  ❓ blocked, 🏆 done, 👀 unknown, 🏁 exited. The icons come from Telegram's free topic-icon pack;
+  the colour is the fallback when the pack lacks an emoji.
 - Agents are identified by pane and terminal id; a topic is created the first
   time an agent appears and reused after a restart.
-- When an agent's pane closes the topic is renamed with 🏁 and closed. Topics
+- When an agent's pane closes the topic gets the 🏁 icon and is closed. Topics
   of agents that vanished while the daemon was down are closed on the next
   start.
 - The daemon exits by itself when the Herdr socket is gone for 60 s, when the

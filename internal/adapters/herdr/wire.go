@@ -70,6 +70,35 @@ type agentListResult struct {
 	Agents []agentInfo `json:"agents"`
 }
 
+// workspaceInfo is the slice of WorkspaceInfo the plugin reads: the label
+// shown in Herdr's sidebar.
+type workspaceInfo struct {
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+}
+
+type workspaceListResult struct {
+	Type       string          `json:"type"`
+	Workspaces []workspaceInfo `json:"workspaces"`
+}
+
+// tabInfo is the slice of TabInfo the plugin reads.
+type tabInfo struct {
+	TabID       string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+}
+
+type tabListResult struct {
+	Type string    `json:"type"`
+	Tabs []tabInfo `json:"tabs"`
+}
+
+type workspaceRenamedData struct {
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+}
+
 // paneReadResult is the `pane_read` result of agent.read.
 type paneReadResult struct {
 	Type string `json:"type"`

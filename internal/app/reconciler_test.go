@@ -72,12 +72,12 @@ func TestReconcilerCreatesOnceForRepeatedAppeared(t *testing.T) {
 	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
 	f.handle(t, app.AgentAppeared, a)
 	f.handle(t, app.AgentAppeared, a)
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working")
+	assertCalls(t, f.tg, "create:reviewer:working")
 	if f.store.SaveCount() != 1 {
 		t.Fatalf("saves = %d, want 1", f.store.SaveCount())
 	}
 	entry, ok := f.rec.Mapping().TopicFor(a.Key)
-	if !ok || entry.ThreadID != 101 || entry.Name != "⚙️ reviewer" {
+	if !ok || entry.ThreadID != 101 || entry.Name != "reviewer" {
 		t.Fatalf("entry = %+v, %v", entry, ok)
 	}
 }
@@ -89,9 +89,9 @@ func TestReconcilerDebouncesChanges(t *testing.T) {
 	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusIdle))
 	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusWorking))
 	f.handle(t, app.AgentChanged, agent("p1", "t1", "fixer", domain.StatusBlocked))
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working")
+	assertCalls(t, f.tg, "create:reviewer:working")
 	f.fireDue(t, 1)
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working", "edit:101:name=❓ fixer,status=blocked")
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:name=fixer,status=blocked")
 	if f.store.SaveCount() != 2 {
 		t.Fatalf("saves = %d, want 2", f.store.SaveCount())
 	}
@@ -100,7 +100,7 @@ func TestReconcilerDebouncesChanges(t *testing.T) {
 	f.handle(t, app.AgentChanged, agent("p1", "t1", "fixer", domain.StatusIdle))
 	f.handle(t, app.AgentChanged, agent("p1", "t1", "fixer", domain.StatusBlocked))
 	f.fireDue(t, 1)
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working", "edit:101:name=❓ fixer,status=blocked")
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:name=fixer,status=blocked")
 }
 
 func TestReconcilerGoneCancelsEditAndCloses(t *testing.T) {
@@ -109,7 +109,7 @@ func TestReconcilerGoneCancelsEditAndCloses(t *testing.T) {
 	f.handle(t, app.AgentAppeared, a)
 	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusIdle))
 	f.handle(t, app.AgentGone, agent("p1", "t1", "reviewer", domain.StatusExited))
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working", "edit:101:name=🏁 reviewer,status=exited", "close:101")
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:status=exited", "close:101")
 	f.clock.Advance(5 * time.Second)
 	select {
 	case key := <-f.rec.Due():
@@ -117,7 +117,7 @@ func TestReconcilerGoneCancelsEditAndCloses(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	entry, _ := f.rec.Mapping().TopicFor(a.Key)
-	if entry.Status != domain.StatusExited || !entry.Closed || entry.Name != "🏁 reviewer" {
+	if entry.Status != domain.StatusExited || !entry.Closed || entry.Name != "reviewer" {
 		t.Fatalf("entry = %+v", *entry)
 	}
 	if got, _ := f.tg.Topic(101); !got.Closed {
@@ -125,7 +125,7 @@ func TestReconcilerGoneCancelsEditAndCloses(t *testing.T) {
 	}
 	// A late status event for a gone key is ignored.
 	f.handle(t, app.AgentGone, agent("p1", "t1", "reviewer", domain.StatusExited))
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working", "edit:101:name=🏁 reviewer,status=exited", "close:101")
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:status=exited", "close:101")
 }
 
 func TestReconcilerRepairsFailedClose(t *testing.T) {
@@ -141,7 +141,7 @@ func TestReconcilerRepairsFailedClose(t *testing.T) {
 	if err := f.rec.Reconcile(f.ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working", "edit:101:name=🏁 reviewer,status=exited", "close:101", "close:101")
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:status=exited", "close:101", "close:101")
 	if !entry.Closed {
 		t.Fatal("close not repaired")
 	}
@@ -159,7 +159,7 @@ func TestReconcilerForgetsGoneTopicAndRecreates(t *testing.T) {
 	if err := f.rec.Reconcile(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)}); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working", "edit:101:name=💤 reviewer,status=idle", "create:💤 reviewer:idle")
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:status=idle", "create:reviewer:idle")
 	entry, _ := f.rec.Mapping().TopicFor(a.Key)
 	if entry.ThreadID != 102 {
 		t.Fatalf("recreated thread = %d", entry.ThreadID)
@@ -210,14 +210,14 @@ func TestReconcilerReadOnlyMode(t *testing.T) {
 	if err := f.rec.Reconcile(f.ctx, []domain.Agent{a}); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, f.tg, "create:⚙️ reviewer:working")
+	assertCalls(t, f.tg, "create:reviewer:working")
 }
 
 func TestReconcileHealsDrift(t *testing.T) {
 	f := newRec(t)
 	m := f.rec.Mapping()
 	mk := func(a domain.Agent, at time.Time) domain.Topic {
-		topic, err := f.tg.CreateTopic(f.ctx, domain.DisplayName(a.Label(), a.Status), a.Status)
+		topic, err := f.tg.CreateTopic(f.ctx, domain.DisplayName(a.Label()), a.Status)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -251,14 +251,14 @@ func TestReconcileHealsDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCalls(t, f.tg,
-		"edit:101:name=🏁 old,status=exited", "close:101",
-		"edit:102:name=💤 after,status=idle",
-		"create:❓ new:blocked",
+		"edit:101:status=exited", "close:101",
+		"edit:102:name=after,status=idle",
+		"create:new:blocked",
 	)
 	if e, _ := m.TopicFor(orphan.Key); e.ThreadID != orphanTopic.ThreadID || !e.Closed {
 		t.Fatalf("orphan entry = %+v", e)
 	}
-	if e, _ := m.TopicFor(drifted.Key); e.ThreadID != driftedTopic.ThreadID || e.Name != "💤 after" {
+	if e, _ := m.TopicFor(drifted.Key); e.ThreadID != driftedTopic.ThreadID || e.Name != "after" {
 		t.Fatalf("drifted entry = %+v", e)
 	}
 	if _, ok := m.TopicFor(stale.Key); ok {
@@ -287,12 +287,43 @@ func TestReconcilerFlushFiresPendingEdits(t *testing.T) {
 	if err := f.rec.Flush(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, f.tg, "create:⚙️ a:working", "create:⚙️ b:working",
-		"edit:101:name=💤 a,status=idle", "edit:102:name=✅ b,status=done")
+	assertCalls(t, f.tg, "create:a:working", "create:b:working",
+		"edit:101:status=idle", "edit:102:status=done")
 	f.clock.Advance(5 * time.Second)
 	select {
 	case key := <-f.rec.Due():
 		t.Fatalf("drained edit fired for %v", key)
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+func TestResyncRewritesEveryLiveTopic(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	gone := agent("p2", "t2", "old", domain.StatusIdle)
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{a, gone}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{a, gone}); err != nil {
+		t.Fatal(err)
+	}
+	// A plain pass with nothing changed writes nothing.
+	assertCalls(t, f.tg, "create:reviewer:working", "create:old:idle")
+
+	// Resync sends name and icon again for live topics only; the vanished
+	// agent takes the normal exit path.
+	if err := f.rec.Resync(f.ctx, []domain.Agent{a}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:working", "create:old:idle",
+		"edit:102:status=exited", "close:102",
+		"edit:101:name=reviewer,status=working")
+
+	// The force flag does not leak into the next plain pass.
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{a}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:working", "create:old:idle",
+		"edit:102:status=exited", "close:102",
+		"edit:101:name=reviewer,status=working")
 }

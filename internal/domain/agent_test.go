@@ -20,24 +20,44 @@ func TestAgentLabel(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "name wins over title",
-			agent: domain.Agent{Name: "reviewer", Title: "claude — fix tests", Kind: "claude", WorkspaceID: "ws1"},
+			name:  "workspace label and custom name",
+			agent: domain.Agent{Name: "reviewer", Title: "fix tests", Kind: "claude", WorkspaceID: "w1", WorkspaceLabel: "V3Jobs", TabID: "w1:t1", TabLabel: "claude"},
+			want:  "V3Jobs · reviewer",
+		},
+		{
+			name:  "tab label when no name",
+			agent: domain.Agent{Title: "fix tests", Kind: "claude", WorkspaceID: "w1", WorkspaceLabel: "V3Jobs", TabLabel: "1"},
+			want:  "V3Jobs · 1",
+		},
+		{
+			name:  "kind when no name or tab label",
+			agent: domain.Agent{Title: "fix tests", Kind: "claude", WorkspaceID: "w1", WorkspaceLabel: "V3Jobs"},
+			want:  "V3Jobs · claude",
+		},
+		{
+			name:  "workspace id when label unknown",
+			agent: domain.Agent{Kind: "codex", WorkspaceID: "ws1"},
+			want:  "ws1 · codex",
+		},
+		{
+			name:  "title is never used",
+			agent: domain.Agent{Title: "Подтверждение", Kind: "claude", WorkspaceID: "wE", WorkspaceLabel: "herdr_tg", TabLabel: "1"},
+			want:  "herdr_tg · 1",
+		},
+		{
+			name:  "bare name without workspace",
+			agent: domain.Agent{Name: "reviewer", Kind: "claude"},
 			want:  "reviewer",
 		},
 		{
-			name:  "title when name empty",
-			agent: domain.Agent{Title: "claude — fix tests", Kind: "claude", WorkspaceID: "ws1"},
-			want:  "claude — fix tests",
+			name:  "bare workspace",
+			agent: domain.Agent{WorkspaceLabel: "V3Jobs"},
+			want:  "V3Jobs",
 		},
 		{
-			name:  "kind at workspace as last resort",
-			agent: domain.Agent{Kind: "codex", WorkspaceID: "ws1"},
-			want:  "codex@ws1",
-		},
-		{
-			name:  "empty everything still yields a separator",
+			name:  "empty everything",
 			agent: domain.Agent{},
-			want:  "@",
+			want:  "",
 		},
 	}
 	for _, tt := range tests {

@@ -131,7 +131,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		case <-d.resync:
 			d.log.Info("resync requested")
-			if err := d.replay(ctx); err != nil {
+			if err := d.replay(ctx, true); err != nil {
 				return err
 			}
 		case <-health:
@@ -179,7 +179,7 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 		}
 		if d.reconciler.ReadOnly() {
 			d.reconciler.SetReadOnly(false)
-			return d.replay(ctx)
+			return d.replay(ctx, false)
 		}
 		return nil
 	default:
@@ -189,8 +189,9 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 }
 
 // replay takes a fresh snapshot, flushes pending edits and runs the drift
-// pass, so the mapping matches Herdr again.
-func (d *Daemon) replay(ctx context.Context) error {
+// pass, so the mapping matches Herdr again. force rewrites every live topic
+// (the resync action); the rights-regained path only heals what differs.
+func (d *Daemon) replay(ctx context.Context, force bool) error {
 	evs, err := d.registry.Snapshot(ctx)
 	if err != nil {
 		d.log.Warn("snapshot for replay failed", slog.String("err", err.Error()))
@@ -207,8 +208,15 @@ func (d *Daemon) replay(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := d.reconciler.Reconcile(ctx, d.registry.Live()); err != nil {
-		return d.handleErr(ctx, err)
+	live := d.registry.Live()
+	var passErr error
+	if force {
+		passErr = d.reconciler.Resync(ctx, live)
+	} else {
+		passErr = d.reconciler.Reconcile(ctx, live)
+	}
+	if passErr != nil {
+		return d.handleErr(ctx, passErr)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"unicode/utf8"
@@ -125,6 +126,12 @@ func (g *Gateway) EditTopic(ctx context.Context, threadID int, patch domain.Topi
 		_, err := g.api.EditForumTopic(ctx, params)
 		return translate(err)
 	})
+	if errors.Is(err, ErrTopicNotModified) {
+		// Telegram already holds this name and icon: the desired state is
+		// reached, which is all the caller wants to know.
+		g.log.Debug("editForumTopic already in place", slog.Int("thread_id", threadID))
+		err = nil
+	}
 	return g.finish("editForumTopic", err,
 		slog.Int("thread_id", threadID),
 		slog.Int("name_len", utf8.RuneCountInString(params.Name)),

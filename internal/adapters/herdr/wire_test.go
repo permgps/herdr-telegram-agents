@@ -49,7 +49,7 @@ func TestDecodeAgentListSample(t *testing.T) {
 	if a != want {
 		t.Fatalf("toDomainAgent =\n %+v\nwant\n %+v", a, want)
 	}
-	if a.Label() != "Объяснение первого пункта" {
+	if a.Label() != "w3 · claude" {
 		t.Fatalf("Label() = %q", a.Label())
 	}
 }
@@ -61,11 +61,9 @@ func TestToDomainAgentLabelPriority(t *testing.T) {
 		in   agentInfo
 		want string
 	}{
-		{"custom name wins", agentInfo{Name: &name, Title: "meta", TerminalTitle: "✳ term", Agent: "claude", WorkspaceID: "w1"}, "reviewer"},
-		{"metadata title next", agentInfo{Title: "meta", TerminalTitle: "✳ term", Agent: "claude", WorkspaceID: "w1"}, "meta"},
-		{"stripped terminal title next", agentInfo{TerminalTitle: "✳ term", TerminalTitleStripped: "term", Agent: "claude", WorkspaceID: "w1"}, "term"},
-		{"raw terminal title cleaned", agentInfo{TerminalTitle: "⠋ spinning", Agent: "claude", WorkspaceID: "w1"}, "spinning"},
-		{"fallback kind at workspace", agentInfo{Agent: "codex", WorkspaceID: "w7"}, "codex@w7"},
+		{"custom name wins", agentInfo{Name: &name, Title: "meta", TerminalTitle: "✳ term", Agent: "claude", WorkspaceID: "w1"}, "w1 · reviewer"},
+		{"titles are ignored", agentInfo{Title: "meta", TerminalTitle: "✳ term", TerminalTitleStripped: "term", Agent: "claude", WorkspaceID: "w1"}, "w1 · claude"},
+		{"kind at workspace", agentInfo{Agent: "codex", WorkspaceID: "w7"}, "w7 · codex"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -24,21 +24,10 @@ const (
 // displayNameMaxRunes is the Telegram limit for a forum topic name.
 const displayNameMaxRunes = 128
 
-// prefixes lists every status with its emoji prefix in a stable order.
-// The order matters for StripPrefix: longer prefixes are not a concern here
-// because every prefix is a single grapheme, but keeping the table explicit
-// avoids a map iteration in the hot path.
-var prefixes = [...]struct {
-	status Status
-	prefix string
-}{
-	{StatusWorking, "⚙️"},
-	{StatusIdle, "💤"},
-	{StatusBlocked, "❓"},
-	{StatusDone, "✅"},
-	{StatusUnknown, "❔"},
-	{StatusExited, "🏁"},
-}
+// legacyPrefixes are the status emoji older releases wrote in front of the
+// topic name. StripPrefix removes them so a mapping.json written before the
+// icon-only scheme still yields the bare label.
+var legacyPrefixes = [...]string{"⚙️", "💤", "❓", "✅", "❔", "🏁"}
 
 // ParseStatus maps a Herdr wire string to a Status. Anything that is not one
 // of the five wire values, including "exited", yields StatusUnknown: Herdr
@@ -53,18 +42,6 @@ func ParseStatus(s string) Status {
 	}
 }
 
-// Prefix returns the emoji placed before the agent label in the topic name.
-// An unrecognised Status gets the unknown prefix so a topic is never left
-// without a marker.
-func (s Status) Prefix() string {
-	for _, p := range prefixes {
-		if p.status == s {
-			return p.prefix
-		}
-	}
-	return StatusUnknown.Prefix()
-}
-
 // Live reports whether the agent behind this status is still running.
 // Only StatusExited is not live.
 func (s Status) Live() bool {
@@ -77,25 +54,26 @@ func (s Status) ReadyForInput() bool {
 	return s == StatusIdle || s == StatusDone
 }
 
-// DisplayName builds the topic name "<prefix> <label>" clamped to the
-// Telegram limit of 128 runes. The clamp counts runes, not bytes, so labels
-// with multi-byte characters keep as many characters as fit.
-func DisplayName(label string, st Status) string {
-	name := st.Prefix() + " " + label
-	if utf8.RuneCountInString(name) <= displayNameMaxRunes {
-		return name
+// DisplayName clamps a label to the Telegram limit of 128 runes for a forum
+// topic name. The status is not part of the name: it is shown by the topic
+// icon only (decided 2026-09-02 after a live run, where the emoji prefix
+// doubled the icon and 💤 rendered as noisy "zzz" glyphs). The clamp counts
+// runes, not bytes, so labels with multi-byte characters keep as many
+// characters as fit.
+func DisplayName(label string) string {
+	if utf8.RuneCountInString(label) <= displayNameMaxRunes {
+		return label
 	}
-	runes := []rune(name)
+	runes := []rune(label)
 	return string(runes[:displayNameMaxRunes])
 }
 
-// StripPrefix removes a known status prefix and the whitespace that follows
-// it. Names without a known prefix are returned unchanged. It is the inverse
-// of DisplayName for names that were not clamped.
+// StripPrefix removes a legacy status prefix and the whitespace that follows
+// it. Names without one are returned unchanged.
 func StripPrefix(name string) string {
-	for _, p := range prefixes {
-		if strings.HasPrefix(name, p.prefix) {
-			return strings.TrimLeft(name[len(p.prefix):], " \t")
+	for _, p := range legacyPrefixes {
+		if strings.HasPrefix(name, p) {
+			return strings.TrimLeft(name[len(p):], " \t")
 		}
 	}
 	return name
