@@ -61,6 +61,11 @@ var globalKinds = []string{
 // subscribeTimeout bounds the wait for subscription_started after dialing.
 const subscribeTimeout = 5 * time.Second
 
+// drainGrace is how long the old connection keeps being read after a
+// replacement subscription is live, so events Herdr already wrote to it
+// are delivered before it is closed.
+const drainGrace = 100 * time.Millisecond
+
 // Stream owns the write-once subscription connection to Herdr.
 //
 // It subscribes to the global event kinds plus one
@@ -76,6 +81,8 @@ type Stream struct {
 	mu      sync.Mutex
 	panes   []string
 	changed chan struct{}
+
+	drain time.Duration // read grace for the old connection on a swap
 }
 
 // NewStream builds a stream; call Run to start it.
@@ -86,12 +93,14 @@ func NewStream(dial dialFunc, path string, log *slog.Logger, backoff Backoff) *S
 		log:     log,
 		backoff: backoff,
 		changed: make(chan struct{}, 1),
+		drain:   drainGrace,
 	}
 }
 
 // SetPanes replaces the set of panes whose status changes are streamed.
-// The running loop opens a replacement connection with the new set before
-// closing the old one, so no event is missed in between.
+// The running loop opens a replacement connection with the new set, drains
+// what the old one already delivered and only then closes it, so no event
+// is lost in between (one pushed while both are live may arrive twice).
 func (s *Stream) SetPanes(ids []string) {
 	next := slices.Clone(ids)
 	slices.Sort(next)
@@ -184,10 +193,12 @@ func (s *Stream) serve(ctx context.Context, conn *streamConn, out chan<- domain.
 				}()
 				continue
 			}
-			close(stop)
-			_ = conn.Close()
+			drainErr := s.drainOld(ctx, conn, lines, stop, out)
 			conn = next
 			lines, stop = reader(conn)
+			if drainErr != nil {
+				return drainErr
+			}
 		case r := <-lines:
 			if r.err != nil {
 				return r.err
@@ -197,6 +208,37 @@ func (s *Stream) serve(ctx context.Context, conn *streamConn, out chan<- domain.
 				continue
 			}
 			s.log.Debug("herdr event", slog.String("kind", string(ev.Kind)), slog.String("pane_id", ev.PaneID))
+			if !emit(ctx, out, ev) {
+				return ctx.Err()
+			}
+		}
+	}
+}
+
+// drainOld hands over from old to a live replacement: it gives the old
+// connection a short read grace, forwards every event it still yields and
+// closes it. Only a consumer refusal (ctx done) is an error.
+func (s *Stream) drainOld(ctx context.Context, old *streamConn, lines <-chan readResult, stop chan struct{}, out chan<- domain.Event) error {
+	defer func() {
+		close(stop)
+		_ = old.Close()
+	}()
+	_ = old.SetReadDeadline(time.Now().Add(s.drain))
+	drained := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case r := <-lines:
+			if r.err != nil {
+				s.log.Debug("herdr stream old connection drained", slog.Int("events", drained))
+				return nil
+			}
+			ev, ok := translateEvent(r.line, s.log)
+			if !ok {
+				continue
+			}
+			drained++
 			if !emit(ctx, out, ev) {
 				return ctx.Err()
 			}

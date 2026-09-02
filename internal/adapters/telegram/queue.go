@@ -179,9 +179,11 @@ func (q *Queue) Run(runCtx context.Context) {
 	}
 }
 
-// execute runs one job with pacing and retries. Sleeps stop early when the
-// caller's context or runCtx ends; the caller's error is reported for the
-// job while a runCtx failure also stops the queue.
+// execute runs one job with pacing and retries. The API call and every
+// sleep run on a context that ends when either the caller's context or
+// runCtx ends, so a queue shutdown interrupts an in-flight HTTP request
+// instead of waiting for the client timeout. The caller's error is
+// reported for the job while a runCtx failure also stops the queue.
 func (q *Queue) execute(runCtx context.Context, j job) error {
 	ctx, cancel := context.WithCancel(runCtx)
 	defer cancel()
@@ -194,9 +196,15 @@ func (q *Queue) execute(runCtx context.Context, j job) error {
 			return q.sleepErr(runCtx, j, err)
 		}
 		q.stamp()
-		err = j.op(j.ctx)
+		err = j.op(ctx)
 		if err == nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			q.log.Debug("telegram call interrupted",
+				slog.Bool("queue_stopping", runCtx.Err() != nil),
+				slog.Any("err", err))
+			return q.sleepErr(runCtx, j, err)
 		}
 		if !isRetryable(err) || try == q.cfg.MaxTries {
 			return err

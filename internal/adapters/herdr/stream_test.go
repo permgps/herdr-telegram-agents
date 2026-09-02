@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -331,3 +332,57 @@ const agentListSampleAgent = `{
     "terminal_title_stripped": "Объяснение первого пункта",
     "workspace_id": "w3"
   }`
+
+// TestStreamSetPanesKeepsInFlightEvents pins the guarantee documented on
+// SetPanes: swapping the subscription must not lose events the old
+// connection had already delivered. The consumer is deliberately slow so
+// events pile up inside the reader while the swap happens.
+func TestStreamSetPanesKeepsInFlightEvents(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	st := NewStream(dial, s.Path(), testLogger(t), fastBackoff)
+	out := make(chan domain.Event) // unbuffered: the loop parks in emit
+	done := make(chan error, 1)
+	go func() { done <- st.Run(ctx, out) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run did not stop")
+		}
+	})
+	s.WaitRequests("events.subscribe", 1, 2*time.Second)
+
+	const rounds, perRound = 12, 3
+	want, got := 0, 0
+	for r := 0; r < rounds; r++ {
+		if !s.WaitConns(1, time.Second) {
+			t.Fatalf("round %d: conns = %d", r, s.ConnCount())
+		}
+		for i := 0; i < perRound; i++ {
+			if n := s.Push("tab_renamed", map[string]any{"tab_id": fmt.Sprintf("t%d-%d", r, i), "label": "x"}); n != 1 {
+				t.Fatalf("round %d: push reached %d connections", r, n)
+			}
+		}
+		want += perRound
+		st.SetPanes([]string{fmt.Sprintf("w1:p%d", r)})
+		deadline := time.After(time.Second)
+	drain:
+		for got < want {
+			select {
+			case ev := <-out:
+				if he, ok := ev.(domain.HerdrEvent); ok && he.Kind == domain.TabRenamed {
+					got++
+				} else {
+					t.Fatalf("round %d: unexpected event %+v", r, ev)
+				}
+			case <-deadline:
+				break drain
+			}
+		}
+		if got != want {
+			t.Fatalf("round %d: delivered %d of %d events across the resubscribe", r, got, want)
+		}
+	}
+}

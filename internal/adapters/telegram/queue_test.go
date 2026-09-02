@@ -298,3 +298,32 @@ func TestSleepHonoursContext(t *testing.T) {
 		t.Errorf("short sleep = %v", err)
 	}
 }
+
+func TestQueueShutdownCancelsRunningCall(t *testing.T) {
+	q, _, cancel := startQueue(t, QueueConfig{})
+	running := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	result := make(chan error, 1)
+	go func() {
+		result <- q.Do(context.Background(), func(ctx context.Context) error {
+			close(running)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-release:
+				return errors.New("call outlived the queue")
+			}
+		})
+	}()
+	<-running
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Do = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Do did not return after the queue stopped while a call was running")
+	}
+}

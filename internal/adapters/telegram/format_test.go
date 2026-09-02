@@ -3,8 +3,12 @@ package telegram
 import (
 	"strings"
 	"testing"
+	"unicode/utf16"
 	"unicode/utf8"
 )
+
+// utf16Units is how Telegram measures text length.
+func utf16Units(s string) int { return len(utf16.Encode([]rune(s))) }
 
 func TestChunkBoundaries(t *testing.T) {
 	exact := strings.Repeat("a", textMax)
@@ -59,9 +63,13 @@ func TestChunkKeepsRunesWhole(t *testing.T) {
 	if got[0] != "жжжж" || got[2] != "ж" {
 		t.Errorf("parts = %q", got)
 	}
+	// An astral emoji is two UTF-16 units, so four units hold two of them.
 	emoji := strings.Repeat("🏁", 5)
-	if got := chunk(emoji, 2); len(got) != 3 || got[0] != "🏁🏁" || got[2] != "🏁" {
+	if got := chunk(emoji, 4); len(got) != 3 || got[0] != "🏁🏁" || got[2] != "🏁" {
 		t.Errorf("emoji parts = %q", got)
+	}
+	if got := chunk(emoji, 3); len(got) != 5 || got[0] != "🏁" {
+		t.Errorf("emoji parts at 3 units = %q", got)
 	}
 }
 
@@ -99,11 +107,34 @@ func TestTruncateName(t *testing.T) {
 		{"  builder  ", 10, "builder"},
 		{"⚙️ " + strings.Repeat("я", 20), 5, "⚙️ яя"},
 		{"short", 128, "short"},
-		{strings.Repeat("🏁", 130), 128, strings.Repeat("🏁", 128)},
+		// Telegram counts UTF-16 units: an astral emoji costs two.
+		{strings.Repeat("🏁", 130), 128, strings.Repeat("🏁", 64)},
+		{"⚙️ " + strings.Repeat("я", 127), 128, "⚙️ " + strings.Repeat("я", 125)},
 	}
 	for _, tc := range tests {
 		if got := truncateName(tc.in, tc.max); got != tc.want {
 			t.Errorf("truncateName(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
 		}
+	}
+}
+
+func TestChunkCountsUTF16Units(t *testing.T) {
+	text := strings.Repeat("🎉", textMax) + "\n" + strings.Repeat("a", 10)
+	got := chunk(text, textMax)
+	// The newline is not a cut point here (it sits far past the first
+	// window), so the parts joined back must be the text minus that newline.
+	if strings.Join(got, "") != strings.ReplaceAll(text, "\n", "") {
+		t.Fatalf("chunks lost text: %d parts", len(got))
+	}
+	for i, p := range got {
+		if n := utf16Units(p); n > textMax {
+			t.Errorf("part %d is %d UTF-16 units, limit %d", i, n, textMax)
+		}
+		if !utf8.ValidString(p) {
+			t.Errorf("part %d is not valid UTF-8", i)
+		}
+	}
+	if len(got) < 3 {
+		t.Errorf("%d parts, want at least 3 for %d astral runes", len(got), textMax)
 	}
 }
