@@ -1,0 +1,19 @@
+# Telegram Agents: mirrors the Herdr Agents panel into a Telegram forum group.
+# Every entrypoint runs the single binary bin/herdr-tg with a subcommand.
+# Action ids must be unique across the manifest (Herdr rejects a per-platform
+# duplicate with duplicate_plugin_action_id), so one entry serves all
+# platforms: on Windows the process launcher resolves bin/herdr-tg to
+# bin/herdr-tg.exe. [[build]], [[startup]] and [[panes]] arrive with the
+# daemon and setup-wizard milestones.
+
+id = "permgps.telegram-agents"
+name = "Telegram Agents"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "One Telegram forum topic per live Herdr agent: status in the topic name and icon, messages both ways."
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "version"
+title = "Telegram Agents: version"
+command = ["bin/herdr-tg", "version"]
