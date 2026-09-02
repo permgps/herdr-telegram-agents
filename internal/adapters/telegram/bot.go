@@ -115,6 +115,10 @@ var botCommands = []models.BotCommand{
 	{Command: "screen", Description: "Show the agent screen (N: last N lines, all: output since your last message)"},
 	{Command: "keys", Description: "Send raw keys to the agent, e.g. /keys esc"},
 	{Command: "focus", Description: "Bring the agent's pane to the front in Herdr"},
+	{Command: "clear", Description: "Claude Code /clear: start a fresh conversation (idle agents only)"},
+	{Command: "compact", Description: "Claude Code /compact [instructions]: compact the context"},
+	{Command: "usage", Description: "Claude Code /usage: show the usage panel, closed for you afterwards"},
+	{Command: "model", Description: "Claude Code /model [name]: show the picker or set the model"},
 	{Command: "status", Description: "Agent status here, all agents in General"},
 	{Command: "help", Description: "List the commands"},
 }
