@@ -112,7 +112,9 @@ the Windows milestone.
   the colour is the fallback when the pack lacks an emoji.
 - Agents are identified by pane and terminal id; a topic is created the first
   time an agent appears and reused after a restart.
-- When an agent's pane closes the topic gets the 🏁 icon and is closed. Topics
+- When an agent's pane closes the topic gets the 🏁 icon and is closed. If the
+  same agent comes back in that pane (for example `claude --resume`), the
+  finished topic is reopened and refreshed instead of a new one being made. Topics
   of agents that vanished while the daemon was down are closed on the next
   start.
 - The daemon exits by itself when the Herdr socket is gone for 60 s, when the

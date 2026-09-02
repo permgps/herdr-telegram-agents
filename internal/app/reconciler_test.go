@@ -494,3 +494,49 @@ func TestReconcilerRenameIgnoredOrFailed(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// TestReconcilerReusesTopicWhenKeyReturns: an agent that exits and comes
+// back under the same key (claude --resume in the same pane) continues in
+// its old topic, reopened and refreshed, instead of getting a second one.
+func TestReconcilerReusesTopicWhenKeyReturns(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+	f.handle(t, app.AgentGone, agent("p1", "t1", "reviewer", domain.StatusExited))
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:status=exited", "close:101")
+
+	f.tg.Reset()
+	f.handle(t, app.AgentAppeared, agent("p1", "t1", "reviewer", domain.StatusIdle))
+	assertCalls(t, f.tg, "reopen:101", "edit:101:status=idle")
+	entry, _ := f.rec.Mapping().TopicFor(a.Key)
+	if entry.ThreadID != 101 || entry.Status != domain.StatusIdle || entry.Closed || entry.Muted {
+		t.Fatalf("entry after return = %+v", *entry)
+	}
+	if got, _ := f.tg.Topic(101); got.Closed {
+		t.Fatal("fake topic still closed")
+	}
+
+	// The same after a muted exit: the operator closed the topic by hand,
+	// then the pane closed, then the agent came back.
+	f.tg.Reset()
+	if err := f.rec.OnTopicClosed(f.ctx, 101); err != nil {
+		t.Fatal(err)
+	}
+	f.handle(t, app.AgentGone, agent("p1", "t1", "reviewer", domain.StatusExited))
+	assertCalls(t, f.tg)
+	f.handle(t, app.AgentAppeared, agent("p1", "t1", "reviewer", domain.StatusWorking))
+	assertCalls(t, f.tg, "reopen:101", "edit:101:status=working")
+	if entry, _ := f.rec.Mapping().TopicFor(a.Key); entry.Muted || entry.Closed || entry.Status != domain.StatusWorking {
+		t.Fatalf("entry after muted return = %+v", *entry)
+	}
+
+	// Only when Telegram lost the old topic is a new one created.
+	f.tg.Reset()
+	f.handle(t, app.AgentGone, agent("p1", "t1", "reviewer", domain.StatusExited))
+	f.tg.FailNext("reopen", domain.ErrTopicGone)
+	f.handle(t, app.AgentAppeared, agent("p1", "t1", "reviewer", domain.StatusIdle))
+	assertCalls(t, f.tg, "edit:101:status=exited", "close:101", "reopen:101", "create:reviewer:idle")
+	if entry, _ := f.rec.Mapping().TopicFor(a.Key); entry.ThreadID != 102 {
+		t.Fatalf("entry after lost topic = %+v", *entry)
+	}
+}

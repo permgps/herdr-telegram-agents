@@ -193,11 +193,51 @@ func (r *Reconciler) create(ctx context.Context, a domain.Agent) error {
 		return nil
 	}
 	if entry, ok := r.mapping.TopicFor(a.Key); ok && !entry.Status.Live() {
-		// A key never comes back after exiting; a stale exited entry means
-		// the mapping is ahead of reality. Start over for this key.
-		r.log.Warn("exited entry for a live agent, recreating", slog.String("key", a.Key.String()))
-		r.mapping.Forget(a.Key)
+		return r.revive(ctx, a, entry)
 	}
+	return r.createTopic(ctx, a)
+}
+
+// revive continues a returning agent in its old topic. The key is pane plus
+// terminal, so the same key after an exit means the agent was restarted in
+// place (claude --resume): the finished topic is reopened, unmuted and
+// refreshed rather than duplicated. Only a topic Telegram no longer has is
+// replaced by a new one.
+func (r *Reconciler) revive(ctx context.Context, a domain.Agent, entry *domain.TopicEntry) error {
+	key := a.Key
+	r.log.Info("agent returned, reusing its topic", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID),
+		slog.Bool("closed", entry.Closed), slog.Bool("muted", entry.Muted))
+	if entry.Closed {
+		if err := r.tg.ReopenTopic(ctx, entry.ThreadID); err != nil {
+			if errors.Is(err, domain.ErrTopicGone) {
+				r.log.Warn("old topic gone, creating a new one", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
+				r.mapping.Forget(key)
+				return r.createTopic(ctx, a)
+			}
+			return r.fail(ctx, key, "reopenForumTopic", err)
+		}
+	}
+	now := r.clock.Now()
+	r.mapping.Unmute(key, now)
+	r.mapping.MarkReopened(key, now)
+	r.save(ctx)
+	// The entry still says exited, which Diff treats as final, so the
+	// patch is built here: the live icon always, the name when it moved.
+	name, status := domain.Desired(a)
+	patch := domain.TopicPatch{Status: &status}
+	if name != entry.Name {
+		patch.Name = &name
+	}
+	if err := r.tg.EditTopic(ctx, entry.ThreadID, patch); err != nil {
+		return r.fail(ctx, key, "editForumTopic", err)
+	}
+	r.mapping.Apply(key, patch, r.clock.Now())
+	r.save(ctx)
+	r.log.Info("topic revived", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID), slog.String("status", string(status)))
+	return nil
+}
+
+func (r *Reconciler) createTopic(ctx context.Context, a domain.Agent) error {
 	name, status := domain.Desired(a)
 	topic, err := r.tg.CreateTopic(ctx, name, status)
 	if err != nil {
