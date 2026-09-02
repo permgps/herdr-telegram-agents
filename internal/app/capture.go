@@ -30,10 +30,12 @@ type Capture struct {
 	left   map[domain.Key]time.Time // when the agent last left working
 
 	// Interval is the tick between reads; Grace keeps reading after an
-	// agent left working so its final screen is committed; ReadTimeout
-	// bounds one agent.read. Tests shorten them.
+	// agent left working so its final screen is committed; MinAway is the
+	// shortest pause outside working that counts as a human message;
+	// ReadTimeout bounds one agent.read. Tests shorten them.
 	Interval    time.Duration
 	Grace       time.Duration
+	MinAway     time.Duration
 	ReadTimeout time.Duration
 }
 
@@ -54,13 +56,15 @@ func NewCapture(herdr domain.HerdrGateway, live func() []domain.Agent, clock dom
 		left:        map[domain.Key]time.Time{},
 		Interval:    captureInterval,
 		Grace:       captureGrace,
+		MinAway:     captureMarkMinAway,
 		ReadTimeout: captureReadTimeout,
 	}
 }
 
 // Observe folds one registry event into the marks: a transition into
-// working marks the history, a transition out of it starts the grace
-// period, and a gone agent is forgotten. It never blocks.
+// working after at least MinAway outside it marks the history, a
+// transition out of working starts the grace period, and a gone agent is
+// forgotten. It never blocks.
 func (c *Capture) Observe(ev AgentEvent) {
 	key := ev.Agent.Key
 	c.mu.Lock()
@@ -78,10 +82,24 @@ func (c *Capture) Observe(ev AgentEvent) {
 	c.status[key] = cur
 	switch {
 	case cur == domain.StatusWorking && (!known || prev != domain.StatusWorking):
+		// Herdr's detection flaps between working and idle or blocked
+		// for a second or two while an agent runs a tool; only a pause
+		// long enough for a human to have answered counts as a message.
+		away := c.MinAway
+		if at, ok := c.left[key]; ok {
+			away = c.clock.Now().Sub(at)
+			delete(c.left, key)
+		}
+		if known && away < c.MinAway {
+			c.log.Debug("history mark skipped", slog.String("key", key.String()),
+				slog.String("from", string(prev)), slog.Int64("away_ms", away.Milliseconds()))
+			return
+		}
 		h := c.history(key)
 		h.Mark()
 		c.log.Debug("history marked", slog.String("key", key.String()),
-			slog.String("from", string(prev)), slog.String("to", string(cur)), slog.Int("committed", h.Len()))
+			slog.String("from", string(prev)), slog.String("to", string(cur)),
+			slog.Int64("away_ms", away.Milliseconds()), slog.Int("committed", h.Len()))
 	case known && prev == domain.StatusWorking && cur != domain.StatusWorking:
 		c.left[key] = c.clock.Now()
 		c.log.Debug("capture grace started", slog.String("key", key.String()), slog.String("to", string(cur)))
@@ -120,14 +138,7 @@ func (c *Capture) inGrace(key domain.Key, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	at, ok := c.left[key]
-	if !ok {
-		return false
-	}
-	if now.Sub(at) > c.Grace {
-		delete(c.left, key)
-		return false
-	}
-	return true
+	return ok && now.Sub(at) <= c.Grace
 }
 
 // capture reads one screen and merges it. Read failures are logged and left

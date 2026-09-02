@@ -37,6 +37,12 @@ const (
 	// captureGrace keeps reading an agent after it left working so the
 	// final screen of the exchange is committed.
 	captureGrace = 3 * time.Second
+	// captureMarkMinAway is the shortest pause outside working before a
+	// return to working counts as a human message; Herdr's detection flaps
+	// between working and idle or blocked for a second or two while an
+	// agent runs a tool (measured 2026-09-03: 344 transitions in one
+	// session on a Claude Code pane).
+	captureMarkMinAway = 5 * time.Second
 	// captureReadTimeout bounds one agent.read made by the capture.
 	captureReadTimeout = 5 * time.Second
 	// captureLines is how many lines of recent output one capture read

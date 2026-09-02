@@ -165,7 +165,9 @@ Herdr keeps no scrollback for Claude Code panes, so this is the only source.
 Limits: the history starts empty when the daemon starts, is capped at 2000
 lines per agent and is dropped when the agent exits; a burst larger than one
 screen between two reads leaves a `…` gap; a prompt sent while the agent is
-already working does not move the mark. Output that fits in three messages is
+already working does not move the mark, and neither does a pause shorter than
+5 s (Herdr's status detection dips out of **working** for a second or two
+while an agent runs a tool). Output that fits in three messages is
 posted as code blocks, anything longer as one `.txt` document.
 
 Delivery is silent: the topic icon turning ⚡ within a few seconds shows the

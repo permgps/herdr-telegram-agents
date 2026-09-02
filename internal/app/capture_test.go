@@ -166,8 +166,10 @@ func TestCaptureObserveMarksTransitionsIntoWorking(t *testing.T) {
 		t.Fatalf("mark moved on working->working: first line %q", lines[0])
 	}
 
-	// blocked -> working (an answered question) marks again.
+	// blocked -> working (an answered question) marks again once the
+	// agent was away long enough for a human to have answered.
 	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusBlocked)})
+	f.clock.Advance(f.capture.MinAway)
 	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusWorking)})
 	f.herdr.SetScreen("p1", text(12, 32))
 	f.capture.tick(f.ctx)
@@ -225,5 +227,42 @@ func TestCaptureTickStopsOnCancelledContext(t *testing.T) {
 	f.capture.tick(ctx)
 	if n := len(f.herdr.Reads()); n != 0 {
 		t.Fatalf("a cancelled context must stop the tick before reading, got %d reads", n)
+	}
+}
+
+func TestCaptureShortFlapDoesNotMark(t *testing.T) {
+	f := newCaptureFixture(t)
+	a := f.agent("p1", domain.StatusWorking)
+	f.herdr.SetScreen("p1", text(1, 20))
+	f.capture.tick(f.ctx)
+	// The first sighting of a working agent marks after what was captured.
+	f.capture.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
+	f.herdr.SetScreen("p1", text(4, 24))
+	f.capture.tick(f.ctx)
+
+	// A one-second dip into idle or blocked is Herdr's detection, not a
+	// human: the mark stays where it was.
+	for _, dip := range []domain.Status{domain.StatusIdle, domain.StatusBlocked} {
+		f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, dip)})
+		f.clock.Advance(time.Second)
+		f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusWorking)})
+	}
+	lines, marked, _ := f.capture.Since(f.ctx, a.Key)
+	if !marked || lines[0] != "L13" {
+		t.Fatalf("mark moved on a flap: marked %v, first line %q", marked, lines[0])
+	}
+	if _, ok := f.capture.left[a.Key]; ok {
+		t.Fatal("left must be cleared on the return to working")
+	}
+
+	// A pause of MinAway or more is a human message.
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusBlocked)})
+	f.clock.Advance(f.capture.MinAway)
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusWorking)})
+	f.herdr.SetScreen("p1", text(8, 28))
+	f.capture.tick(f.ctx)
+	lines, _, _ = f.capture.Since(f.ctx, a.Key)
+	if lines[0] != "L17" {
+		t.Fatalf("mark after a real pause: first line %q, want L17", lines[0])
 	}
 }
