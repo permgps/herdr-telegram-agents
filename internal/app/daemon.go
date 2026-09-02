@@ -21,37 +21,43 @@ const (
 	flushTimeout = 5 * time.Second
 	// notifyTitle is the title of every Herdr notification the daemon shows.
 	notifyTitle = "Telegram Agents"
+	// generalTimeout bounds one notice posted to the General topic.
+	generalTimeout = 5 * time.Second
 )
 
-// Daemon is the event loop: registry events go to the reconciler, debounced
-// edits fire, Telegram membership changes pause or resume writes, resync
+// Daemon is the event loop: registry events go to the reconciler and the
+// bridge, debounced edits fire, operator messages and commands go to the
+// bridge, Telegram membership changes pause or resume writes, resync
 // requests replay the desired state, and socket health decides when to
-// give up.
+// give up. Lifecycle notices are posted to the General topic.
 type Daemon struct {
 	cfg        domain.Config
 	herdr      domain.HerdrGateway
 	tg         domain.TelegramGateway
 	registry   *Registry
 	reconciler *Reconciler
+	bridge     *Bridge
 	configs    domain.ConfigStore
 	clock      domain.Clock
 	log        *slog.Logger
 
 	SocketGrace    time.Duration
 	HealthInterval time.Duration
+	// Version is shown in the General topic's started notice.
+	Version string
 
 	resync chan struct{}
 }
 
-// NewDaemon wires the loop. The registry and reconciler are built by the
-// caller so the composition root can share the clock and logger.
+// NewDaemon wires the loop. The registry, reconciler and bridge are built
+// by the caller so the composition root can share the clock and logger.
 func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
-	registry *Registry, reconciler *Reconciler, configs domain.ConfigStore, clock domain.Clock, log *slog.Logger) *Daemon {
+	registry *Registry, reconciler *Reconciler, bridge *Bridge, configs domain.ConfigStore, clock domain.Clock, log *slog.Logger) *Daemon {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Daemon{
-		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler,
+		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge,
 		configs: configs, clock: clock, log: log,
 		SocketGrace: socketGrace, HealthInterval: healthInterval,
 		resync: make(chan struct{}, 1),
@@ -77,7 +83,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.checkRights(ctx); err != nil {
 		return err
 	}
-	if _, err := d.registry.Snapshot(ctx); err != nil {
+	initial, err := d.registry.Snapshot(ctx)
+	if err != nil {
 		d.log.Warn("initial agent snapshot failed, will retry", slog.String("err", err.Error()))
 	}
 	if err := d.reconciler.Reconcile(ctx, d.registry.Live()); err != nil {
@@ -89,15 +96,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 	loopCtx, cancel := context.WithCancel(ctx)
 	events := make(chan AgentEvent, 256)
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		_ = d.registry.Run(loopCtx, events)
+	}()
+	go func() {
+		defer wg.Done()
+		d.bridge.Run(loopCtx)
 	}()
 	defer func() {
 		cancel()
 		wg.Wait()
 	}()
+
+	// Agents already blocked when the daemon starts get their screen
+	// posted too; the bridge decides per status.
+	for _, ev := range initial {
+		d.bridge.Submit(ev)
+	}
+	d.general(ctx, fmt.Sprintf("▶️ %s started: %s", d.title(), plural(len(d.registry.Live()), "agent")))
 
 	health := d.clock.After(d.HealthInterval)
 	for {
@@ -116,6 +134,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 					return err
 				}
 			}
+			d.bridge.Submit(ev)
+		case err := <-d.bridge.Fatal():
+			d.shutdown()
+			return d.fatal(ctx, err)
 		case key := <-d.reconciler.Due():
 			if err := d.reconciler.Fire(ctx, key); err != nil {
 				if err := d.handleErr(ctx, err); err != nil {
@@ -137,6 +159,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-health:
 			health = d.clock.After(d.HealthInterval)
 			if gone := d.socketGone(start); gone {
+				d.general(ctx, fmt.Sprintf("⏹ %s: Herdr socket unreachable for %s, exiting", d.title(), d.SocketGrace))
 				d.shutdown()
 				d.log.Info("daemon exit", slog.String("reason", "herdr socket gone"))
 				return nil
@@ -176,15 +199,30 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 		if !ev.CanManageTopics {
 			d.reconciler.SetReadOnly(true)
 			d.notify(ctx, fmt.Sprintf("the bot lost the \"Manage topics\" right in %q; topics are not updated until it is granted again", d.cfg.ChatTitle))
+			d.general(ctx, "⚠️ the bot lost the \"Manage topics\" right; topics are not updated until it is granted again")
 			return nil
 		}
 		if d.reconciler.ReadOnly() {
 			d.reconciler.SetReadOnly(false)
+			d.general(ctx, "✅ \"Manage topics\" right regained, topics are updated again")
 			return d.replay(ctx, false)
 		}
 		return nil
+	case domain.TopicMessage, domain.GeneralCommand:
+		d.bridge.Submit(raw)
+		return nil
+	case domain.TopicClosed:
+		return d.handleErr(ctx, d.reconciler.OnTopicClosed(ctx, ev.ThreadID))
+	case domain.TopicReopened:
+		return d.handleErr(ctx, d.reconciler.OnTopicReopened(ctx, ev.ThreadID))
+	case domain.TopicRenamed:
+		snapshot, err := d.reconciler.OnTopicRenamed(ctx, ev.ThreadID, ev.Name)
+		if snapshot {
+			d.registry.RequestSnapshot()
+		}
+		return d.handleErr(ctx, err)
 	default:
-		d.log.Debug("telegram event ignored in this milestone", slog.String("type", fmt.Sprintf("%T", raw)))
+		d.log.Debug("telegram event ignored", slog.String("type", fmt.Sprintf("%T", raw)))
 		return nil
 	}
 }
@@ -225,6 +263,9 @@ func (d *Daemon) replay(ctx context.Context, force bool) error {
 // handleErr deals with errors the reconciler could not absorb: chat
 // migration is recorded and survived, everything else is fatal.
 func (d *Daemon) handleErr(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
 	var migrated *domain.ChatMigratedError
 	if errors.As(err, &migrated) {
 		d.log.Warn("chat migrated, updating config; restart the daemon to use the new id",
@@ -285,14 +326,36 @@ func (d *Daemon) socketGone(start time.Time) bool {
 	return false
 }
 
-// shutdown flushes pending edits with a bounded real-time budget. It uses
-// a fresh context because the daemon's own context is already done.
+// shutdown posts the stopping notice and flushes pending edits with a
+// bounded real-time budget. It uses a fresh context because the daemon's
+// own context is already done.
 func (d *Daemon) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 	defer cancel()
+	d.general(ctx, fmt.Sprintf("⏹ %s stopping", d.title()))
 	if err := d.reconciler.Flush(ctx); err != nil {
 		d.log.Warn("flush on shutdown failed", slog.String("err", err.Error()))
 	}
+}
+
+// title names the daemon in General notices, with the version when known.
+func (d *Daemon) title() string {
+	if d.Version == "" {
+		return notifyTitle
+	}
+	return notifyTitle + " " + d.Version
+}
+
+// general posts a silent lifecycle notice to the General topic; failures
+// are only logged because the notice is informational.
+func (d *Daemon) general(ctx context.Context, text string) {
+	gctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), generalTimeout)
+	defer cancel()
+	if err := d.tg.Send(gctx, domain.Outgoing{ThreadID: 0, Text: text}); err != nil {
+		d.log.Warn("general notice failed", slog.String("text", text), slog.String("err", err.Error()))
+		return
+	}
+	d.log.Info("general notice", slog.String("text", text))
 }
 
 // notify shows a Herdr desktop notification; failures are only logged

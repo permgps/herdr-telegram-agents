@@ -174,6 +174,16 @@ func (m *Mapping) MarkClosed(k Key, now time.Time) {
 	e.UpdatedAt = now
 }
 
+// MarkReopened records that the topic is open again in Telegram.
+func (m *Mapping) MarkReopened(k Key, now time.Time) {
+	e, ok := m.Topics[k.String()]
+	if !ok {
+		return
+	}
+	e.Closed = false
+	e.UpdatedAt = now
+}
+
 // Forget drops the entry, typically because Telegram reported the topic
 // gone; the next reconcile pass recreates it if the agent is still live.
 func (m *Mapping) Forget(k Key) {

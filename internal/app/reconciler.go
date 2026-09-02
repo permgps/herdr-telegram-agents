@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -17,6 +18,7 @@ import (
 // (drift healing on start, resync, resume after lost rights).
 type Reconciler struct {
 	tg      domain.TelegramGateway
+	herdr   domain.HerdrGateway // only for agent.rename mirrored from Telegram
 	store   domain.MappingStore
 	mapping *domain.Mapping
 	clock   domain.Clock
@@ -31,13 +33,15 @@ type Reconciler struct {
 	view *topicView
 }
 
-// NewReconciler wires the reconciler around a loaded mapping.
-func NewReconciler(tg domain.TelegramGateway, store domain.MappingStore, mapping *domain.Mapping, clock domain.Clock, log *slog.Logger) *Reconciler {
+// NewReconciler wires the reconciler around a loaded mapping. herdr is
+// used only to mirror operator renames back to the agent.
+func NewReconciler(tg domain.TelegramGateway, herdr domain.HerdrGateway, store domain.MappingStore, mapping *domain.Mapping, clock domain.Clock, log *slog.Logger) *Reconciler {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	r := &Reconciler{
 		tg:      tg,
+		herdr:   herdr,
 		store:   store,
 		mapping: mapping,
 		clock:   clock,
@@ -214,6 +218,10 @@ func (r *Reconciler) edit(ctx context.Context, key domain.Key) error {
 	if !ok {
 		return r.create(ctx, a)
 	}
+	if entry.Muted && !r.force {
+		r.log.Debug("topic muted, edit skipped", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
+		return nil
+	}
 	patch, changed := r.mapping.Diff(key, a)
 	if r.force && entry.Status.Live() {
 		name, status := domain.Desired(a)
@@ -247,6 +255,15 @@ func (r *Reconciler) exit(ctx context.Context, key domain.Key) error {
 		r.log.Info("topic exit skipped, writes paused", slog.String("key", key.String()))
 		return nil
 	}
+	if entry.Muted {
+		// The operator closed the topic by hand; leave it exactly as it is
+		// and only remember that the agent is gone.
+		r.mapping.MarkExited(key, r.clock.Now())
+		r.mapping.MarkClosed(key, r.clock.Now())
+		r.save(ctx)
+		r.log.Info("topic muted, exit recorded without telegram calls", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
+		return nil
+	}
 	if entry.Status.Live() {
 		status := domain.StatusExited
 		if err := r.tg.EditTopic(ctx, entry.ThreadID, domain.TopicPatch{Status: &status}); err != nil {
@@ -274,6 +291,137 @@ func (r *Reconciler) close(ctx context.Context, key domain.Key) error {
 	r.save(ctx)
 	r.log.Info("topic closed", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
 	return nil
+}
+
+// OnTopicClosed handles an operator closing a topic by hand: the entry is
+// muted so the mirror stops editing and posting until the topic is
+// reopened. Closing an already exited topic only records the closure.
+func (r *Reconciler) OnTopicClosed(ctx context.Context, threadID int) error {
+	key, ok := r.mapping.KeyForThread(threadID)
+	if !ok {
+		r.log.Debug("topic closed for unknown thread", slog.Int("thread", threadID))
+		return nil
+	}
+	entry, _ := r.mapping.TopicFor(key)
+	if !entry.Status.Live() {
+		r.mapping.MarkClosed(key, r.clock.Now())
+		r.save(ctx)
+		r.log.Debug("exited topic closed by operator", slog.String("key", key.String()), slog.Int("thread", threadID))
+		return nil
+	}
+	r.mapping.Mute(key, r.clock.Now())
+	r.save(ctx)
+	r.log.Info("topic muted", slog.String("key", key.String()), slog.Int("thread_id", threadID))
+	return nil
+}
+
+// OnTopicReopened lifts the mute: a live agent gets its name and icon
+// rewritten so the topic is current again, an exited one is marked with
+// the finish flag and closed again.
+func (r *Reconciler) OnTopicReopened(ctx context.Context, threadID int) error {
+	key, ok := r.mapping.KeyForThread(threadID)
+	if !ok {
+		r.log.Debug("topic reopened for unknown thread", slog.Int("thread", threadID))
+		return nil
+	}
+	r.mapping.Unmute(key, r.clock.Now())
+	r.mapping.MarkReopened(key, r.clock.Now())
+	r.save(ctx)
+	r.log.Info("topic unmuted", slog.String("key", key.String()), slog.Int("thread_id", threadID))
+	if _, live := r.agents[key]; live {
+		r.deb.Cancel(key)
+		return r.forced(func() error { return r.edit(ctx, key) })
+	}
+	return r.finish(ctx, key)
+}
+
+// finish writes the exited icon regardless of what the mapping believes
+// (a muted exit never reached Telegram) and closes the topic.
+func (r *Reconciler) finish(ctx context.Context, key domain.Key) error {
+	entry, ok := r.mapping.TopicFor(key)
+	if !ok || r.readOnly {
+		return nil
+	}
+	status := domain.StatusExited
+	if err := r.tg.EditTopic(ctx, entry.ThreadID, domain.TopicPatch{Status: &status}); err != nil {
+		return r.fail(ctx, key, "editForumTopic", err)
+	}
+	r.mapping.MarkExited(key, r.clock.Now())
+	r.save(ctx)
+	r.log.Info("topic marked exited after reopen", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
+	return r.close(ctx, key)
+}
+
+// forced runs fn with the resync flag set so edits bypass the diff and the
+// mute check.
+func (r *Reconciler) forced(fn func() error) error {
+	was := r.force
+	r.force = true
+	defer func() { r.force = was }()
+	return fn()
+}
+
+// OnTopicRenamed mirrors an operator's topic rename back to Herdr. The
+// "<workspace> · " prefix is stripped when present; an empty remainder, or
+// one equal to the tab label or the agent kind, clears the custom name.
+// The mapping keeps the new topic name so no edit is sent for the name the
+// operator just typed, and the caller requests a snapshot so the reconciler
+// settles the topic on the canonical "<workspace> · <name>" form. It
+// reports whether that snapshot is wanted.
+func (r *Reconciler) OnTopicRenamed(ctx context.Context, threadID int, name string) (bool, error) {
+	key, ok := r.mapping.KeyForThread(threadID)
+	if !ok {
+		r.log.Debug("topic renamed for unknown thread", slog.Int("thread", threadID), slog.String("name", name))
+		return false, nil
+	}
+	entry, _ := r.mapping.TopicFor(key)
+	a, live := r.agents[key]
+	if !live || !entry.Status.Live() {
+		r.log.Debug("rename of exited topic ignored", slog.String("key", key.String()), slog.Int("thread", threadID), slog.String("name", name))
+		return false, nil
+	}
+	rest := agentPart(a, name)
+	var wire *string
+	if rest != "" && rest != a.TabLabel && rest != a.Kind {
+		wire = &rest
+	} else {
+		rest = ""
+	}
+	if err := r.herdr.Rename(ctx, key.PaneID, wire); err != nil {
+		r.log.Warn("agent rename from telegram failed", slog.String("key", key.String()), slog.Int("thread_id", threadID),
+			slog.String("name", name), slog.String("err", err.Error()))
+		if sendErr := r.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "rename failed: " + failureReason(err)}); sendErr != nil {
+			r.log.Warn("rename failure note not sent", slog.String("key", key.String()), slog.String("err", sendErr.Error()))
+		}
+		return false, nil
+	}
+	a.Name = rest
+	r.agents[key] = a
+	entry.Name = name
+	entry.UpdatedAt = r.clock.Now()
+	r.save(ctx)
+	r.log.Info("agent renamed from telegram", slog.String("key", key.String()), slog.Int("thread_id", threadID),
+		slog.String("name", name), slog.String("agent_name", rest))
+	return true, nil
+}
+
+// agentPart strips the workspace prefix Herdr's panel shows from a topic
+// name typed by an operator and trims the remainder.
+func agentPart(a domain.Agent, name string) string {
+	ws := a.WorkspaceLabel
+	if ws == "" {
+		ws = a.WorkspaceID
+	}
+	rest := strings.TrimSpace(domain.StripPrefix(name))
+	if ws != "" {
+		if cut, ok := strings.CutPrefix(rest, ws); ok {
+			trimmed := strings.TrimLeft(cut, " ")
+			if trimmed == "" || strings.HasPrefix(trimmed, "·") {
+				rest = strings.TrimSpace(strings.TrimPrefix(trimmed, "·"))
+			}
+		}
+	}
+	return rest
 }
 
 // fail applies the error policy: gone topics are forgotten, closed topics

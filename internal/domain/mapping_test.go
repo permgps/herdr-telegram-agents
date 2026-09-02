@@ -259,3 +259,15 @@ func TestMappingMutedEntriesAreSkipped(t *testing.T) {
 		t.Fatalf("Unclosed = %v, want [%v]", got, plain.Key)
 	}
 }
+
+func TestMappingMarkReopened(t *testing.T) {
+	m := domain.NewMapping(-1)
+	a := agent("p1", "t1", "a", domain.StatusWorking)
+	linked(t, m, a, 1)
+	m.MarkClosed(a.Key, t0)
+	m.MarkReopened(a.Key, t0.Add(time.Minute))
+	e, _ := m.TopicFor(a.Key)
+	if e.Closed || !e.UpdatedAt.Equal(t0.Add(time.Minute)) {
+		t.Fatalf("after MarkReopened: %+v", *e)
+	}
+}

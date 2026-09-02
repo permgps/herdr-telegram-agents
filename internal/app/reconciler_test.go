@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 type recFixture struct {
 	tg    *testkit.FakeTelegram
+	herdr *testkit.FakeHerdr
 	store *testkit.MemMappingStore
 	clock *testkit.FakeClock
 	rec   *app.Reconciler
@@ -23,11 +25,12 @@ func newRec(t *testing.T) *recFixture {
 	t.Helper()
 	f := &recFixture{
 		tg:    testkit.NewFakeTelegram(nil),
+		herdr: testkit.NewFakeHerdr(nil),
 		store: testkit.NewMemMappingStore(),
 		clock: testkit.NewFakeClock(t0),
 		ctx:   context.Background(),
 	}
-	f.rec = app.NewReconciler(f.tg, f.store, domain.NewMapping(-1), f.clock, nil)
+	f.rec = app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.clock, nil)
 	return f
 }
 
@@ -327,3 +330,167 @@ func TestResyncRewritesEveryLiveTopic(t *testing.T) {
 		"edit:102:status=exited", "close:102",
 		"edit:101:name=reviewer,status=working")
 }
+
+// wsAgent is an agent with a workspace label, so its label carries the
+// "<ws> · <name>" prefix the panel shows.
+func wsAgent(pane, term, name string, st domain.Status) domain.Agent {
+	a := agent(pane, term, name, st)
+	a.WorkspaceLabel = "V3Jobs"
+	a.TabLabel = "claude"
+	a.Kind = "claude"
+	return a
+}
+
+func TestReconcilerMuteOnCloseAndReopen(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+	if err := f.rec.OnTopicClosed(f.ctx, 101); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := f.rec.Mapping().TopicFor(a.Key); !e.Muted {
+		t.Fatal("entry not muted")
+	}
+	// Status changes are swallowed while muted.
+	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusIdle))
+	f.fireDue(t, 1)
+	assertCalls(t, f.tg, "create:reviewer:working")
+	// Reconcile leaves the muted topic alone, Resync rewrites it.
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:working")
+	if err := f.rec.Resync(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:name=reviewer,status=idle")
+
+	// Reopen lifts the mute and forces name and icon.
+	f.tg.Reset()
+	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusBlocked))
+	if err := f.rec.OnTopicReopened(f.ctx, 101); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "edit:101:name=reviewer,status=blocked")
+	if e, _ := f.rec.Mapping().TopicFor(a.Key); e.Muted || e.Status != domain.StatusBlocked {
+		t.Fatalf("entry after reopen = %+v", *e)
+	}
+	// Unknown threads are ignored.
+	if err := f.rec.OnTopicClosed(f.ctx, 999); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rec.OnTopicReopened(f.ctx, 999); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReconcilerExitWhileMuted(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+	if err := f.rec.OnTopicClosed(f.ctx, 101); err != nil {
+		t.Fatal(err)
+	}
+	f.handle(t, app.AgentGone, agent("p1", "t1", "reviewer", domain.StatusExited))
+	assertCalls(t, f.tg, "create:reviewer:working")
+	e, _ := f.rec.Mapping().TopicFor(a.Key)
+	if e.Status != domain.StatusExited || !e.Closed || !e.Muted {
+		t.Fatalf("entry after muted exit = %+v", *e)
+	}
+	// Reopening an exited topic writes the finish flag and closes again.
+	if err := f.rec.OnTopicReopened(f.ctx, 101); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:status=exited", "close:101")
+	if e, _ := f.rec.Mapping().TopicFor(a.Key); e.Muted || !e.Closed {
+		t.Fatalf("entry after reopen of exited = %+v", *e)
+	}
+	// Closing an exited topic by hand only records the closure.
+	f.rec.Mapping().MarkReopened(a.Key, t0)
+	if err := f.rec.OnTopicClosed(f.ctx, 101); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := f.rec.Mapping().TopicFor(a.Key); e.Muted || !e.Closed {
+		t.Fatalf("entry after closing exited = %+v", *e)
+	}
+}
+
+func TestReconcilerRenameFromTelegram(t *testing.T) {
+	tests := []struct {
+		name     string
+		typed    string
+		wantName *string // nil = clear
+	}{
+		{"with prefix", "V3Jobs · fixer", ptr("fixer")},
+		{"without prefix", "fixer", ptr("fixer")},
+		{"prefix and spaces", "  V3Jobs ·   fixer  ", ptr("fixer")},
+		{"tab label clears", "V3Jobs · claude", nil},
+		{"kind clears", "claude", nil},
+		{"only workspace clears", "V3Jobs", nil},
+		{"empty clears", "   ", nil},
+		{"legacy status prefix stripped", "🏁 V3Jobs · fixer", ptr("fixer")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRec(t)
+			a := wsAgent("p1", "t1", "reviewer", domain.StatusWorking)
+			f.handle(t, app.AgentAppeared, a)
+			// An edit is already pending when the operator renames the topic.
+			f.handle(t, app.AgentChanged, wsAgent("p1", "t1", "reviewer", domain.StatusIdle))
+			snapshot, err := f.rec.OnTopicRenamed(f.ctx, 101, tt.typed)
+			if err != nil || !snapshot {
+				t.Fatalf("OnTopicRenamed = %v, %v", snapshot, err)
+			}
+			r := f.herdr.Renames()
+			if len(r) != 1 || r[0].Target != "p1" {
+				t.Fatalf("Renames = %+v", r)
+			}
+			switch {
+			case tt.wantName == nil && r[0].Name != nil:
+				t.Fatalf("Rename name = %q, want clear", *r[0].Name)
+			case tt.wantName != nil && (r[0].Name == nil || *r[0].Name != *tt.wantName):
+				t.Fatalf("Rename name = %v, want %q", r[0].Name, *tt.wantName)
+			}
+			e, _ := f.rec.Mapping().TopicFor(a.Key)
+			if e.Name != tt.typed {
+				t.Fatalf("entry name = %q, want the typed name %q", e.Name, tt.typed)
+			}
+			// The pending edit does not flap the topic back: the reconciler's
+			// agent now carries the operator's name.
+			f.fireDue(t, 1)
+			calls := f.tg.Calls()
+			last := calls[len(calls)-1]
+			if !strings.HasPrefix(last, "edit:101:") || strings.Contains(last, "name=V3Jobs · reviewer") {
+				t.Fatalf("edit after rename = %q", last)
+			}
+		})
+	}
+}
+
+func TestReconcilerRenameIgnoredOrFailed(t *testing.T) {
+	f := newRec(t)
+	a := wsAgent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+
+	if snapshot, err := f.rec.OnTopicRenamed(f.ctx, 999, "x"); err != nil || snapshot {
+		t.Fatalf("unknown thread: %v, %v", snapshot, err)
+	}
+	f.herdr.FailNext("rename", domain.ErrAgentGone)
+	if snapshot, err := f.rec.OnTopicRenamed(f.ctx, 101, "fixer"); err != nil || snapshot {
+		t.Fatalf("failed rename: %v, %v", snapshot, err)
+	}
+	assertCalls(t, f.tg, "create:V3Jobs · reviewer:working", "send:101:rename failed: agent is gone")
+	if e, _ := f.rec.Mapping().TopicFor(a.Key); e.Name != "V3Jobs · reviewer" {
+		t.Fatalf("entry renamed despite failure: %q", e.Name)
+	}
+
+	f.handle(t, app.AgentGone, wsAgent("p1", "t1", "reviewer", domain.StatusExited))
+	if snapshot, err := f.rec.OnTopicRenamed(f.ctx, 101, "fixer"); err != nil || snapshot {
+		t.Fatalf("exited rename: %v, %v", snapshot, err)
+	}
+	if n := len(f.herdr.Renames()); n != 1 {
+		t.Fatalf("renames = %d, want only the failed one", n)
+	}
+}
+
+func ptr(s string) *string { return &s }

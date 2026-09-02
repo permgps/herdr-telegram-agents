@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestDaemonNotConfigured(t *testing.T) {
@@ -80,5 +85,60 @@ func TestDaemonOutsideHerdr(t *testing.T) {
 	code, _, stderr := runCLI(t, "daemon")
 	if code != exitError || !strings.Contains(stderr, "HERDR_PLUGIN_CONFIG_DIR") {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+}
+
+func TestRunWithTelegramStopsPollerAfterLoop(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	record := func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, s)
+	}
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	tgStopped := make(chan struct{})
+	telegram := func(ctx context.Context) {
+		<-ctx.Done()
+		record("telegram stopped")
+		close(tgStopped)
+	}
+	run := func(ctx context.Context) error {
+		<-ctx.Done()
+		// The loop's shutdown still needs the Telegram side: it must not
+		// have been cancelled yet.
+		select {
+		case <-tgStopped:
+			record("flush without telegram")
+		default:
+			record("flush")
+		}
+		return context.Cause(ctx)
+	}
+	go cancel(errTelegramFatal)
+	err := runWithTelegram(context.Background(), runCtx, run, telegram, time.Second, slog.New(slog.DiscardHandler))
+	if !errors.Is(err, errTelegramFatal) {
+		t.Fatalf("err = %v, want the cancellation cause", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "flush" || order[1] != "telegram stopped" {
+		t.Fatalf("order = %v", order)
+	}
+}
+
+func TestRunWithTelegramGivesUpOnHungPoller(t *testing.T) {
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(nil)
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	telegram := func(context.Context) { <-hung }
+	run := func(ctx context.Context) error { return nil }
+	start := time.Now()
+	if err := runWithTelegram(context.Background(), runCtx, run, telegram, 20*time.Millisecond, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("hung poller blocked exit")
 	}
 }

@@ -24,7 +24,7 @@ func newRunningBridge(t *testing.T) *runningBridge {
 	f := newBridgeFixture(t)
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
-	reconciler := NewReconciler(f.tg, testkit.NewMemMappingStore(), f.mapping, f.clock, nil)
+	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, f.clock, nil)
 	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.clock, nil)
 	// The fixture's agent map stands in for the registry so tests control
 	// statuses directly.

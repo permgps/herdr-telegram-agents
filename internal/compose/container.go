@@ -172,7 +172,8 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 
 	clock := realClock{}
 	registry := app.NewRegistry(hg, clock, log)
-	reconciler := app.NewReconciler(tg, mappings, mapping, clock, log)
-	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, state.NewConfigStore(env.ConfigDir, log), clock, log)
+	reconciler := app.NewReconciler(tg, hg, mappings, mapping, clock, log)
+	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, clock, log)
+	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, state.NewConfigStore(env.ConfigDir, log), clock, log)
 	return d, run, closeAll, nil
 }
