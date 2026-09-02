@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -24,12 +25,102 @@ const (
 	CmdStatus CommandKind = "status"
 	// CmdHelp prints the command list.
 	CmdHelp CommandKind = "help"
+	// CmdForward types the slash line into the agent as one of its own
+	// commands (Claude Code /clear, /compact, /usage, /model); Text holds
+	// the exact line and Forward says what to do once it has run.
+	CmdForward CommandKind = "forward"
 	// CmdUnknown is a slash word the plugin does not know; Text holds it.
 	CmdUnknown CommandKind = "unknown"
 )
 
 // MaxScreenLines caps the line count an operator may request with /screen.
 const MaxScreenLines = 200
+
+// ForwardPost selects what the bridge posts after a forwarded command has
+// been typed and the settle delay has passed.
+type ForwardPost string
+
+const (
+	// ForwardPostNone posts nothing; the result shows up through the
+	// agent status (used for /compact).
+	ForwardPostNone ForwardPost = "none"
+	// ForwardPostTail posts the last few lines of the visible screen.
+	ForwardPostTail ForwardPost = "tail"
+	// ForwardPostScreen posts the visible screen, cut to the overlay the
+	// command opened when one is recognisable.
+	ForwardPostScreen ForwardPost = "screen"
+)
+
+// ForwardRule describes the follow-up of one forwarded command.
+type ForwardRule struct {
+	Post ForwardPost
+	// Dismiss sends esc after the screen was read because the command
+	// left an overlay open (/usage, the /model picker).
+	Dismiss bool
+}
+
+// forwardRules maps the Claude Code commands an operator may send from a
+// topic to their follow-up. A word missing here stays an unknown command,
+// so a typo in a plugin command never reaches the agent as a prompt.
+var forwardRules = map[string]ForwardRule{
+	"clear":   {Post: ForwardPostTail},
+	"compact": {Post: ForwardPostNone},
+	"usage":   {Post: ForwardPostScreen, Dismiss: true},
+	"model":   {Post: ForwardPostScreen, Dismiss: true},
+}
+
+// forwardRuleFor resolves the rule for a slash word; /model with a name
+// sets the model outright instead of opening the picker, so it only needs
+// the tail.
+func forwardRuleFor(word string, hasArgs bool) (ForwardRule, bool) {
+	rule, ok := forwardRules[word]
+	if !ok {
+		return ForwardRule{}, false
+	}
+	if word == "model" && hasArgs {
+		return ForwardRule{Post: ForwardPostTail}, true
+	}
+	return rule, true
+}
+
+// ForwardWords lists the forwarded command words in a stable order.
+func ForwardWords() []string {
+	words := make([]string, 0, len(forwardRules))
+	for w := range forwardRules {
+		words = append(words, w)
+	}
+	sort.Strings(words)
+	return words
+}
+
+// overlayRuleMinRunes is the shortest run of ▔ that counts as the line
+// separating the transcript from an overlay Claude Code drew below it.
+const overlayRuleMinRunes = 8
+
+// CutOverlay returns the lines after the last full-width ▔ rule in a
+// screen, which is where Claude Code draws its /usage panel and /model
+// picker; text without such a rule is returned unchanged.
+func CutOverlay(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isOverlayRule(lines[i]) {
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return text
+}
+
+func isOverlayRule(line string) bool {
+	line = strings.TrimSpace(line)
+	n := 0
+	for _, r := range line {
+		if r != '▔' {
+			return false
+		}
+		n++
+	}
+	return n >= overlayRuleMinRunes
+}
 
 // Command is one parsed operator instruction.
 type Command struct {
@@ -45,6 +136,8 @@ type Command struct {
 	// All asks CmdScreen for the output since the last human message
 	// instead of the visible screen ("/screen all").
 	All bool
+	// Forward is the follow-up rule for CmdForward.
+	Forward ForwardRule
 }
 
 // shortReplies maps what an operator types while an agent is blocked to the
@@ -81,6 +174,9 @@ func ParseCommand(text, botUsername string) Command {
 	}
 	word = strings.ToLower(word)
 	args := fields[1:]
+	// rest is the message after the slash word with its inner spacing kept,
+	// so a forwarded /compact instruction reaches the agent as typed.
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
 	switch word {
 	case "screen":
 		return parseScreen(args)
@@ -95,6 +191,13 @@ func ParseCommand(text, botUsername string) Command {
 		return Command{Kind: CmdStatus}
 	case "help":
 		return Command{Kind: CmdHelp}
+	}
+	if rule, ok := forwardRuleFor(word, rest != ""); ok {
+		line := "/" + word
+		if rest != "" {
+			line += " " + rest
+		}
+		return Command{Kind: CmdForward, Text: line, Forward: rule}
 	}
 	return Command{Kind: CmdUnknown, Text: "/" + word}
 }

@@ -37,6 +37,16 @@ func TestParseCommand(t *testing.T) {
 		{"other bot", "/help@other_bot", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/help@other_bot"}},
 		{"unknown word", "/restart now", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/restart"}},
 		{"leading whitespace before slash", "  /focus", "herdr_bot", domain.Command{Kind: domain.CmdFocus}},
+		{"forward clear", "/clear", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/clear", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
+		{"forward clear upper case with bot suffix", "/CLEAR@herdr_bot", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/clear", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
+		{"forward clear for another bot", "/clear@other_bot", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/clear@other_bot"}},
+		{"forward compact bare", "/compact", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/compact", Forward: domain.ForwardRule{Post: domain.ForwardPostNone}}},
+		{"forward compact keeps inner spacing", "/compact focus on the  API ", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/compact focus on the  API", Forward: domain.ForwardRule{Post: domain.ForwardPostNone}}},
+		{"forward usage", "/usage", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/usage", Forward: domain.ForwardRule{Post: domain.ForwardPostScreen, Dismiss: true}}},
+		{"forward model bare opens the picker", "/model", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/model", Forward: domain.ForwardRule{Post: domain.ForwardPostScreen, Dismiss: true}}},
+		{"forward model with name", "/model sonnet", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/model sonnet", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
+		{"forward model with suffix and name", "/model@herdr_bot opus", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/model opus", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
+		{"near miss stays unknown", "/models", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/models"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,12 +106,45 @@ func TestRoute(t *testing.T) {
 		{"long text while blocked is a prompt", "yes, but keep the tests", domain.StatusBlocked, domain.Command{Kind: domain.CmdPrompt, Text: "yes, but keep the tests"}},
 		{"slash while blocked", "/keys esc", domain.StatusBlocked, domain.Command{Kind: domain.CmdKeys, Keys: []string{"esc"}}},
 		{"slash while idle", "/status", domain.StatusIdle, domain.Command{Kind: domain.CmdStatus}},
+		{"forwarded command while blocked is not a key press", "/clear", domain.StatusBlocked, domain.Command{Kind: domain.CmdForward, Text: "/clear", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := domain.Route(tt.in, "herdr_bot", tt.status)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("Route(%q, %s) = %+v, want %+v", tt.in, tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestForwardWords(t *testing.T) {
+	want := []string{"clear", "compact", "model", "usage"}
+	if got := domain.ForwardWords(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ForwardWords = %v, want %v", got, want)
+	}
+}
+
+func TestCutOverlay(t *testing.T) {
+	rule := "▔▔▔▔▔▔▔▔▔▔▔▔"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"lines after the rule", "transcript\nmore\n" + rule + "\n   Settings  Usage\n   10% used", "   Settings  Usage\n   10% used"},
+		{"last rule wins", rule + "\nold\n" + rule + "\nnew", "new"},
+		{"indented rule", "a\n  " + rule + "  \nb", "b"},
+		{"short rule ignored", "a\n▔▔▔\nb", "a\n▔▔▔\nb"},
+		{"mixed line is not a rule", "a\n" + rule + "x\nb", "a\n" + rule + "x\nb"},
+		{"no rule", "a\nb", "a\nb"},
+		{"rule as last line", "a\n" + rule, ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := domain.CutOverlay(tt.in); got != tt.want {
+				t.Fatalf("CutOverlay(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
