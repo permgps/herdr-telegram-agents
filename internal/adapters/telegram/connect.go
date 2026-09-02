@@ -35,7 +35,7 @@ func Connect(ctx context.Context, cfg domain.Config, log *slog.Logger, fatal con
 	// A missing menu is a cosmetic loss; RegisterCommands already logged it.
 	_ = RegisterCommands(ctx, api, cfg.ChatID, log)
 	queue := NewQueue(log, DefaultQueueConfig())
-	gw := NewGateway(api, Config{ChatID: cfg.ChatID, Operators: cfg.OperatorIDs, Icons: icons, BotID: identity.ID}, queue, log)
+	gw := NewGateway(api, Config{ChatID: cfg.ChatID, Operators: cfg.OperatorIDs, Icons: icons, BotID: identity.ID, NoticeDelay: NoticeDelay}, queue, log)
 	run := func(ctx context.Context) {
 		var wg sync.WaitGroup
 		wg.Add(2)

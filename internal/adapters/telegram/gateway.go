@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
@@ -19,6 +20,12 @@ const (
 	topicNameMax = 128
 	// eventBuffer bounds inbound events waiting for the application.
 	eventBuffer = 64
+	// NoticeDelay is how long a topic edit notice made by the bot stays
+	// before it is deleted. Telegram clients learn a topic's new icon or
+	// name from that service message; deleting it at once left phones
+	// showing the old icon, so the notice is kept until connected clients
+	// have applied it.
+	NoticeDelay = 10 * time.Second
 )
 
 // Config selects the forum group and who may talk to the bot in it.
@@ -28,6 +35,10 @@ type Config struct {
 	Icons     IconSet
 	// BotID is the bot's own user id, needed for the rights check.
 	BotID int64
+	// NoticeDelay defers the deletion of the bot's own topic edit notices;
+	// zero deletes them as soon as they arrive. Production uses the
+	// NoticeDelay constant.
+	NoticeDelay time.Duration
 }
 
 // Gateway implements domain.TelegramGateway on top of one bot client, a
@@ -42,6 +53,8 @@ type Gateway struct {
 	events    chan domain.Event
 	stopped   chan struct{}
 	log       *slog.Logger
+	// noticeDelay is Config.NoticeDelay.
+	noticeDelay time.Duration
 	// deleteWarned is set after the first failed service-message deletion
 	// so a missing right is reported once, not per edit.
 	deleteWarned atomic.Bool
@@ -69,6 +82,8 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 		events:    make(chan domain.Event, eventBuffer),
 		stopped:   make(chan struct{}),
 		log:       log,
+
+		noticeDelay: cfg.NoticeDelay,
 	}
 	g.registerHandlers()
 	return g

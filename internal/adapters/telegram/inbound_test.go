@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"github.com/permgps/herdr-telegram-agents/internal/adapters/telegram"
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
@@ -293,6 +294,43 @@ func TestInboundDeletesOwnServiceMessages(t *testing.T) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	})
+}
+
+// TestInboundOwnServiceMessageOutlivesNoticeDelay: a topic edit notice is
+// how connected Telegram clients learn the new icon or name, so it must
+// stay for NoticeDelay before the bot deletes it; deleting at once left
+// phones showing the old icon.
+func TestInboundOwnServiceMessageOutlivesNoticeDelay(t *testing.T) {
+	const delay = 400 * time.Millisecond
+	h := newHarnessWith(t, telegram.Config{NoticeDelay: delay})
+	deleted := make(chan int, 8)
+	h.api.on("deleteMessage", func(f url.Values) apiReply {
+		id, _ := strconv.Atoi(f.Get("message_id"))
+		deleted <- id
+		return okReply(true)
+	})
+	start := time.Now()
+	h.bot.ProcessUpdate(context.Background(), ownService(31, 42, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{IconCustomEmojiID: "x"} }))
+	expectNoEvent(t, h.gw.Events())
+	select {
+	case id := <-deleted:
+		t.Fatalf("notice %d deleted after %v, before the %v delay", id, time.Since(start), delay)
+	case <-time.After(delay / 2):
+	}
+	select {
+	case id := <-deleted:
+		if id != 31 {
+			t.Fatalf("deleted message %d, want 31", id)
+		}
+		if since := time.Since(start); since < delay {
+			t.Fatalf("deleted after %v, want at least %v", since, delay)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notice never deleted")
+	}
+	if !strings.Contains(h.buf.String(), "service message delete scheduled") {
+		t.Errorf("delay not logged: %s", h.buf.String())
+	}
 }
 
 // TestInboundServiceDeleteWithoutRight: without "Delete messages" the first

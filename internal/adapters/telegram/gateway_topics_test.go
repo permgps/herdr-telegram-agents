@@ -55,6 +55,13 @@ type harness struct {
 // runs its queue until the test ends.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWith(t, telegram.Config{})
+}
+
+// newHarnessWith is newHarness with the gateway options that are not the
+// fixed chat, operator, icon pack or bot id taken from opts.
+func newHarnessWith(t *testing.T, opts telegram.Config) *harness {
+	t.Helper()
 	api := newFakeAPI(t)
 	log, buf := newTestLog(t)
 	b := api.bot(t, log, nil)
@@ -65,7 +72,8 @@ func newHarness(t *testing.T) *harness {
 	})
 	rec := &sleepRecorder{}
 	q := telegram.NewQueue(log, telegram.QueueConfig{Sleep: rec.Sleep})
-	gw := telegram.NewGateway(b, telegram.Config{ChatID: testChatID, Operators: []int64{testOperator}, Icons: icons, BotID: testBotID}, q, log)
+	opts.ChatID, opts.Operators, opts.Icons, opts.BotID = testChatID, []int64{testOperator}, icons, testBotID
+	gw := telegram.NewGateway(b, opts, q, log)
 	ctx, cancel := context.WithCancel(ctxT(t))
 	done := make(chan struct{})
 	go func() {

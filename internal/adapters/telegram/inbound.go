@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -149,16 +150,28 @@ func (g *Gateway) onOwnService(ctx context.Context, _ *bot.Bot, u *models.Update
 	go g.deleteServiceMessage(ctx, m.MessageThreadID, m.ID)
 }
 
-// deleteServiceMessage runs deleteMessage through the queue. Deleting in a
-// supergroup needs the "Delete messages" administrator right, which setup
-// requests but an operator may withhold, so a failure is reported once at
-// warn level with the right named and afterwards at debug only.
+// deleteServiceMessage waits out the notice delay, then runs deleteMessage
+// through the queue. The wait matters: clients apply the topic's new icon
+// or name from the notice itself, and one deleted straight away was never
+// seen by a phone that lagged a second behind. Deleting in a supergroup
+// needs the "Delete messages" administrator right, which setup requests
+// but an operator may withhold, so a failure is reported once at warn
+// level with the right named and afterwards at debug only.
 func (g *Gateway) deleteServiceMessage(ctx context.Context, threadID, messageID int) {
+	attrs := []any{slog.Int("thread_id", threadID), slog.Int("message_id", messageID)}
+	if g.noticeDelay > 0 {
+		g.log.Debug("service message delete scheduled", append(attrs, slog.Int64("delay_ms", g.noticeDelay.Milliseconds()))...)
+		select {
+		case <-time.After(g.noticeDelay):
+		case <-ctx.Done():
+			g.log.Debug("service message not deleted, context done", attrs...)
+			return
+		}
+	}
 	err := g.queue.Do(ctx, func(ctx context.Context) error {
 		_, err := g.api.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: g.chatID, MessageID: messageID})
 		return translate(err)
 	})
-	attrs := []any{slog.Int("thread_id", threadID), slog.Int("message_id", messageID)}
 	switch {
 	case err == nil:
 		g.log.Debug("service message deleted", attrs...)
