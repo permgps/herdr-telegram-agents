@@ -26,6 +26,7 @@ var documentedCommands = []struct{ name, help string }{
 	{"daemon", "run the long-lived sync daemon in the foreground"},
 	{"action <id>", "[[actions]] entrypoint: setup|start|stop|restart|status|resync|logs"},
 	{"setup-pane", "[[panes]] popup: interactive setup wizard"},
+	{"logs-pane", "[[panes]] overlay: tail of daemon.log"},
 	{"event", "[[events]] hook (fallback notifications)"},
 }
 
@@ -36,16 +37,21 @@ type command func(ctx *runContext, args []string) int
 // runContext carries the per-invocation dependencies every subcommand needs.
 type runContext struct {
 	version string
+	stdin   io.Reader
 	stdout  io.Writer
 	stderr  io.Writer
 	log     *slog.Logger
 }
+
+// stdin is the reader interactive panes use; tests replace it.
+var stdin io.Reader = os.Stdin
 
 // Run dispatches args (os.Args[1:]) to a subcommand and returns the process
 // exit code. It never calls os.Exit so it can be tested directly.
 func Run(args []string, version string, stdout, stderr io.Writer) int {
 	ctx := &runContext{
 		version: version,
+		stdin:   stdin,
 		stdout:  stdout,
 		stderr:  stderr,
 		log:     newLogger(stderr),
@@ -76,10 +82,11 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 func commands() map[string]command {
 	return map[string]command{
 		"version":    runVersion,
-		"startup":    notImplemented("startup"),
-		"daemon":     notImplemented("daemon"),
-		"action":     notImplemented("action"),
-		"setup-pane": notImplemented("setup-pane"),
+		"startup":    runStartup,
+		"daemon":     runDaemon,
+		"action":     runAction,
+		"setup-pane": runSetupPane,
+		"logs-pane":  runLogsPane,
 		"event":      notImplemented("event"),
 		"dev":        runDev,
 	}

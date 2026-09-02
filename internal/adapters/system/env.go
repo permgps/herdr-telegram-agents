@@ -95,3 +95,10 @@ func SocketPath(lookup Lookup, home func() (string, error)) (string, error) {
 func InsideHerdr() bool {
 	return os.Getenv("HERDR_ENV") == "1"
 }
+
+// DefaultSocketPath resolves the Herdr socket from the real environment.
+// It is the socket-only counterpart of ReadEnv for commands that do not
+// need the plugin directories.
+func DefaultSocketPath() (string, error) {
+	return SocketPath(os.LookupEnv, os.UserHomeDir)
+}

@@ -18,9 +18,12 @@ func TestRun(t *testing.T) {
 		{name: "no args prints usage", args: nil, wantCode: 2, wantStderr: "usage: herdr-tg"},
 		{name: "unknown subcommand", args: []string{"bogus"}, wantCode: 2, wantStderr: `unknown subcommand "bogus"`},
 		{name: "version", args: []string{"version"}, wantCode: 0, wantStdout: "herdr-tg 1.2.3 "},
-		{name: "daemon not implemented", args: []string{"daemon"}, wantCode: 2, wantStderr: "herdr-tg daemon: not implemented yet"},
-		{name: "action not implemented", args: []string{"action", "setup"}, wantCode: 2, wantStderr: "herdr-tg action: not implemented yet"},
+		{name: "startup outside herdr", args: []string{"startup"}, wantCode: 1, wantStderr: "HERDR_PLUGIN_CONFIG_DIR"},
+		{name: "action without id", args: []string{"action"}, wantCode: 2, wantStderr: "usage: herdr-tg action"},
+		{name: "event not implemented", args: []string{"event"}, wantCode: 2, wantStderr: "herdr-tg event: not implemented yet"},
 	}
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", "")
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", "")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer

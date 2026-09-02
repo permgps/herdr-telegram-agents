@@ -11,6 +11,8 @@
 #   - github.com/go-telegram/bot only from internal/adapters/telegram
 #   - net, os/exec, github.com/Microsoft/go-winio only from internal/adapters/herdr,
 #     internal/adapters/system (later) and internal/testkit (fake socket server; net only)
+#   - golang.org/x/sys only from internal/adapters/herdr and internal/adapters/system
+#     (it is a transitive dependency of go-winio; nothing else may grow a direct use)
 #   - os.Getenv / os.LookupEnv / os.Environ only in internal/adapters/system and internal/cli
 # Prints one "<pkg> imports <forbidden>" line per violation and exits 1.
 # VERBOSE=1 echoes every package/import pair that is checked.
@@ -104,7 +106,7 @@ while read -r pkg imports; do
 			*) violation "$rel" "$imp" ;;
 			esac
 			;;
-		os/exec | github.com/Microsoft/go-winio | github.com/Microsoft/go-winio/*)
+		os/exec | github.com/Microsoft/go-winio | github.com/Microsoft/go-winio/* | golang.org/x/sys | golang.org/x/sys/*)
 			case "$rel" in
 			internal/adapters/herdr | internal/adapters/system) ;;
 			*) violation "$rel" "$imp" ;;

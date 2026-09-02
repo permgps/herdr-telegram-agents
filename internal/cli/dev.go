@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -52,20 +51,13 @@ func runDev(rc *runContext, args []string) int {
 	}
 }
 
-// herdrSocketPath resolves the socket the way Herdr documents it:
-// HERDR_SOCKET_PATH, else ~/.config/herdr/herdr.sock.
+// herdrSocketPath resolves the socket the way Herdr documents it
+// (HERDR_SOCKET_PATH, else ~/.config/herdr/herdr.sock) through compose.
 func herdrSocketPath() (string, error) {
 	if socketPathOverride != "" {
 		return socketPathOverride, nil
 	}
-	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
-		return p, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("HERDR_SOCKET_PATH unset and home dir unknown: %w", err)
-	}
-	return filepath.Join(home, ".config", "herdr", "herdr.sock"), nil
+	return compose.SocketPath()
 }
 
 func devAgents(rc *runContext, path string) int {

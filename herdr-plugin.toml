@@ -3,8 +3,8 @@
 # Action ids must be unique across the manifest (Herdr rejects a per-platform
 # duplicate with duplicate_plugin_action_id), so one entry serves all
 # platforms: on Windows the process launcher resolves bin/herdr-tg to
-# bin/herdr-tg.exe. [[build]], [[startup]] and [[panes]] arrive with the
-# daemon and setup-wizard milestones.
+# bin/herdr-tg.exe. [[build]] entries arrive with the distribution milestone;
+# until then `make build` produces the binary before `herdr plugin link`.
 
 id = "permgps.telegram-agents"
 name = "Telegram Agents"
@@ -13,7 +13,59 @@ min_herdr_version = "0.7.5"
 description = "One Telegram forum topic per live Herdr agent: status in the topic name and icon, messages both ways."
 platforms = ["linux", "macos", "windows"]
 
+# Runs once after session restore: starts the daemon when configured,
+# otherwise shows a notification pointing at the setup action.
+[[startup]]
+command = ["bin/herdr-tg", "startup"]
+
 [[actions]]
-id = "version"
-title = "Telegram Agents: version"
-command = ["bin/herdr-tg", "version"]
+id = "setup"
+title = "Telegram Agents: setup"
+command = ["bin/herdr-tg", "action", "setup"]
+
+[[actions]]
+id = "start"
+title = "Telegram Agents: start"
+command = ["bin/herdr-tg", "action", "start"]
+
+[[actions]]
+id = "stop"
+title = "Telegram Agents: stop"
+command = ["bin/herdr-tg", "action", "stop"]
+
+[[actions]]
+id = "restart"
+title = "Telegram Agents: restart"
+command = ["bin/herdr-tg", "action", "restart"]
+
+[[actions]]
+id = "status"
+title = "Telegram Agents: status"
+command = ["bin/herdr-tg", "action", "status"]
+
+[[actions]]
+id = "resync"
+title = "Telegram Agents: resync"
+command = ["bin/herdr-tg", "action", "resync"]
+
+[[actions]]
+id = "logs"
+title = "Telegram Agents: logs"
+command = ["bin/herdr-tg", "action", "logs"]
+
+# Interactive setup wizard; opened by the setup action through
+# `herdr plugin pane open --plugin permgps.telegram-agents --entrypoint setup`.
+[[panes]]
+id = "setup"
+title = "Telegram Agents setup"
+placement = "popup"
+width = "80%"
+height = "70%"
+command = ["bin/herdr-tg", "setup-pane"]
+
+# Tail of daemon.log; opened by the logs action.
+[[panes]]
+id = "logs"
+title = "Telegram Agents logs"
+placement = "overlay"
+command = ["bin/herdr-tg", "logs-pane"]
