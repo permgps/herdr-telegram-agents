@@ -153,8 +153,21 @@ Anything you write in a topic reaches the agent:
 | `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200) |
 | `/screen all` | everything the agent printed since your last message (typed in Herdr or sent here); long output arrives as a `.txt` file |
 | `/focus` | the pane is brought to the front in Herdr |
+| `/clear`, `/compact [instructions]`, `/usage`, `/model [name]` | typed into the agent as its own Claude Code command; two seconds later the screen is posted as a quoted reply (`/usage` and a bare `/model` are closed with `esc` for you); only while the agent is idle |
 | `/status` | `<emoji> <status> · <label> · pane <id>` |
 | `/help` | the command list |
+
+The four Claude Code commands are typed verbatim through `agent.prompt`, so
+Claude Code runs them like keyboard input. `/clear` and `/model <name>` post
+the last 12 lines afterwards, `/usage` and a bare `/model` post the panel
+from its top rule down and then send `esc` so nothing stays open, `/compact`
+posts nothing itself: the topic icon turns ⚡ while it runs and the usual
+**done** post shows the summary. A command sent while the agent is working or
+blocked is refused with a hint, because the text would land in the running
+turn or in a dialog and the `esc` could interrupt it; Herdr's detection dips
+out of **working** for a second or two while a tool runs, so a refusal can be
+spurious, just send the command again. Agents of other kinds (Codex, Gemini)
+get the same text as-is and the screen post shows how they reacted.
 
 `/screen all` works from a history the daemon keeps in memory: while an agent
 is **working** its screen is read about once a second and the lines that
