@@ -28,7 +28,8 @@ Early development. Done so far:
   (debounced), closed with a 🏁 marker when the agent exits, drift healed on
   start and on `resync`.
 - **Herdr to Telegram messages** — the screen tail is posted when an agent gets
-  blocked (with a notification) or done (silently), `/screen` on demand.
+  blocked (with a notification) or done (silently), `/screen` on demand,
+  `/screen all` for everything since your last message.
 - **Telegram to Herdr control** — topic text becomes a prompt, short replies
   answer dialogs, `/keys` `/focus` `/status` `/help`, rename and close a topic
   to rename or mute the agent.
@@ -150,9 +151,22 @@ Anything you write in a topic reaches the agent:
 | `y`, `n`, `yes`, `no`, `1`..`9`, `enter`, `ok`, `esc` while the agent is blocked | the matching key (`agent.send_keys`); in any other status these are prompts |
 | `/keys esc enter` | raw key names |
 | `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200) |
+| `/screen all` | everything the agent printed since your last message (typed in Herdr or sent here); long output arrives as a `.txt` file |
 | `/focus` | the pane is brought to the front in Herdr |
 | `/status` | `<emoji> <status> · <label> · pane <id>` |
 | `/help` | the command list |
+
+`/screen all` works from a history the daemon keeps in memory: while an agent
+is **working** its screen is read about once a second and the lines that
+scrolled up are appended; every time the agent starts working after a human
+message (yours from Telegram, or one typed in Herdr) a mark is placed, and
+`/screen all` returns what came after the last mark plus the current screen.
+Herdr keeps no scrollback for Claude Code panes, so this is the only source.
+Limits: the history starts empty when the daemon starts, is capped at 2000
+lines per agent and is dropped when the agent exits; a burst larger than one
+screen between two reads leaves a `…` gap; a prompt sent while the agent is
+already working does not move the mark. Output that fits in three messages is
+posted as code blocks, anything longer as one `.txt` document.
 
 Delivery is silent: the topic icon turning ⚡ within a few seconds shows the
 agent took the prompt. A quoted `⚠️ ...` reply explains why a message did not
@@ -203,7 +217,7 @@ The socket path comes from `HERDR_SOCKET_PATH` and falls back to
 |------|---------|
 | `cmd/herdr-tg/` | Binary entry point |
 | `internal/domain/` | Agents, statuses, topics, mapping, commands, config, events and the ports (standard library only) |
-| `internal/app/` | Use cases: agent registry, reconciler, debounce, bridge (screens out, commands in), setup wizard, supervisor, daemon loop |
+| `internal/app/` | Use cases: agent registry, reconciler, debounce, bridge (screens out, commands in), screen capture for `/screen all`, setup wizard, supervisor, daemon loop |
 | `internal/adapters/herdr/` | Herdr socket adapter: dialers, one-shot calls, event stream, `herdr` CLI runner |
 | `internal/adapters/telegram/` | Telegram Bot API adapter: bot, queue, formatting, icons, inbound updates, setup probe |
 | `internal/adapters/state/` | `config.json`, `mapping.json` and pid file stores |
