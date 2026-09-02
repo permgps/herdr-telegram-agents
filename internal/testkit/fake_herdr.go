@@ -52,6 +52,7 @@ type FakeHerdr struct {
 	notifies   []Notification
 	prompts    []string
 	screens    map[string]string
+	revisions  map[string]int64
 	reads      []ReadCall
 	keys       []KeysCall
 	focused    []string
@@ -70,10 +71,11 @@ func NewFakeHerdr(log *slog.Logger) *FakeHerdr {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &FakeHerdr{
-		screens:  map[string]string{},
-		failNext: map[string]error{},
-		events:   make(chan domain.Event, 64),
-		log:      log,
+		screens:   map[string]string{},
+		revisions: map[string]int64{},
+		failNext:  map[string]error{},
+		events:    make(chan domain.Event, 64),
+		log:       log,
 	}
 }
 
@@ -83,6 +85,15 @@ func (f *FakeHerdr) SetScreen(target, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.screens[target] = text
+}
+
+// SetScreenAt scripts the screen text and the revision ReadScreen reports
+// for the target; SetScreen keeps revision 0.
+func (f *FakeHerdr) SetScreenAt(target, text string, revision int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.screens[target] = text
+	f.revisions[target] = revision
 }
 
 // FailNext makes the next call of method (read, prompt, keys, focus,
@@ -210,7 +221,7 @@ func (f *FakeHerdr) ReadScreen(_ context.Context, target string, source domain.S
 	if !ok {
 		text = "screen"
 	}
-	return domain.Screen{Text: text}, nil
+	return domain.Screen{Text: text, Revision: f.revisions[target]}, nil
 }
 
 func (f *FakeHerdr) Prompt(_ context.Context, target, text string) error {

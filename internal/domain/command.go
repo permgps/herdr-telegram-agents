@@ -14,7 +14,8 @@ const (
 	// CmdKeys sends raw key names to the agent.
 	CmdKeys CommandKind = "keys"
 	// CmdScreen posts the agent's screen; Lines 0 means the whole visible
-	// screen, otherwise the last Lines lines.
+	// screen, otherwise the last Lines lines; All means the output since
+	// the last human message.
 	CmdScreen CommandKind = "screen"
 	// CmdFocus brings the agent's pane to the front in Herdr.
 	CmdFocus CommandKind = "focus"
@@ -41,6 +42,9 @@ type Command struct {
 	// Lines is the requested line count for CmdScreen; 0 means the full
 	// visible screen.
 	Lines int
+	// All asks CmdScreen for the output since the last human message
+	// instead of the visible screen ("/screen all").
+	All bool
 }
 
 // shortReplies maps what an operator types while an agent is blocked to the
@@ -98,6 +102,12 @@ func ParseCommand(text, botUsername string) Command {
 func parseScreen(args []string) Command {
 	if len(args) == 0 {
 		return Command{Kind: CmdScreen}
+	}
+	if strings.EqualFold(args[0], "all") {
+		if len(args) > 1 {
+			return Command{Kind: CmdUnknown, Text: "/screen " + strings.Join(args, " ")}
+		}
+		return Command{Kind: CmdScreen, All: true}
 	}
 	n, err := strconv.Atoi(args[0])
 	if err != nil {

@@ -72,6 +72,18 @@ type Outgoing struct {
 	Notify   bool
 }
 
+// Document is one file for the forum group, sent silently as a single
+// message. ThreadID 0 addresses the General topic. Name is the file name
+// the operator sees; Caption is plain text under the file. ReplyTo quotes
+// the operator message with that id when non-zero.
+type Document struct {
+	ThreadID int
+	Name     string
+	Data     []byte
+	Caption  string
+	ReplyTo  int
+}
+
 // TelegramGateway is the port to the Telegram forum group.
 type TelegramGateway interface {
 	// CreateTopic creates a topic named for the label with the status icon.
@@ -85,6 +97,9 @@ type TelegramGateway interface {
 	// Send posts a message into a topic, or into General when ThreadID is
 	// 0; long text is split into several messages.
 	Send(ctx context.Context, out Outgoing) error
+	// SendDocument uploads one file into a topic, or into General when
+	// ThreadID is 0, as a single silent message.
+	SendDocument(ctx context.Context, doc Document) error
 	// React puts one emoji reaction on the operator's message; threadID is
 	// informational, Telegram addresses reactions by message id.
 	React(ctx context.Context, threadID, messageID int, emoji string) error

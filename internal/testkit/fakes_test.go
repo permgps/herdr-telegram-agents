@@ -237,3 +237,43 @@ func TestFakeHerdrRecordsCallsAndFails(t *testing.T) {
 		t.Fatalf("Renames = %+v", r)
 	}
 }
+
+func TestFakeTelegramSendDocument(t *testing.T) {
+	tg := testkit.NewFakeTelegram(nil)
+	ctx := context.Background()
+	topic, _ := tg.CreateTopic(ctx, "a", domain.StatusWorking)
+	doc := domain.Document{ThreadID: topic.ThreadID, Name: "screen.txt", Data: []byte("abc"), Caption: "3 lines", ReplyTo: 4}
+	if err := tg.SendDocument(ctx, doc); err != nil {
+		t.Fatalf("SendDocument = %v", err)
+	}
+	if err := tg.SendDocument(ctx, domain.Document{ThreadID: 999, Name: "x.txt"}); !errors.Is(err, domain.ErrTopicGone) {
+		t.Fatalf("SendDocument to unknown topic = %v, want ErrTopicGone", err)
+	}
+	tg.FailNext("document", domain.ErrForbidden)
+	if err := tg.SendDocument(ctx, domain.Document{Name: "general.txt"}); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("SendDocument after FailNext = %v", err)
+	}
+	if got := tg.Calls(); len(got) != 4 || got[1] != "document:101:screen.txt:3:reply=4" {
+		t.Fatalf("Calls = %v", got)
+	}
+	if docs := tg.Documents(); len(docs) != 1 || docs[0].Caption != "3 lines" || string(docs[0].Data) != "abc" {
+		t.Fatalf("Documents = %+v", docs)
+	}
+	tg.Reset()
+	if len(tg.Documents()) != 0 {
+		t.Fatal("Reset must drop documents")
+	}
+}
+
+func TestFakeHerdrScreenRevision(t *testing.T) {
+	h := testkit.NewFakeHerdr(nil)
+	ctx := context.Background()
+	h.SetScreen("p1", "one")
+	if sc, _ := h.ReadScreen(ctx, "p1", domain.ScreenRecent, 400); sc.Revision != 0 {
+		t.Fatalf("SetScreen revision = %d, want 0", sc.Revision)
+	}
+	h.SetScreenAt("p1", "two", 7)
+	if sc, _ := h.ReadScreen(ctx, "p1", domain.ScreenRecent, 400); sc.Text != "two" || sc.Revision != 7 {
+		t.Fatalf("SetScreenAt read = %+v", sc)
+	}
+}

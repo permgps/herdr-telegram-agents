@@ -20,6 +20,7 @@ import (
 //	close:<thread>           reopen:<thread>
 //	send:<thread>:<text>     send:<thread>:<text>:reply=<id>   (":notify" appended when set)
 //	react:<thread>:<message>:<emoji>
+//	document:<thread>:<name>:<bytes>   (":reply=<id>" appended when set)
 //	rights
 //
 // Thread 0 in Send stands for the General topic and is always accepted.
@@ -29,6 +30,7 @@ type FakeTelegram struct {
 	nextID   int
 	calls    []string
 	sent     []domain.Outgoing
+	docs     []domain.Document
 	failNext map[string]error
 	rights   domain.Rights
 	rightErr error
@@ -54,7 +56,7 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 }
 
 // FailNext makes the next call of method (create, edit, close, reopen,
-// send, react, rights) return err. Only one failure is queued per method.
+// send, document, react, rights) return err. Only one failure is queued per method.
 func (f *FakeTelegram) FailNext(method string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,12 +89,21 @@ func (f *FakeTelegram) Sent() []domain.Outgoing {
 	return append([]domain.Outgoing(nil), f.sent...)
 }
 
-// Reset forgets the recorded calls and sent messages but keeps the topics.
+// Documents returns every file accepted by SendDocument, in order.
+func (f *FakeTelegram) Documents() []domain.Document {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Document(nil), f.docs...)
+}
+
+// Reset forgets the recorded calls, sent messages and documents but keeps
+// the topics.
 func (f *FakeTelegram) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = nil
 	f.sent = nil
+	f.docs = nil
 }
 
 // Topics returns a copy of the topics sorted by thread id.
@@ -216,6 +227,25 @@ func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) error {
 		}
 	}
 	f.sent = append(f.sent, out)
+	return nil
+}
+
+func (f *FakeTelegram) SendDocument(_ context.Context, doc domain.Document) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := fmt.Sprintf("document:%d:%s:%d", doc.ThreadID, doc.Name, len(doc.Data))
+	if doc.ReplyTo != 0 {
+		call += fmt.Sprintf(":reply=%d", doc.ReplyTo)
+	}
+	if err := f.record("document", call); err != nil {
+		return err
+	}
+	if doc.ThreadID != 0 {
+		if _, ok := f.topics[doc.ThreadID]; !ok {
+			return domain.ErrTopicGone
+		}
+	}
+	f.docs = append(f.docs, doc)
 	return nil
 }
 
