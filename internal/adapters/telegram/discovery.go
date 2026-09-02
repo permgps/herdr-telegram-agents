@@ -49,12 +49,18 @@ func NewProbe(token string, log *slog.Logger, opts ...bot.Option) (*Probe, error
 
 // Identity validates the token with getMe and clears any webhook while
 // keeping pending updates.
+//
+// deleteWebhook is called with nil params on purpose: with
+// DropPendingUpdates false every field is omitted and go-telegram/bot
+// v1.25 sends a multipart body that holds nothing but the closing
+// boundary, which Telegram answers with an empty body ("unexpected end of
+// JSON input", seen 2026-09-02). nil params send no body at all, like getMe.
 func (p *Probe) Identity(ctx context.Context) (domain.BotIdentity, error) {
 	me, err := p.api.GetMe(ctx)
 	if err != nil {
 		return domain.BotIdentity{}, fmt.Errorf("getMe: %w", translate(err))
 	}
-	if _, err := p.api.DeleteWebhook(ctx, &bot.DeleteWebhookParams{DropPendingUpdates: false}); err != nil {
+	if _, err := p.api.DeleteWebhook(ctx, nil); err != nil {
 		return domain.BotIdentity{}, fmt.Errorf("deleteWebhook: %w", translate(err))
 	}
 	p.log.Info("setup probe identified bot", slog.Int64("bot_id", me.ID), slog.String("username", me.Username))

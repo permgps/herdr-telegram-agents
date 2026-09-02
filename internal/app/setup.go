@@ -130,7 +130,7 @@ func (s *Setup) askToken(ctx context.Context) (string, domain.BotIdentity, domai
 		}
 		closeProbe(probe)
 		if !errors.Is(err, domain.ErrBotUnauthorized) {
-			return "", domain.BotIdentity{}, nil, fmt.Errorf("getMe: %w", err)
+			return "", domain.BotIdentity{}, nil, fmt.Errorf("identity: %w", err)
 		}
 		s.log.Warn("setup token rejected", slog.Int("try", try))
 		s.ui.Print("Telegram rejected this token. Check it in @BotFather and try again.")
