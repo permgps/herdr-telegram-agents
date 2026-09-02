@@ -18,6 +18,7 @@ const helpText = `Commands
 /screen [N|all]: post the agent screen: the whole visible screen, its last N lines, or with "all" everything since your last message
 /keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)
 /focus: bring the agent's pane to the front in Herdr
+/clear, /compact [instructions], /usage, /model [name]: typed into the agent as Claude Code commands while it is idle; the screen after the command is posted as a reply, /usage and a bare /model are closed with esc for you
 /status: this agent's status; in General, every agent with a link to its topic
 /help: this list
 
@@ -36,18 +37,41 @@ type inbound struct {
 	chatID      int64
 	botUsername string
 	log         *slog.Logger
+
+	// deb arms the settle timer of a forwarded command; pending holds what
+	// to do when it fires. Both are touched on the bridge goroutine only.
+	deb     *debouncer
+	pending map[domain.Key]followUp
+}
+
+// followUp is a forwarded command waiting for its settle timer: which
+// operator message to quote and what the rule says to post.
+type followUp struct {
+	cmd       domain.Command
+	word      string
+	threadID  int
+	messageID int
 }
 
 func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	live func() []domain.Agent, out *outbound, chatID int64, botUsername string, log *slog.Logger) *inbound {
+	live func() []domain.Agent, out *outbound, chatID int64, botUsername string, clock domain.Clock, log *slog.Logger) *inbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &inbound{
 		herdr: herdr, tg: tg, topics: topics, agents: agents, live: live, out: out,
 		chatID: chatID, botUsername: botUsername, log: log,
+		deb:     newDebouncer(clock, commandSettle, log),
+		pending: map[domain.Key]followUp{},
 	}
 }
+
+// Due delivers agent keys whose forwarded command has settled; the owner
+// calls Fire for each.
+func (i *inbound) Due() <-chan domain.Key { return i.deb.Due() }
+
+// Pending returns how many forwarded commands await their follow-up.
+func (i *inbound) Pending() int { return len(i.pending) }
 
 // HandleTopic routes one topic message: prompt, short reply or command.
 // Success is silent (the topic icon turning ⚡ shows the agent took the
@@ -99,9 +123,121 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, line)
 	case domain.CmdHelp:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, helpText)
+	case domain.CmdForward:
+		return i.forward(ctx, msg, key, agent, cmd)
 	default:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, "unknown command, see /help")
 	}
+}
+
+// forward types a Claude Code command into the agent when it is waiting at
+// its prompt and arms the follow-up that posts the resulting screen. A
+// working or blocked agent gets a refusal instead: the text would land in
+// a dialog or in Claude's input queue, and the esc that closes an overlay
+// would interrupt it.
+func (i *inbound) forward(ctx context.Context, msg domain.TopicMessage, key domain.Key, agent domain.Agent, cmd domain.Command) error {
+	word := forwardWord(cmd.Text)
+	if hint, refused := forwardRefusal(agent.Status); refused {
+		i.log.Info("command refused", slog.String("key", key.String()), slog.String("word", word),
+			slog.String("status", string(agent.Status)), slog.Int("message_id", msg.MessageID))
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, "⚠️ "+hint)
+	}
+	if err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text); err != nil {
+		return i.failed(ctx, msg, key, "prompt", err)
+	}
+	i.log.Info("command forwarded", slog.String("key", key.String()), slog.String("word", word),
+		slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID),
+		slog.String("post", string(cmd.Forward.Post)), slog.Bool("dismiss", cmd.Forward.Dismiss))
+	if cmd.Forward.Post == domain.ForwardPostNone {
+		return nil
+	}
+	if prev, ok := i.pending[key]; ok {
+		i.log.Debug("command follow-up replaced", slog.String("key", key.String()), slog.String("word", prev.word), slog.Int("message_id", prev.messageID))
+	}
+	i.pending[key] = followUp{cmd: cmd, word: word, threadID: msg.ThreadID, messageID: msg.MessageID}
+	i.deb.Schedule(key)
+	i.log.Debug("command follow-up scheduled", slog.String("key", key.String()), slog.String("word", word), slog.Int64("delay_ms", i.deb.delay.Milliseconds()))
+	return nil
+}
+
+// forwardRefusal names the statuses in which a forwarded command is not
+// typed and the hint the operator gets.
+func forwardRefusal(status domain.Status) (string, bool) {
+	switch status {
+	case domain.StatusWorking:
+		return "agent is working, try again when it is idle", true
+	case domain.StatusBlocked:
+		return "agent is waiting for an answer: reply to it or send /keys esc first", true
+	}
+	return "", false
+}
+
+// forwardWord is the command word of a forwarded line, for logs.
+func forwardWord(line string) string {
+	word, _, _ := strings.Cut(strings.TrimPrefix(line, "/"), " ")
+	return word
+}
+
+// Fire runs the follow-up of a forwarded command once its settle timer
+// fired: read the screen, post it as a quoted reply and, for overlay
+// commands, send esc. A read failure is reported and the esc still goes
+// out so no overlay is left open. Only fatal Telegram errors are returned.
+func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
+	f, ok := i.pending[key]
+	if !ok {
+		i.log.Debug("command follow-up without pending", slog.String("key", key.String()))
+		return nil
+	}
+	delete(i.pending, key)
+	entry, hasTopic := i.topics.Entry(key)
+	_, alive := i.agents(key)
+	if !alive || !hasTopic || !entry.Status.Live() {
+		i.log.Debug("command follow-up skipped", slog.String("key", key.String()), slog.String("word", f.word),
+			slog.Bool("alive", alive), slog.Bool("topic", hasTopic && entry.Status.Live()))
+		if f.cmd.Forward.Dismiss && alive {
+			return i.dismiss(ctx, key, f)
+		}
+		return nil
+	}
+	lines := 0
+	if f.cmd.Forward.Post == domain.ForwardPostTail {
+		lines = commandTailLines
+	}
+	screen, err := i.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenVisible, lines)
+	if err != nil {
+		i.log.Warn("command screen read failed", slog.String("key", key.String()), slog.String("word", f.word), slog.String("err", err.Error()))
+		if err := i.reply(ctx, f.threadID, f.messageID, "⚠️ screen read failed: "+failureReason(err)); err != nil {
+			return err
+		}
+	} else {
+		text := trimScreen(screen.Text)
+		if f.cmd.Forward.Post == domain.ForwardPostScreen && f.cmd.Forward.Dismiss {
+			text = trimScreen(domain.CutOverlay(text))
+		}
+		if text == "" {
+			text = "(screen is empty)"
+		}
+		if err := i.absorb(i.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, ReplyTo: f.messageID})); err != nil {
+			return err
+		}
+		i.log.Info("command screen posted", slog.String("key", key.String()), slog.String("word", f.word),
+			slog.Int("thread_id", entry.ThreadID), slog.Int("lines", strings.Count(text, "\n")+1),
+			slog.Int("bytes", len(text)), slog.Bool("dismiss", f.cmd.Forward.Dismiss))
+	}
+	if !f.cmd.Forward.Dismiss {
+		return nil
+	}
+	return i.dismiss(ctx, key, f)
+}
+
+// dismiss closes the overlay a forwarded command opened.
+func (i *inbound) dismiss(ctx context.Context, key domain.Key, f followUp) error {
+	if err := i.herdr.SendKeys(ctx, key.PaneID, []string{"esc"}); err != nil {
+		i.log.Warn("command dismiss failed", slog.String("key", key.String()), slog.String("word", f.word), slog.String("err", err.Error()))
+		return i.reply(ctx, f.threadID, f.messageID, "⚠️ could not close the overlay: "+failureReason(err))
+	}
+	i.log.Debug("command overlay dismissed", slog.String("key", key.String()), slog.String("word", f.word))
+	return nil
 }
 
 // HandleGeneral answers a command written in the General topic.

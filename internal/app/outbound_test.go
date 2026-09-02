@@ -53,7 +53,7 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	}
 	f.capture = NewCapture(f.herdr, live, f.clock, nil)
 	f.out = newOutbound(f.herdr, f.tg, f.view, lookup, f.capture, f.clock, nil)
-	f.in = newInbound(f.herdr, f.tg, f.view, lookup, live, f.out, -1001234567890, "agents_bot", nil)
+	f.in = newInbound(f.herdr, f.tg, f.view, lookup, live, f.out, -1001234567890, "agents_bot", f.clock, nil)
 	return f
 }
 

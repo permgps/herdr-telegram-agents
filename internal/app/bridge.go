@@ -37,7 +37,7 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	}
 	topics := reconciler.topics()
 	out := newOutbound(herdr, tg, topics, registry.Agent, capture, clock, log)
-	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, cfg.ChatID, cfg.BotUsername, log)
+	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, cfg.ChatID, cfg.BotUsername, clock, log)
 	return &Bridge{
 		out:         out,
 		in:          in,
@@ -48,8 +48,11 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	}
 }
 
-// SetSettle overrides the screen settle delay (tests).
-func (b *Bridge) SetSettle(d time.Duration) { b.out.deb.delay = d }
+// SetSettle overrides the screen and command settle delays (tests).
+func (b *Bridge) SetSettle(d time.Duration) {
+	b.out.deb.delay = d
+	b.in.deb.delay = d
+}
 
 // Fatal delivers the first fatal Telegram error met by a job.
 func (b *Bridge) Fatal() <-chan error { return b.fatal }
@@ -75,8 +78,9 @@ func (b *Bridge) Submit(job any) {
 // Dropped returns how many jobs were lost to overflow.
 func (b *Bridge) Dropped() int64 { return b.dropped.Load() }
 
-// Run serves jobs and settle timers until ctx is done. Errors never end the
-// loop; fatal ones are reported through Fatal and the daemon decides.
+// Run serves jobs, screen settle timers and command follow-up timers until
+// ctx is done. Errors never end the loop; fatal ones are reported through
+// Fatal and the daemon decides.
 func (b *Bridge) Run(ctx context.Context) {
 	b.log.Info("bridge started")
 	defer b.log.Info("bridge stopped")
@@ -88,6 +92,8 @@ func (b *Bridge) Run(ctx context.Context) {
 			b.handle(ctx, job)
 		case key := <-b.out.Due():
 			b.run(ctx, "screen", func(ctx context.Context) error { return b.out.Fire(ctx, key) })
+		case key := <-b.in.Due():
+			b.run(ctx, "command", func(ctx context.Context) error { return b.in.Fire(ctx, key) })
 		}
 	}
 }

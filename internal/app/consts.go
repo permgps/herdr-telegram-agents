@@ -51,4 +51,11 @@ const (
 	// screenAllInlineRunes is the longest /screen all text still posted as
 	// messages (about three chunks); longer output goes out as a file.
 	screenAllInlineRunes = 12000
+	// commandSettle is how long the bridge waits after typing a forwarded
+	// Claude Code command (/clear, /usage, /model) before reading the
+	// screen, so the overlay or the command output has rendered.
+	commandSettle = 2 * time.Second
+	// commandTailLines is the tail posted after a forwarded command that
+	// prints a short confirmation (/clear, /model <name>).
+	commandTailLines = 12
 )

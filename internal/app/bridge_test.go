@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,23 @@ func TestBridgeSettleTimerFiresThroughRun(t *testing.T) {
 	r.clock.Advance(screenSettle)
 	waitUntil(t, "screen post", func() bool { return len(r.tg.Sent()) == 1 })
 	if sent := r.tg.Sent(); sent[0].Text != "question?" || !sent[0].Notify {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestBridgeServesCommandFollowUp(t *testing.T) {
+	r := newRunningBridge(t)
+	r.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	r.herdr.SetScreen("p1", overlayScreen)
+	r.bridge.Submit(topicMsg(101, 7, "/usage"))
+	waitUntil(t, "command typed", func() bool { return len(r.herdr.Prompts()) == 1 })
+	waitUntil(t, "follow-up timer armed", func() bool { return r.clock.Pending() == 1 })
+	if n := len(r.tg.Sent()); n != 0 {
+		t.Fatalf("posted before settle: %d", n)
+	}
+	r.clock.Advance(commandSettle)
+	waitUntil(t, "screen post and esc", func() bool { return len(r.tg.Sent()) == 1 && len(r.herdr.Keys()) == 1 })
+	if sent := r.tg.Sent(); sent[0].ReplyTo != 7 || !sent[0].Code || !strings.HasPrefix(sent[0].Text, "   Settings") {
 		t.Fatalf("Sent = %+v", sent)
 	}
 }
