@@ -27,6 +27,13 @@ var (
 	ErrChatMigrated = errors.New("chat migrated to a new id")
 	// ErrDisconnected means the Herdr socket connection was lost.
 	ErrDisconnected = errors.New("disconnected from herdr")
+	// ErrAlreadyRunning means another daemon holds the pid file.
+	ErrAlreadyRunning = errors.New("daemon is already running")
+	// ErrNotRunning means no daemon is running.
+	ErrNotRunning = errors.New("daemon is not running")
+	// ErrUnsupportedPlatform means the operation has no implementation on
+	// this OS yet (Windows stop/resync arrive with the Windows milestone).
+	ErrUnsupportedPlatform = errors.New("not supported on this platform yet")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

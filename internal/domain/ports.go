@@ -65,9 +65,38 @@ type TelegramGateway interface {
 	ReopenTopic(ctx context.Context, threadID int) error
 	// SendText posts text into the topic; code renders it as a code block.
 	SendText(ctx context.Context, threadID int, text string, code bool) error
+	// Rights reports whether the chat is a forum and the bot may manage
+	// its topics; the daemon checks it on start and after RightsChanged.
+	Rights(ctx context.Context) (Rights, error)
 	// Events streams TopicMessage, TopicRenamed, TopicClosed, TopicReopened
 	// and RightsChanged values until the gateway is closed.
 	Events() <-chan Event
+}
+
+// Rights is the bot's standing in the configured chat.
+type Rights struct {
+	IsForum         bool
+	IsAdmin         bool
+	CanManageTopics bool
+}
+
+// ConfigStore persists the plugin configuration. Load returns
+// ErrNotConfigured when nothing has been saved yet.
+type ConfigStore interface {
+	Load(ctx context.Context) (Config, error)
+	Save(ctx context.Context, cfg Config) error
+}
+
+// MappingStore persists the agent-to-topic mapping. A missing file yields
+// an empty mapping, not an error.
+type MappingStore interface {
+	Load(ctx context.Context) (*Mapping, error)
+	Save(ctx context.Context, m *Mapping) error
+}
+
+// PaneOpener opens one of the plugin's manifest panes through Herdr.
+type PaneOpener interface {
+	OpenPane(ctx context.Context, pluginID, entrypoint string) error
 }
 
 // Clock abstracts time so the application layer is testable without sleeping.

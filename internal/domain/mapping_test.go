@@ -1,0 +1,188 @@
+package domain_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/permgps/herdr-telegram-agents/internal/domain"
+)
+
+var t0 = time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+
+func agent(pane, term, name string, st domain.Status) domain.Agent {
+	return domain.Agent{Key: domain.Key{PaneID: pane, TerminalID: term}, Name: name, Status: st}
+}
+
+func linked(t *testing.T, m *domain.Mapping, a domain.Agent, thread int) {
+	t.Helper()
+	m.Link(a.Key, domain.Topic{ThreadID: thread}, a, t0)
+}
+
+func TestParseKey(t *testing.T) {
+	tests := []struct {
+		in   string
+		want domain.Key
+		ok   bool
+	}{
+		{"p1/t2", domain.Key{PaneID: "p1", TerminalID: "t2"}, true},
+		{"p1", domain.Key{}, false},
+		{"/t2", domain.Key{}, false},
+		{"p1/", domain.Key{}, false},
+	}
+	for _, tt := range tests {
+		got, ok := domain.ParseKey(tt.in)
+		if ok != tt.ok || got != tt.want {
+			t.Fatalf("ParseKey(%q) = %v,%v want %v,%v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestMappingLinkStoresDesiredOrConfirmedName(t *testing.T) {
+	m := domain.NewMapping(-1)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	e := m.Link(a.Key, domain.Topic{ThreadID: 5}, a, t0)
+	if e.Name != "⚙️ reviewer" || e.Status != domain.StatusWorking || e.ThreadID != 5 {
+		t.Fatalf("entry = %+v", *e)
+	}
+	e = m.Link(a.Key, domain.Topic{ThreadID: 6, Name: "⚙️ rev"}, a, t0)
+	if e.Name != "⚙️ rev" {
+		t.Fatalf("confirmed name not kept: %q", e.Name)
+	}
+}
+
+func TestMappingDiff(t *testing.T) {
+	tests := []struct {
+		name       string
+		after      domain.Agent
+		wantChange bool
+		wantName   bool
+		wantStatus bool
+	}{
+		{"no change", agent("p1", "t1", "reviewer", domain.StatusWorking), false, false, false},
+		{"label change", agent("p1", "t1", "fixer", domain.StatusWorking), true, true, false},
+		{"status change", agent("p1", "t1", "reviewer", domain.StatusIdle), true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := domain.NewMapping(-1)
+			linked(t, m, agent("p1", "t1", "reviewer", domain.StatusWorking), 1)
+			p, changed := m.Diff(tt.after.Key, tt.after)
+			if changed != tt.wantChange || (p.Name != nil) != tt.wantName || (p.Status != nil) != tt.wantStatus {
+				t.Fatalf("Diff = %+v,%v", p, changed)
+			}
+		})
+	}
+	t.Run("unknown key", func(t *testing.T) {
+		m := domain.NewMapping(-1)
+		if _, changed := m.Diff(domain.Key{PaneID: "x", TerminalID: "y"}, agent("x", "y", "a", domain.StatusIdle)); changed {
+			t.Fatal("unknown key reported a change")
+		}
+	})
+}
+
+func TestMappingApplyAndExit(t *testing.T) {
+	m := domain.NewMapping(-1)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	linked(t, m, a, 1)
+	name := "💤 reviewer"
+	st := domain.StatusIdle
+	m.Apply(a.Key, domain.TopicPatch{Name: &name, Status: &st}, t0.Add(time.Second))
+	e, _ := m.TopicFor(a.Key)
+	if e.Name != name || e.Status != st || !e.UpdatedAt.Equal(t0.Add(time.Second)) {
+		t.Fatalf("after Apply: %+v", *e)
+	}
+
+	exited, ok := m.ExitedName(a.Key)
+	if !ok || exited != "🏁 reviewer" {
+		t.Fatalf("ExitedName = %q,%v", exited, ok)
+	}
+	m.MarkExited(a.Key, t0.Add(2*time.Second))
+	if e.Status != domain.StatusExited || e.Name != "🏁 reviewer" {
+		t.Fatalf("after MarkExited: %+v", *e)
+	}
+	if _, changed := m.Diff(a.Key, agent("p1", "t1", "reviewer", domain.StatusWorking)); changed {
+		t.Fatal("exited entry must not diff")
+	}
+	if got := m.Unclosed(); len(got) != 1 || got[0] != a.Key {
+		t.Fatalf("Unclosed = %v", got)
+	}
+	m.MarkClosed(a.Key, t0.Add(3*time.Second))
+	if !e.Closed || len(m.Unclosed()) != 0 {
+		t.Fatalf("after MarkClosed: closed=%v unclosed=%v", e.Closed, m.Unclosed())
+	}
+	m.Forget(a.Key)
+	if _, ok := m.TopicFor(a.Key); ok {
+		t.Fatal("Forget left the entry")
+	}
+}
+
+func TestMappingOrphans(t *testing.T) {
+	m := domain.NewMapping(-1)
+	live := agent("p1", "t1", "a", domain.StatusWorking)
+	gone := agent("p2", "t2", "b", domain.StatusWorking)
+	old := agent("p3", "t3", "c", domain.StatusWorking)
+	linked(t, m, live, 1)
+	linked(t, m, gone, 2)
+	linked(t, m, old, 3)
+	m.MarkExited(old.Key, t0)
+
+	got := m.Orphans(map[domain.Key]struct{}{live.Key: {}})
+	if len(got) != 1 || got[0] != gone.Key {
+		t.Fatalf("Orphans = %v, want [%v]", got, gone.Key)
+	}
+}
+
+func TestMappingPrune(t *testing.T) {
+	m := domain.NewMapping(-1)
+	live := agent("p0", "t0", "live", domain.StatusWorking)
+	linked(t, m, live, 0)
+	for i := 1; i <= 4; i++ {
+		a := agent("p"+string(rune('0'+i)), "t", "x", domain.StatusWorking)
+		linked(t, m, a, i)
+		m.MarkExited(a.Key, t0.Add(time.Duration(i)*time.Hour))
+	}
+	// Age: entries 1 and 2 are older than 2 h relative to t0+4.5h.
+	now := t0.Add(4*time.Hour + 30*time.Minute)
+	if got := m.Prune(now, 2*time.Hour, 0); got != 2 {
+		t.Fatalf("Prune by age removed %d, want 2", got)
+	}
+	// Count: 3 left (live + 2 exited); cap at 2 removes the oldest exited.
+	if got := m.Prune(now, 24*time.Hour, 2); got != 1 {
+		t.Fatalf("Prune by count removed %d, want 1", got)
+	}
+	if _, ok := m.TopicFor(live.Key); !ok {
+		t.Fatal("live entry pruned")
+	}
+	if _, ok := m.TopicFor(domain.Key{PaneID: "p4", TerminalID: "t"}); !ok {
+		t.Fatal("newest exited entry pruned instead of the oldest")
+	}
+	// Cap can never remove live entries.
+	if got := m.Prune(now, 24*time.Hour, 0); got != 0 {
+		t.Fatalf("Prune with cap 0 removed %d", got)
+	}
+}
+
+func TestMappingDedupeThreads(t *testing.T) {
+	m := domain.NewMapping(-1)
+	older := agent("p1", "t1", "a", domain.StatusWorking)
+	newer := agent("p1", "t2", "a", domain.StatusWorking)
+	other := agent("p2", "t1", "b", domain.StatusWorking)
+	linked(t, m, older, 9)
+	linked(t, m, newer, 9)
+	linked(t, m, other, 10)
+	e, _ := m.TopicFor(newer.Key)
+	e.UpdatedAt = t0.Add(time.Minute)
+
+	if got := m.DedupeThreads(); got != 1 {
+		t.Fatalf("DedupeThreads removed %d, want 1", got)
+	}
+	if _, ok := m.TopicFor(older.Key); ok {
+		t.Fatal("older duplicate kept")
+	}
+	if _, ok := m.TopicFor(newer.Key); !ok {
+		t.Fatal("newer duplicate removed")
+	}
+	if keys := m.Keys(); len(keys) != 2 || keys[0] != newer.Key || keys[1] != other.Key {
+		t.Fatalf("Keys = %v", keys)
+	}
+}

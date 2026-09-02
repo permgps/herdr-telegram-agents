@@ -54,10 +54,12 @@ while read -r pkg imports; do
 	rel=${pkg#"$MOD"/}
 	for imp in $imports; do
 		log "$rel -> $imp"
-		third=0
-		if is_third_party "$imp"; then third=1; fi
 		inmod=0
 		case "$imp" in "$MOD"/*) inmod=1 ;; esac
+		# Own-module packages look third-party to is_third_party (the module
+		# path starts with github.com), so classify them first.
+		third=0
+		if [ "$inmod" = 0 ] && is_third_party "$imp"; then third=1; fi
 
 		# Layer rules by importing package.
 		case "$rel" in

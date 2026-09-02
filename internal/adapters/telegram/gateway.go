@@ -145,6 +145,12 @@ func (g *Gateway) ReopenTopic(ctx context.Context, threadID int) error {
 	return g.finish("reopenForumTopic", err, slog.Int("thread_id", threadID))
 }
 
+// Rights is implemented with the daemon wiring (plan task 14); until then
+// it reports an explicit error so nothing mistakes the stub for a result.
+func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
+	return domain.Rights{}, fmt.Errorf("rights: not implemented")
+}
+
 // SendText posts text into the topic, split into parts below Telegram's
 // message limit, each as its own queued call. code wraps every part in
 // <pre>. The first failure stops the remaining parts.
