@@ -24,9 +24,6 @@ const helpText = `Commands
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.
 Any other text is typed into the agent as a prompt.`
 
-// reactionOK is the reaction put on an operator message once Herdr took it.
-const reactionOK = "👍"
-
 // inbound turns operator messages into Herdr calls and answers commands.
 // It runs on the bridge goroutine.
 type inbound struct {
@@ -53,8 +50,9 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 }
 
 // HandleTopic routes one topic message: prompt, short reply or command.
-// Success is acknowledged with a reaction, failure with a quoted reply.
-// Only fatal Telegram errors are returned.
+// Success is silent (the topic icon turning ⚡ shows the agent took the
+// prompt), failure gets a quoted reply. Only fatal Telegram errors are
+// returned.
 func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) error {
 	key, ok := i.topics.KeyForThread(msg.ThreadID)
 	if !ok {
@@ -146,19 +144,13 @@ func (i *inbound) statusSummary() string {
 	return strings.Join(lines, "\n")
 }
 
-// herdrCall runs one Herdr call for an operator message and reports the
-// outcome: a reaction on success, a quoted reply on failure.
+// herdrCall runs one Herdr call for an operator message; only a failure
+// is reported back, as a quoted reply.
 func (i *inbound) herdrCall(ctx context.Context, msg domain.TopicMessage, key domain.Key, method string, call func(context.Context) error) error {
 	if err := call(ctx); err != nil {
 		return i.failed(ctx, msg, key, method, err)
 	}
 	i.log.Debug("herdr call ok", slog.String("method", method), slog.String("key", key.String()), slog.Int("message_id", msg.MessageID))
-	if err := i.tg.React(ctx, msg.ThreadID, msg.MessageID, reactionOK); err != nil {
-		if isFatal(err) {
-			return err
-		}
-		i.log.Debug("reaction failed", slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID), slog.String("err", err.Error()))
-	}
 	return nil
 }
 

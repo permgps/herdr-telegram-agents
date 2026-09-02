@@ -150,8 +150,9 @@ Anything you write in a topic reaches the agent:
 | `/status` | `<emoji> <status> · <label> · pane <id>` |
 | `/help` | the command list |
 
-A 👍 reaction on your message means Herdr took it; a quoted `⚠️ ...` reply
-explains why it did not (agent gone, socket down). Messages in the topic of an
+Delivery is silent: the topic icon turning ⚡ within a few seconds shows the
+agent took the prompt. A quoted `⚠️ ...` reply explains why a message did not
+get through (agent gone, socket down). Messages in the topic of an
 exited agent get `agent has exited`. Only the configured group and the operator
 ids from setup are accepted; everything else is dropped and logged.
 

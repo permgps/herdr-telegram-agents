@@ -32,7 +32,7 @@ func TestInboundPromptAndShortReply(t *testing.T) {
 	if p := f.herdr.Prompts(); len(p) != 1 || p[0] != "p1: fix the tests" {
 		t.Fatalf("Prompts = %v", p)
 	}
-	assertCallsEqual(t, f.tg, "react:101:5:👍")
+	assertCallsEqual(t, f.tg)
 
 	// "y" while idle is a prompt, while blocked a key press.
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "y")); err != nil {
@@ -48,7 +48,8 @@ func TestInboundPromptAndShortReply(t *testing.T) {
 	if k := f.herdr.Keys(); len(k) != 1 || k[0].Target != "p1" || !reflect.DeepEqual(k[0].Keys, []string{"y"}) {
 		t.Fatalf("Keys = %+v", k)
 	}
-	assertCallsEqual(t, f.tg, "react:101:5:👍", "react:101:6:👍", "react:101:7:👍")
+	// Delivery is silent: no reaction, no reply.
+	assertCallsEqual(t, f.tg)
 }
 
 func TestInboundKeysFocusScreen(t *testing.T) {
@@ -71,7 +72,7 @@ func TestInboundKeysFocusScreen(t *testing.T) {
 	if len(reads) != 2 || reads[0].Lines != 10 || reads[0].Source != domain.ScreenVisible || reads[1].Lines != 0 {
 		t.Fatalf("Reads = %+v", reads)
 	}
-	assertCallsEqual(t, f.tg, "react:101:1:👍", "react:101:1:👍", "send:101:the screen", "send:101:the screen")
+	assertCallsEqual(t, f.tg, "send:101:the screen", "send:101:the screen")
 }
 
 func TestInboundStatusHelpUnknown(t *testing.T) {
@@ -140,10 +141,6 @@ func TestInboundHerdrFailureReply(t *testing.T) {
 func TestInboundTelegramErrorPolicy(t *testing.T) {
 	f := newBridgeFixture(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
-	f.tg.FailNext("react", domain.ErrTopicClosed)
-	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 1, "go")); err != nil {
-		t.Fatalf("reaction failure must be absorbed: %v", err)
-	}
 	f.tg.FailNext("send", domain.ErrTopicGone)
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 2, "/help")); err != nil {
 		t.Fatalf("send failure must be absorbed: %v", err)
@@ -152,9 +149,10 @@ func TestInboundTelegramErrorPolicy(t *testing.T) {
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 3, "/help")); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("fatal send error must propagate, got %v", err)
 	}
-	f.tg.FailNext("react", domain.ErrBotUnauthorized)
+	f.herdr.FailNext("prompt", domain.ErrAgentGone)
+	f.tg.FailNext("send", domain.ErrBotUnauthorized)
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 4, "go")); !errors.Is(err, domain.ErrBotUnauthorized) {
-		t.Fatalf("fatal reaction error must propagate, got %v", err)
+		t.Fatalf("fatal error on the failure reply must propagate, got %v", err)
 	}
 }
 

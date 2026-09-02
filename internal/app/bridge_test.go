@@ -63,11 +63,13 @@ func TestBridgeRunsJobsInOrder(t *testing.T) {
 	r.bridge.Submit(topicMsg(101, 1, "first"))
 	r.bridge.Submit(topicMsg(101, 2, "second"))
 	r.bridge.Submit(domain.GeneralCommand{MessageID: 3, FromID: 1, Text: "/help"})
-	waitUntil(t, "three jobs", func() bool { return len(r.tg.Calls()) == 3 })
+	// The help reply is the only Telegram call; it comes last, so both
+	// prompts are already delivered when it shows up.
+	waitUntil(t, "three jobs", func() bool { return len(r.tg.Calls()) == 1 })
 	if p := r.herdr.Prompts(); len(p) != 2 || p[0] != "p1: first" || p[1] != "p1: second" {
 		t.Fatalf("Prompts = %v", p)
 	}
-	assertCallsEqual(t, r.tg, "react:101:1:👍", "react:101:2:👍", "send:0:Commands\n/screen [N]: post the agent screen, the whole visible screen or its last N lines\n/keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)\n/focus: bring the agent's pane to the front in Herdr\n/status: this agent's status; in General, every agent with a link to its topic\n/help: this list\n\nWhile an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.\nAny other text is typed into the agent as a prompt.:reply=3")
+	assertCallsEqual(t, r.tg, "send:0:Commands\n/screen [N]: post the agent screen, the whole visible screen or its last N lines\n/keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)\n/focus: bring the agent's pane to the front in Herdr\n/status: this agent's status; in General, every agent with a link to its topic\n/help: this list\n\nWhile an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.\nAny other text is typed into the agent as a prompt.:reply=3")
 }
 
 func TestBridgeSettleTimerFiresThroughRun(t *testing.T) {
