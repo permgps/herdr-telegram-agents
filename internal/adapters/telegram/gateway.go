@@ -24,6 +24,8 @@ type Config struct {
 	ChatID    int64
 	Operators []int64
 	Icons     IconSet
+	// BotID is the bot's own user id, needed for the rights check.
+	BotID int64
 }
 
 // Gateway implements domain.TelegramGateway on top of one bot client, a
@@ -31,6 +33,7 @@ type Config struct {
 type Gateway struct {
 	api       *bot.Bot
 	chatID    int64
+	botID     int64
 	operators map[int64]bool
 	icons     IconSet
 	queue     *Queue
@@ -54,6 +57,7 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 	g := &Gateway{
 		api:       api,
 		chatID:    cfg.ChatID,
+		botID:     cfg.BotID,
 		operators: ops,
 		icons:     cfg.Icons,
 		queue:     queue,
@@ -145,10 +149,32 @@ func (g *Gateway) ReopenTopic(ctx context.Context, threadID int) error {
 	return g.finish("reopenForumTopic", err, slog.Int("thread_id", threadID))
 }
 
-// Rights is implemented with the daemon wiring (plan task 14); until then
-// it reports an explicit error so nothing mistakes the stub for a result.
+// Rights reports whether the chat is a forum and whether the bot is an
+// administrator allowed to manage topics. Both calls go through the queue.
 func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
-	return domain.Rights{}, fmt.Errorf("rights: not implemented")
+	var rights domain.Rights
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		chat, err := g.api.GetChat(ctx, &bot.GetChatParams{ChatID: g.chatID})
+		if err != nil {
+			return fmt.Errorf("getChat: %w", translate(err))
+		}
+		rights.IsForum = chat.IsForum
+		return nil
+	})
+	if err != nil {
+		return rights, g.finish("getChat", err, slog.Int64("chat_id", g.chatID))
+	}
+	err = g.queue.Do(ctx, func(ctx context.Context) error {
+		member, err := g.api.GetChatMember(ctx, &bot.GetChatMemberParams{ChatID: g.chatID, UserID: g.botID})
+		if err != nil {
+			return fmt.Errorf("getChatMember: %w", translate(err))
+		}
+		rights.IsAdmin = member.Type == models.ChatMemberTypeAdministrator || member.Type == models.ChatMemberTypeOwner
+		rights.CanManageTopics = canManageTopics(*member) || member.Type == models.ChatMemberTypeOwner
+		return nil
+	})
+	return rights, g.finish("getChatMember", err,
+		slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin), slog.Bool("manage_topics", rights.CanManageTopics))
 }
 
 // SendText posts text into the topic, split into parts below Telegram's

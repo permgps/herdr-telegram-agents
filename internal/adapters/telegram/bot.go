@@ -9,13 +9,12 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+
+	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
 // BotIdentity is what getMe reports about the bot behind the token.
-type BotIdentity struct {
-	ID       int64
-	Username string
-}
+type BotIdentity = domain.BotIdentity
 
 // NewBot builds the client without touching the network: the startup getMe
 // is skipped (it cannot be cancelled), handlers run inline so per-topic
