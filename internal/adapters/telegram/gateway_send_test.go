@@ -71,6 +71,17 @@ func TestSendNotifyAndReply(t *testing.T) {
 	}
 }
 
+func TestSendHTMLPassesThrough(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 0, Text: `<a href="https://t.me/c/1/2">a &amp; b</a>`, HTML: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.api.callsOf("sendMessage")[0].form.Get("text"); got != `<a href="https://t.me/c/1/2">a &amp; b</a>` {
+		t.Errorf("text = %q", got)
+	}
+}
+
 func TestSendCodeAndChunks(t *testing.T) {
 	h := newHarness(t)
 	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })

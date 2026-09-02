@@ -56,13 +56,15 @@ type HerdrGateway interface {
 }
 
 // Outgoing is one message for the forum group. ThreadID 0 addresses the
-// General topic. Code renders the text as a code block. ReplyTo quotes the
+// General topic. Code renders the text as a code block; HTML sends it as
+// ready HTML the caller has escaped (used for links). ReplyTo quotes the
 // operator message with that id when non-zero. Notify sends the message
 // with a sound; everything else is silent.
 type Outgoing struct {
 	ThreadID int
 	Text     string
 	Code     bool
+	HTML     bool
 	ReplyTo  int
 	Notify   bool
 }

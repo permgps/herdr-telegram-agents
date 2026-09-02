@@ -26,6 +26,9 @@ type Reconciler struct {
 	agents   map[domain.Key]domain.Agent // last known agent per key, for fire-time diffs
 	readOnly bool
 	force    bool // set by Resync for the duration of one pass
+	// view is the read-only copy of the mapping the bridge goroutine
+	// consults; it is republished after every save.
+	view *topicView
 }
 
 // NewReconciler wires the reconciler around a loaded mapping.
@@ -33,7 +36,7 @@ func NewReconciler(tg domain.TelegramGateway, store domain.MappingStore, mapping
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Reconciler{
+	r := &Reconciler{
 		tg:      tg,
 		store:   store,
 		mapping: mapping,
@@ -41,8 +44,14 @@ func NewReconciler(tg domain.TelegramGateway, store domain.MappingStore, mapping
 		log:     log,
 		deb:     newDebouncer(clock, editDebounce, log),
 		agents:  map[domain.Key]domain.Agent{},
+		view:    newTopicView(),
 	}
+	r.view.publish(mapping)
+	return r
 }
+
+// topics returns the goroutine-safe read model of the mapping.
+func (r *Reconciler) topics() *topicView { return r.view }
 
 // SetDebounce overrides the edit delay (tests).
 func (r *Reconciler) SetDebounce(d time.Duration) { r.deb.delay = d }
@@ -297,6 +306,7 @@ func (r *Reconciler) fail(ctx context.Context, key domain.Key, method string, er
 }
 
 func (r *Reconciler) save(ctx context.Context) {
+	r.view.publish(r.mapping)
 	if err := r.store.Save(ctx, r.mapping); err != nil {
 		r.log.Error("mapping save failed", slog.String("err", err.Error()))
 	}

@@ -192,15 +192,19 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 
 // Send posts one message, split into parts below Telegram's message limit,
 // each as its own queued call. ThreadID 0 addresses the General topic, so
-// message_thread_id is omitted. Code wraps every part in <pre>. ReplyTo
-// quotes the operator's message on the first part only. Messages are silent
-// unless Notify is set. The first failure stops the remaining parts.
+// message_thread_id is omitted. Code wraps every part in <pre>; HTML passes
+// the part through as caller-escaped markup. ReplyTo quotes the operator's
+// message on the first part only. Messages are silent unless Notify is
+// set. The first failure stops the remaining parts.
 func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) error {
 	parts := chunk(out.Text, textMax)
 	for i, part := range parts {
 		body := renderPlain(part)
-		if out.Code {
+		switch {
+		case out.Code:
 			body = renderCode(part)
+		case out.HTML:
+			body = part
 		}
 		params := &bot.SendMessageParams{
 			ChatID:              g.chatID,

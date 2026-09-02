@@ -81,6 +81,15 @@ func (r *Registry) Live() []domain.Agent {
 	return out
 }
 
+// Agent returns the current view of one live agent; ok is false once the
+// agent has exited. It is safe from any goroutine.
+func (r *Registry) Agent(key domain.Key) (domain.Agent, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.agents[key]
+	return a, ok
+}
+
 // Health describes the registry's contact with the Herdr socket.
 type Health struct {
 	LastOK    time.Time // last successful snapshot

@@ -20,4 +20,15 @@ const (
 	mappingPruneAge = 7 * 24 * time.Hour
 	// mappingMaxEntries caps the mapping file; oldest exited entries go first.
 	mappingMaxEntries = 500
+	// screenSettle is how long the bridge waits after an agent turns blocked
+	// or done before reading its screen, so the dialog has fully rendered.
+	screenSettle = 1500 * time.Millisecond
+	// blockedLines is the tail of the detection screen posted on blocked.
+	blockedLines = 25
+	// doneLines is the shorter tail posted on done.
+	doneLines = 12
+	// bridgeBuffer bounds jobs waiting for the bridge goroutine.
+	bridgeBuffer = 256
+	// bridgeCallTimeout bounds one bridge job (Herdr read plus Telegram send).
+	bridgeCallTimeout = 15 * time.Second
 )
