@@ -25,7 +25,7 @@ func newRunningBridge(t *testing.T) *runningBridge {
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
 	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, f.clock, nil)
-	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.clock, nil)
+	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.clock, nil)
 	// The fixture's agent map stands in for the registry so tests control
 	// statuses directly.
 	b.out.agents = f.out.agents
@@ -69,7 +69,7 @@ func TestBridgeRunsJobsInOrder(t *testing.T) {
 	if p := r.herdr.Prompts(); len(p) != 2 || p[0] != "p1: first" || p[1] != "p1: second" {
 		t.Fatalf("Prompts = %v", p)
 	}
-	assertCallsEqual(t, r.tg, "send:0:Commands\n/screen [N]: post the agent screen, the whole visible screen or its last N lines\n/keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)\n/focus: bring the agent's pane to the front in Herdr\n/status: this agent's status; in General, every agent with a link to its topic\n/help: this list\n\nWhile an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.\nAny other text is typed into the agent as a prompt.:reply=3")
+	assertCallsEqual(t, r.tg, "send:0:"+helpText+":reply=3")
 }
 
 func TestBridgeSettleTimerFiresThroughRun(t *testing.T) {

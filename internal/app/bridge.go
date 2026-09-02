@@ -28,15 +28,15 @@ type Bridge struct {
 	CallTimeout time.Duration
 }
 
-// NewBridge wires the outbound and inbound use cases around the registry
-// and the reconciler's read model of the mapping.
+// NewBridge wires the outbound and inbound use cases around the registry,
+// the reconciler's read model of the mapping and the screen capture.
 func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
-	registry *Registry, reconciler *Reconciler, clock domain.Clock, log *slog.Logger) *Bridge {
+	registry *Registry, reconciler *Reconciler, capture *Capture, clock domain.Clock, log *slog.Logger) *Bridge {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	topics := reconciler.topics()
-	out := newOutbound(herdr, tg, topics, registry.Agent, clock, log)
+	out := newOutbound(herdr, tg, topics, registry.Agent, capture, clock, log)
 	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, cfg.ChatID, cfg.BotUsername, log)
 	return &Bridge{
 		out:         out,

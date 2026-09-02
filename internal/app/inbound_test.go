@@ -209,3 +209,26 @@ func TestTopicLinkAndPlural(t *testing.T) {
 		t.Errorf("plural is wrong")
 	}
 }
+
+func TestInboundScreenAll(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "the history")
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 1, "/screen all")); err != nil {
+		t.Fatal(err)
+	}
+	reads := f.herdr.Reads()
+	if len(reads) != 1 || reads[0].Source != domain.ScreenRecent || reads[0].Lines != captureLines {
+		t.Fatalf("Reads = %+v", reads)
+	}
+	assertCallsEqual(t, f.tg, "send:101:(history starts at daemon start)\nthe history")
+	f.tg.Reset()
+	f.herdr.FailNext("read", domain.ErrDisconnected)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 2, "/screen all")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ herdr is unreachable:reply=2")
+	if !strings.Contains(helpText, `"all"`) {
+		t.Fatal("help must mention /screen all")
+	}
+}

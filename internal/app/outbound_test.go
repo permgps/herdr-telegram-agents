@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type bridgeFixture struct {
 	mapping *domain.Mapping
 	view    *topicView
 	agents  map[domain.Key]domain.Agent
+	capture *Capture
 	out     *outbound
 	in      *inbound
 	ctx     context.Context
@@ -49,7 +51,8 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 		}
 		return out
 	}
-	f.out = newOutbound(f.herdr, f.tg, f.view, lookup, f.clock, nil)
+	f.capture = NewCapture(f.herdr, live, f.clock, nil)
+	f.out = newOutbound(f.herdr, f.tg, f.view, lookup, f.capture, f.clock, nil)
 	f.in = newInbound(f.herdr, f.tg, f.view, lookup, live, f.out, -1001234567890, "agents_bot", nil)
 	return f
 }
@@ -314,5 +317,103 @@ func TestTrimScreen(t *testing.T) {
 	}
 	if !strings.HasPrefix(hashText("a"), "ca978112") {
 		t.Errorf("hashText is not sha256 hex: %s", hashText("a"))
+	}
+}
+
+func TestOutboundScreenAllInline(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "w1:p1", "t1", "a", domain.StatusWorking)
+	f.mapping.Mute(a.Key, tb0)
+	f.view.publish(f.mapping)
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.herdr.SetScreen("w1:p1", "line1\nline2\n")
+	if err := f.out.ScreenAll(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	reads := f.herdr.Reads()
+	if len(reads) != 1 || reads[0].Source != domain.ScreenRecent || reads[0].Lines != captureLines {
+		t.Fatalf("Reads = %+v", reads)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 1 || sent[0].Text != "line1\nline2" || !sent[0].Code || sent[0].Notify || sent[0].ThreadID != 101 {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if docs := f.tg.Documents(); len(docs) != 0 {
+		t.Fatalf("Documents = %+v, want none", docs)
+	}
+}
+
+func TestOutboundScreenAllDocument(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "w1:p1", "t1", "a", domain.StatusWorking)
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	lines := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("%03d %s", i, strings.Repeat("ж", 70)))
+	}
+	f.herdr.SetScreen("w1:p1", strings.Join(lines, "\n"))
+	if err := f.out.ScreenAll(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 0 {
+		t.Fatalf("Sent = %+v, want a document instead", sent)
+	}
+	docs := f.tg.Documents()
+	if len(docs) != 1 {
+		t.Fatalf("Documents = %d, want 1", len(docs))
+	}
+	d := docs[0]
+	if d.ThreadID != 101 || d.Name != "screen-w1-p1-120000.txt" || d.Caption != "200 lines since your last message" {
+		t.Fatalf("Document = thread %d name %q caption %q", d.ThreadID, d.Name, d.Caption)
+	}
+	if got := string(d.Data); got != strings.Join(lines, "\n")+"\n" {
+		t.Fatalf("Document body differs: %d bytes", len(got))
+	}
+}
+
+func TestOutboundScreenAllWithoutMark(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "w1:p1", "t1", "a", domain.StatusIdle)
+	f.herdr.SetScreen("w1:p1", "only screen")
+	if err := f.out.ScreenAll(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 1 || sent[0].Text != "(history starts at daemon start)\nonly screen" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	// The same without a mark but long enough for a file says so in the caption.
+	f.tg.Reset()
+	f.herdr.SetScreen("w1:p1", strings.Repeat("x", 13000))
+	if err := f.out.ScreenAll(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	docs := f.tg.Documents()
+	if len(docs) != 1 || !strings.HasSuffix(docs[0].Caption, "since daemon start") {
+		t.Fatalf("Documents = %+v", docs)
+	}
+}
+
+func TestOutboundScreenAllEmptyAndErrors(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "w1:p1", "t1", "a", domain.StatusWorking)
+	f.herdr.SetScreen("w1:p1", "  \n\n")
+	if err := f.out.ScreenAll(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "(no output since your last message)" || sent[0].Code {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	f.herdr.FailNext("read", domain.ErrAgentGone)
+	if err := f.out.ScreenAll(f.ctx, a.Key); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("read error not returned: %v", err)
+	}
+	f.herdr.SetScreen("w1:p1", "text")
+	f.tg.FailNext("send", domain.ErrForbidden)
+	if err := f.out.ScreenAll(f.ctx, a.Key); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("send error not returned: %v", err)
+	}
+	if err := f.out.ScreenAll(f.ctx, domain.Key{PaneID: "nope", TerminalID: "t"}); err == nil {
+		t.Fatal("unknown key must fail")
 	}
 }

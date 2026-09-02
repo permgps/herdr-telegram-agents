@@ -18,6 +18,7 @@ type daemonFixture struct {
 	configs *testkit.MemConfigStore
 	store   *testkit.MemMappingStore
 	clock   *testkit.FakeClock
+	capture *app.Capture
 	daemon  *app.Daemon
 	done    chan error
 	cancel  context.CancelCauseFunc
@@ -36,8 +37,9 @@ func newDaemon(t *testing.T) *daemonFixture {
 	f.configs.Set(cfg)
 	registry := app.NewRegistry(f.herdr, f.clock, nil)
 	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.clock, nil)
-	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.clock, nil)
-	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.configs, f.clock, nil)
+	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
+	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.clock, nil)
+	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.clock, nil)
 	f.daemon.Version = "1.2.3"
 	return f
 }
@@ -104,7 +106,7 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 	// A status event flows through registry -> reconciler -> debounce -> edit.
 	idle := agent("p1", "", "", domain.StatusIdle)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
-	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 3 }) // registry tick, health, debounce
+	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 4 }) // registry tick, health, capture, debounce
 	f.clock.Advance(3 * time.Second)
 	f.waitCalls(t, 4)
 	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1, "edit:101:status=idle")
@@ -296,8 +298,8 @@ func TestDaemonBlockedScreenIsPosted(t *testing.T) {
 
 	blocked := agent("p1", "", "", domain.StatusBlocked)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
-	// registry tick, health, edit debounce, screen settle
-	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 4 })
+	// registry tick, health, capture, edit debounce, screen settle
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 5 })
 	f.clock.Advance(1500 * time.Millisecond)
 	f.waitCalls(t, 4)
 	sent := f.tg.Sent()
@@ -396,5 +398,26 @@ func TestDaemonBridgeFatalStopsDaemon(t *testing.T) {
 	f.tg.Push(domain.TopicMessage{ThreadID: 101, MessageID: 5, FromID: 1, Text: "/help"})
 	if err := f.wait(t); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("Run = %v, want ErrForbidden", err)
+	}
+}
+
+func TestDaemonMarksHistoryOnWorking(t *testing.T) {
+	f := newDaemon(t)
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
+	f.herdr.SetScreen("p1", "prompt typed in herdr")
+	f.start(t)
+	f.waitCalls(t, 3)
+	key := domain.Key{PaneID: "p1", TerminalID: "t1"}
+	if _, marked, err := f.capture.Since(context.Background(), key); err != nil || marked {
+		t.Fatalf("Since before working = marked %v, err %v", marked, err)
+	}
+	working := agent("p1", "", "", domain.StatusWorking)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &working})
+	waitFor(t, "history mark", func() bool {
+		_, marked, _ := f.capture.Since(context.Background(), key)
+		return marked
+	})
+	if err := f.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
 	}
 }

@@ -15,7 +15,7 @@ import (
 
 // helpText is the command list shown by /help in a topic and in General.
 const helpText = `Commands
-/screen [N]: post the agent screen, the whole visible screen or its last N lines
+/screen [N|all]: post the agent screen: the whole visible screen, its last N lines, or with "all" everything since your last message
 /keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)
 /focus: bring the agent's pane to the front in Herdr
 /status: this agent's status; in General, every agent with a link to its topic
@@ -84,7 +84,13 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 			return i.herdr.Focus(ctx, key.PaneID)
 		})
 	case domain.CmdScreen:
-		if err := i.out.Screen(ctx, key, cmd.Lines); err != nil {
+		var err error
+		if cmd.All {
+			err = i.out.ScreenAll(ctx, key)
+		} else {
+			err = i.out.Screen(ctx, key, cmd.Lines)
+		}
+		if err != nil {
 			return i.failed(ctx, msg, key, "screen", err)
 		}
 		return nil

@@ -31,4 +31,18 @@ const (
 	bridgeBuffer = 256
 	// bridgeCallTimeout bounds one bridge job (Herdr read plus Telegram send).
 	bridgeCallTimeout = 15 * time.Second
+	// captureInterval is how often the capture reads the screens of
+	// working agents.
+	captureInterval = 1 * time.Second
+	// captureGrace keeps reading an agent after it left working so the
+	// final screen of the exchange is committed.
+	captureGrace = 3 * time.Second
+	// captureReadTimeout bounds one agent.read made by the capture.
+	captureReadTimeout = 5 * time.Second
+	// captureLines is how many lines of recent output one capture read
+	// asks for; Claude Code panes return only the visible screen anyway.
+	captureLines = 400
+	// screenAllInlineRunes is the longest /screen all text still posted as
+	// messages (about three chunks); longer output goes out as a file.
+	screenAllInlineRunes = 12000
 )

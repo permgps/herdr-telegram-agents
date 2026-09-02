@@ -37,6 +37,7 @@ type Daemon struct {
 	registry   *Registry
 	reconciler *Reconciler
 	bridge     *Bridge
+	capture    *Capture
 	configs    domain.ConfigStore
 	clock      domain.Clock
 	log        *slog.Logger
@@ -49,15 +50,16 @@ type Daemon struct {
 	resync chan struct{}
 }
 
-// NewDaemon wires the loop. The registry, reconciler and bridge are built
-// by the caller so the composition root can share the clock and logger.
+// NewDaemon wires the loop. The registry, reconciler, bridge and capture
+// are built by the caller so the composition root can share the clock and
+// logger.
 func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
-	registry *Registry, reconciler *Reconciler, bridge *Bridge, configs domain.ConfigStore, clock domain.Clock, log *slog.Logger) *Daemon {
+	registry *Registry, reconciler *Reconciler, bridge *Bridge, capture *Capture, configs domain.ConfigStore, clock domain.Clock, log *slog.Logger) *Daemon {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Daemon{
-		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge,
+		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge, capture: capture,
 		configs: configs, clock: clock, log: log,
 		SocketGrace: socketGrace, HealthInterval: healthInterval,
 		resync: make(chan struct{}, 1),
@@ -96,7 +98,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	loopCtx, cancel := context.WithCancel(ctx)
 	events := make(chan AgentEvent, 256)
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		_ = d.registry.Run(loopCtx, events)
@@ -105,14 +107,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 		defer wg.Done()
 		d.bridge.Run(loopCtx)
 	}()
+	go func() {
+		defer wg.Done()
+		d.capture.Run(loopCtx)
+	}()
 	defer func() {
 		cancel()
 		wg.Wait()
 	}()
 
 	// Agents already blocked when the daemon starts get their screen
-	// posted too; the bridge decides per status.
+	// posted too; the bridge decides per status. The capture learns the
+	// starting statuses so its first transitions are seen as such.
 	for _, ev := range initial {
+		d.capture.Observe(ev)
 		d.bridge.Submit(ev)
 	}
 	d.general(ctx, fmt.Sprintf("▶️ %s started: %s", d.title(), plural(len(d.registry.Live()), "agent")))
@@ -134,6 +142,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 					return err
 				}
 			}
+			d.capture.Observe(ev)
 			d.bridge.Submit(ev)
 		case err := <-d.bridge.Fatal():
 			d.shutdown()
