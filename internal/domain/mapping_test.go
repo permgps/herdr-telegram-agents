@@ -183,3 +183,79 @@ func TestMappingDedupeThreads(t *testing.T) {
 		t.Fatalf("Keys = %v", keys)
 	}
 }
+
+func TestMappingKeyForThread(t *testing.T) {
+	m := domain.NewMapping(-1)
+	a := agent("p1", "t1", "a", domain.StatusWorking)
+	b := agent("p2", "t2", "b", domain.StatusWorking)
+	linked(t, m, a, 7)
+	linked(t, m, b, 8)
+	if k, ok := m.KeyForThread(8); !ok || k != b.Key {
+		t.Fatalf("KeyForThread(8) = %v,%v want %v", k, ok, b.Key)
+	}
+	if _, ok := m.KeyForThread(9); ok {
+		t.Fatal("unknown thread found a key")
+	}
+
+	t.Run("newest entry wins on duplicates", func(t *testing.T) {
+		m := domain.NewMapping(-1)
+		old := agent("p1", "t1", "old", domain.StatusWorking)
+		fresh := agent("p1", "t2", "fresh", domain.StatusWorking)
+		m.Link(old.Key, domain.Topic{ThreadID: 5}, old, t0)
+		m.Link(fresh.Key, domain.Topic{ThreadID: 5}, fresh, t0.Add(time.Minute))
+		if k, ok := m.KeyForThread(5); !ok || k != fresh.Key {
+			t.Fatalf("KeyForThread(5) = %v,%v want %v", k, ok, fresh.Key)
+		}
+	})
+	t.Run("live entry wins a tie", func(t *testing.T) {
+		m := domain.NewMapping(-1)
+		gone := agent("p1", "t1", "gone", domain.StatusWorking)
+		live := agent("p1", "t2", "live", domain.StatusWorking)
+		m.Link(gone.Key, domain.Topic{ThreadID: 5}, gone, t0)
+		m.Link(live.Key, domain.Topic{ThreadID: 5}, live, t0)
+		m.MarkExited(gone.Key, t0)
+		if k, ok := m.KeyForThread(5); !ok || k != live.Key {
+			t.Fatalf("KeyForThread(5) = %v,%v want %v", k, ok, live.Key)
+		}
+	})
+}
+
+func TestMappingMuteUnmute(t *testing.T) {
+	m := domain.NewMapping(-1)
+	a := agent("p1", "t1", "a", domain.StatusWorking)
+	linked(t, m, a, 1)
+	m.Mute(a.Key, t0.Add(time.Minute))
+	e, _ := m.TopicFor(a.Key)
+	if !e.Muted || !e.UpdatedAt.Equal(t0.Add(time.Minute)) {
+		t.Fatalf("after Mute: %+v", *e)
+	}
+	m.Unmute(a.Key, t0.Add(2*time.Minute))
+	if e.Muted || !e.UpdatedAt.Equal(t0.Add(2*time.Minute)) {
+		t.Fatalf("after Unmute: %+v", *e)
+	}
+	m.Mute(domain.Key{PaneID: "x", TerminalID: "y"}, t0) // unknown key is a no-op
+	if len(m.Topics) != 1 {
+		t.Fatalf("unknown key created an entry: %d", len(m.Topics))
+	}
+}
+
+func TestMappingMutedEntriesAreSkipped(t *testing.T) {
+	m := domain.NewMapping(-1)
+	mutedLive := agent("p1", "t1", "a", domain.StatusWorking)
+	mutedExited := agent("p2", "t2", "b", domain.StatusWorking)
+	plain := agent("p3", "t3", "c", domain.StatusWorking)
+	linked(t, m, mutedLive, 1)
+	linked(t, m, mutedExited, 2)
+	linked(t, m, plain, 3)
+	m.Mute(mutedLive.Key, t0)
+	m.Mute(mutedExited.Key, t0)
+	m.MarkExited(mutedExited.Key, t0)
+	m.MarkExited(plain.Key, t0)
+
+	if got := m.Orphans(map[domain.Key]struct{}{}); len(got) != 0 {
+		t.Fatalf("Orphans listed a muted entry: %v", got)
+	}
+	if got := m.Unclosed(); len(got) != 1 || got[0] != plain.Key {
+		t.Fatalf("Unclosed = %v, want [%v]", got, plain.Key)
+	}
+}

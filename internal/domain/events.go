@@ -49,10 +49,20 @@ type HerdrEvent struct {
 }
 
 // TopicMessage is a text message written by an operator inside a topic.
+// MessageID lets the application react to or reply to that message.
 type TopicMessage struct {
-	ThreadID int
-	FromID   int64
-	Text     string
+	ThreadID  int
+	MessageID int
+	FromID    int64
+	Text      string
+}
+
+// GeneralCommand is a slash command an operator wrote in the General topic.
+// Only text starting with "/" reaches the application from General.
+type GeneralCommand struct {
+	MessageID int
+	FromID    int64
+	Text      string
 }
 
 // TopicRenamed is emitted when someone renames a topic in Telegram.
@@ -76,9 +86,10 @@ type RightsChanged struct {
 	CanManageTopics bool
 }
 
-func (HerdrEvent) isEvent()    {}
-func (TopicMessage) isEvent()  {}
-func (TopicRenamed) isEvent()  {}
-func (TopicClosed) isEvent()   {}
-func (TopicReopened) isEvent() {}
-func (RightsChanged) isEvent() {}
+func (HerdrEvent) isEvent()     {}
+func (TopicMessage) isEvent()   {}
+func (GeneralCommand) isEvent() {}
+func (TopicRenamed) isEvent()   {}
+func (TopicClosed) isEvent()    {}
+func (TopicReopened) isEvent()  {}
+func (RightsChanged) isEvent()  {}

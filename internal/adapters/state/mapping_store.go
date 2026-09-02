@@ -27,6 +27,7 @@ type mappingFileEntry struct {
 	Name      string    `json:"name"`
 	Status    string    `json:"status"`
 	Closed    bool      `json:"closed"`
+	Muted     bool      `json:"muted,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -83,6 +84,7 @@ func (s *MappingStore) Load(context.Context) (*domain.Mapping, error) {
 			Name:      e.Name,
 			Status:    domain.Status(e.Status),
 			Closed:    e.Closed,
+			Muted:     e.Muted,
 			UpdatedAt: e.UpdatedAt,
 		}
 	}
@@ -99,6 +101,7 @@ func (s *MappingStore) Save(_ context.Context, m *domain.Mapping) error {
 			Name:      e.Name,
 			Status:    string(e.Status),
 			Closed:    e.Closed,
+			Muted:     e.Muted,
 			UpdatedAt: e.UpdatedAt,
 		}
 	}

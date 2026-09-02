@@ -17,6 +17,10 @@ var (
 	ErrTopicGone = errors.New("topic is gone")
 	// ErrTopicClosed means the Telegram topic is closed and rejects writes.
 	ErrTopicClosed = errors.New("topic is closed")
+	// ErrTopicMuted means an operator closed the topic by hand, so the
+	// mirror skips it; the reconciler uses it to short-circuit and never
+	// returns it to the daemon.
+	ErrTopicMuted = errors.New("topic is muted")
 	// ErrForbidden means the bot was removed from the chat or lost rights.
 	ErrForbidden = errors.New("bot is forbidden in chat")
 	// ErrBotUnauthorized means the bot token is invalid or revoked.

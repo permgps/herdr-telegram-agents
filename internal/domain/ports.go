@@ -45,12 +45,26 @@ type HerdrGateway interface {
 	SendKeys(ctx context.Context, target string, keys []string) error
 	// Rename sets the agent name; nil clears it back to the default.
 	Rename(ctx context.Context, target string, name *string) error
+	// Focus brings the agent's pane to the front in Herdr.
+	Focus(ctx context.Context, target string) error
 	// Notify shows a desktop notification through Herdr.
 	Notify(ctx context.Context, title, body string, sound NotifySound) error
 	// Events streams HerdrEvent values until the gateway is closed.
 	Events() <-chan Event
 	// WatchPanes replaces the set of panes whose status changes are streamed.
 	WatchPanes(ctx context.Context, paneIDs []string) error
+}
+
+// Outgoing is one message for the forum group. ThreadID 0 addresses the
+// General topic. Code renders the text as a code block. ReplyTo quotes the
+// operator message with that id when non-zero. Notify sends the message
+// with a sound; everything else is silent.
+type Outgoing struct {
+	ThreadID int
+	Text     string
+	Code     bool
+	ReplyTo  int
+	Notify   bool
 }
 
 // TelegramGateway is the port to the Telegram forum group.
@@ -63,14 +77,19 @@ type TelegramGateway interface {
 	CloseTopic(ctx context.Context, threadID int) error
 	// ReopenTopic reopens a closed topic.
 	ReopenTopic(ctx context.Context, threadID int) error
-	// SendText posts text into the topic; code renders it as a code block.
-	SendText(ctx context.Context, threadID int, text string, code bool) error
+	// Send posts a message into a topic, or into General when ThreadID is
+	// 0; long text is split into several messages.
+	Send(ctx context.Context, out Outgoing) error
+	// React puts one emoji reaction on the operator's message; threadID is
+	// informational, Telegram addresses reactions by message id.
+	React(ctx context.Context, threadID, messageID int, emoji string) error
 	// Rights reports whether the chat is a forum and the bot may manage
 	// its topics and delete messages; the daemon checks it on start and
 	// after RightsChanged.
 	Rights(ctx context.Context) (Rights, error)
-	// Events streams TopicMessage, TopicRenamed, TopicClosed, TopicReopened
-	// and RightsChanged values until the gateway is closed.
+	// Events streams TopicMessage, GeneralCommand, TopicRenamed,
+	// TopicClosed, TopicReopened and RightsChanged values until the
+	// gateway is closed.
 	Events() <-chan Event
 }
 

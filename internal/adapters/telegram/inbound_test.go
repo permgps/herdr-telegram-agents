@@ -132,6 +132,55 @@ func TestInboundTopicEvents(t *testing.T) {
 	}
 }
 
+func TestInboundTopicMessageCarriesID(t *testing.T) {
+	h := newHarness(t)
+	u := topicMessage(testChatID, testOperator, 42, "/status")
+	u.Message.ID = 913
+	h.bot.ProcessUpdate(context.Background(), u)
+	got, ok := expectEvent(t, h.gw.Events()).(domain.TopicMessage)
+	if !ok || got.MessageID != 913 || got.ThreadID != 42 || got.Text != "/status" {
+		t.Fatalf("event = %#v", got)
+	}
+}
+
+func TestInboundGeneralCommand(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	u := topicMessage(testChatID, testOperator, 0, "/status@agents_bot")
+	u.Message.ID = 77
+	h.bot.ProcessUpdate(ctx, u)
+	got, ok := expectEvent(t, h.gw.Events()).(domain.GeneralCommand)
+	if !ok || got.MessageID != 77 || got.FromID != testOperator || got.Text != "/status@agents_bot" {
+		t.Fatalf("event = %#v", got)
+	}
+	if !strings.Contains(h.buf.String(), "kind=general_command") {
+		t.Errorf("emit not logged: %s", h.buf.String())
+	}
+
+	// Telegram marks General messages with a thread id of 1 in some
+	// clients but never with is_topic_message; both shapes are General.
+	u = topicMessage(testChatID, testOperator, 0, "/help")
+	u.Message.MessageThreadID = 1
+	u.Message.IsTopicMessage = false
+	h.bot.ProcessUpdate(ctx, u)
+	if _, ok := expectEvent(t, h.gw.Events()).(domain.GeneralCommand); !ok {
+		t.Fatalf("General with thread id 1 was not a GeneralCommand")
+	}
+
+	h.bot.ProcessUpdate(ctx, topicMessage(testChatID, 777, 0, "/status"))
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "reason=not_operator") {
+		t.Errorf("stranger in General not dropped: %s", h.buf.String())
+	}
+
+	h.bot.ProcessUpdate(ctx, topicMessage(testChatID, testOperator, 0, "hello everyone"))
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "reason=general_topic") {
+		t.Errorf("plain General text not dropped: %s", h.buf.String())
+	}
+}
+
 func TestInboundRightsChanged(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

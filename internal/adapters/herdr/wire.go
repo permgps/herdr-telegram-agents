@@ -133,6 +133,10 @@ type sendKeysParams struct {
 	Keys   []string `json:"keys"`
 }
 
+type focusParams struct {
+	Target string `json:"target"`
+}
+
 // renameParams always carries name so a nil pointer serialises as null,
 // which is how Herdr clears a custom name.
 type renameParams struct {

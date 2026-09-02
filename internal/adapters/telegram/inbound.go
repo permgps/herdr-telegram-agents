@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -15,10 +16,11 @@ import (
 // then operator id) is enforced in the match funcs so nothing else runs for
 // foreign traffic; unmatched updates reach the no-op default handler. The
 // bot's own service messages are matched first so they never reach the
-// operator check.
+// operator check; General-topic commands come after topic traffic.
 func (g *Gateway) registerHandlers() {
 	g.api.RegisterHandlerMatchFunc(g.matchOwnService, g.onOwnService)
 	g.api.RegisterHandlerMatchFunc(g.matchOurTopic, g.onTopicUpdate)
+	g.api.RegisterHandlerMatchFunc(g.matchGeneral, g.onGeneral)
 	g.api.RegisterHandlerMatchFunc(g.matchMyChatMember, g.onMyChatMember)
 }
 
@@ -36,31 +38,57 @@ func (g *Gateway) matchOwnService(u *models.Update) bool {
 }
 
 // matchOurTopic accepts new messages posted by an operator inside a topic
-// of the configured chat. General-topic traffic (no thread id) and edited
-// messages are dropped. Service messages caused by the bot's own topic
-// edits carry the bot as sender and fail the operator check, which keeps
-// them from echoing back as events.
+// of the configured chat. General-topic traffic (no thread id) is left to
+// matchGeneral; edited messages are dropped. Service messages caused by the
+// bot's own topic edits carry the bot as sender and fail the operator
+// check, which keeps them from echoing back as events.
 func (g *Gateway) matchOurTopic(u *models.Update) bool {
 	m := u.Message
 	if m == nil {
 		return false
 	}
-	var fromID int64
-	if m.From != nil {
-		fromID = m.From.ID
-	}
 	switch {
 	case m.Chat.ID != g.chatID:
-		g.drop("foreign_chat", m.Chat.ID, fromID)
+		g.drop("foreign_chat", m.Chat.ID, senderID(m))
 		return false
-	case !m.IsTopicMessage || m.MessageThreadID == 0:
-		g.drop("general_topic", m.Chat.ID, fromID)
+	case isGeneral(m):
 		return false
-	case !g.operators[fromID]:
-		g.drop("not_operator", m.Chat.ID, fromID)
+	case !g.operators[senderID(m)]:
+		g.drop("not_operator", m.Chat.ID, senderID(m))
 		return false
 	}
 	return true
+}
+
+// matchGeneral accepts slash commands an operator writes in the General
+// topic of the configured chat. Everything else posted there is dropped:
+// General is a control panel, not an agent.
+func (g *Gateway) matchGeneral(u *models.Update) bool {
+	m := u.Message
+	if m == nil || m.Chat.ID != g.chatID || !isGeneral(m) {
+		return false
+	}
+	switch {
+	case !g.operators[senderID(m)]:
+		g.drop("not_operator", m.Chat.ID, senderID(m))
+	case !strings.HasPrefix(m.Text, "/"):
+		g.drop("general_topic", m.Chat.ID, senderID(m))
+	default:
+		return true
+	}
+	return false
+}
+
+// isGeneral reports whether the message was posted outside any topic.
+func isGeneral(m *models.Message) bool {
+	return !m.IsTopicMessage || m.MessageThreadID == 0
+}
+
+func senderID(m *models.Message) int64 {
+	if m.From == nil {
+		return 0
+	}
+	return m.From.ID
 }
 
 // matchMyChatMember accepts membership changes of the bot in the chat.
@@ -98,10 +126,18 @@ func (g *Gateway) onTopicUpdate(ctx context.Context, _ *bot.Bot, u *models.Updat
 	case m.ForumTopicReopened != nil:
 		g.emit(ctx, "topic_reopened", thread, domain.TopicReopened{ThreadID: thread})
 	case m.Text != "":
-		g.emit(ctx, "topic_message", thread, domain.TopicMessage{ThreadID: thread, FromID: m.From.ID, Text: m.Text})
+		g.log.Debug("telegram topic message", slog.Int("thread_id", thread), slog.Int("message_id", m.ID), slog.Int("len", len(m.Text)))
+		g.emit(ctx, "topic_message", thread, domain.TopicMessage{ThreadID: thread, MessageID: m.ID, FromID: m.From.ID, Text: m.Text})
 	default:
 		g.drop("unsupported_message", m.Chat.ID, m.From.ID)
 	}
+}
+
+// onGeneral translates a General-topic command into a domain event.
+func (g *Gateway) onGeneral(ctx context.Context, _ *bot.Bot, u *models.Update) {
+	m := u.Message
+	g.log.Debug("telegram general command", slog.Int("message_id", m.ID), slog.Int("len", len(m.Text)))
+	g.emit(ctx, "general_command", 0, domain.GeneralCommand{MessageID: m.ID, FromID: m.From.ID, Text: m.Text})
 }
 
 // onOwnService deletes one of the bot's own topic notices. The call is

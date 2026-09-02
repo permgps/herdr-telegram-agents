@@ -13,7 +13,7 @@ import (
 
 // Connect builds the daemon's Telegram side from the saved config: bot
 // client, token check (dropping pending updates, since the daemon owns
-// polling from here on), icon pack, serial queue and gateway. The returned
+// polling from here on), icon pack, command menu, serial queue and gateway. The returned
 // run function polls and serves the queue until its context ends. fatal is
 // invoked by the poller on 401/409. Extra opts are for tests.
 func Connect(ctx context.Context, cfg domain.Config, log *slog.Logger, fatal context.CancelFunc, opts ...bot.Option) (*Gateway, func(context.Context), error) {
@@ -32,6 +32,8 @@ func Connect(ctx context.Context, cfg domain.Config, log *slog.Logger, fatal con
 	if err != nil {
 		return nil, nil, fmt.Errorf("telegram icons: %w", err)
 	}
+	// A missing menu is a cosmetic loss; RegisterCommands already logged it.
+	_ = RegisterCommands(ctx, api, cfg.ChatID, log)
 	queue := NewQueue(log, DefaultQueueConfig())
 	gw := NewGateway(api, Config{ChatID: cfg.ChatID, Operators: cfg.OperatorIDs, Icons: icons, BotID: identity.ID}, queue, log)
 	run := func(ctx context.Context) {

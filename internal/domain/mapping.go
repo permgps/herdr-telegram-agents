@@ -12,11 +12,15 @@ const MappingVersion = 1
 // TopicEntry is what the plugin last wrote to Telegram for one agent.
 // Telegram offers no way to read a topic back, so Name and Status are the
 // values of the last successful create or edit, not the live state.
+//
+// Muted is set when an operator closed the topic by hand: the mirror then
+// sends no edits and posts no screens until the topic is reopened.
 type TopicEntry struct {
 	ThreadID  int
 	Name      string
 	Status    Status
 	Closed    bool
+	Muted     bool
 	UpdatedAt time.Time
 }
 
@@ -59,6 +63,45 @@ func Desired(a Agent) (string, Status) {
 func (m *Mapping) TopicFor(k Key) (*TopicEntry, bool) {
 	e, ok := m.Topics[k.String()]
 	return e, ok
+}
+
+// KeyForThread finds the agent behind a topic. When several entries share a
+// thread id (a stale mapping), the newest wins, as in DedupeThreads.
+func (m *Mapping) KeyForThread(threadID int) (Key, bool) {
+	var best string
+	for _, key := range m.sortedKeys() {
+		e := m.Topics[key]
+		if e.ThreadID != threadID {
+			continue
+		}
+		if best == "" || m.newer(key, best) {
+			best = key
+		}
+	}
+	if best == "" {
+		return Key{}, false
+	}
+	return ParseKey(best)
+}
+
+// Mute records that an operator closed the topic; the mirror leaves it
+// alone until Unmute.
+func (m *Mapping) Mute(k Key, now time.Time) {
+	m.setMuted(k, true, now)
+}
+
+// Unmute records that the topic was reopened by an operator.
+func (m *Mapping) Unmute(k Key, now time.Time) {
+	m.setMuted(k, false, now)
+}
+
+func (m *Mapping) setMuted(k Key, muted bool, now time.Time) {
+	e, ok := m.Topics[k.String()]
+	if !ok {
+		return
+	}
+	e.Muted = muted
+	e.UpdatedAt = now
 }
 
 // Link records a freshly created topic for the agent. The stored name is the
@@ -138,12 +181,13 @@ func (m *Mapping) Forget(k Key) {
 }
 
 // Orphans lists live entries whose agent is not in the live set. They are
-// agents that exited while the daemon was not watching.
+// agents that exited while the daemon was not watching. Muted entries are
+// left alone: the operator asked for silence.
 func (m *Mapping) Orphans(live map[Key]struct{}) []Key {
 	var out []Key
 	for _, k := range m.Keys() {
 		e := m.Topics[k.String()]
-		if !e.Status.Live() {
+		if !e.Status.Live() || e.Muted {
 			continue
 		}
 		if _, ok := live[k]; !ok {
@@ -154,12 +198,12 @@ func (m *Mapping) Orphans(live map[Key]struct{}) []Key {
 }
 
 // Unclosed lists exited entries whose topic is still open, so a failed
-// CloseTopic can be retried on the next pass.
+// CloseTopic can be retried on the next pass. Muted entries are skipped.
 func (m *Mapping) Unclosed() []Key {
 	var out []Key
 	for _, k := range m.Keys() {
 		e := m.Topics[k.String()]
-		if !e.Status.Live() && !e.Closed {
+		if !e.Status.Live() && !e.Closed && !e.Muted {
 			out = append(out, k)
 		}
 	}

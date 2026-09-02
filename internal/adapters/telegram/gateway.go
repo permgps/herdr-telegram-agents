@@ -190,36 +190,61 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages))
 }
 
-// SendText posts text into the topic, split into parts below Telegram's
-// message limit, each as its own queued call. code wraps every part in
-// <pre>. The first failure stops the remaining parts.
-func (g *Gateway) SendText(ctx context.Context, threadID int, text string, code bool) error {
-	parts := chunk(text, textMax)
+// Send posts one message, split into parts below Telegram's message limit,
+// each as its own queued call. ThreadID 0 addresses the General topic, so
+// message_thread_id is omitted. Code wraps every part in <pre>. ReplyTo
+// quotes the operator's message on the first part only. Messages are silent
+// unless Notify is set. The first failure stops the remaining parts.
+func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) error {
+	parts := chunk(out.Text, textMax)
 	for i, part := range parts {
 		body := renderPlain(part)
-		if code {
+		if out.Code {
 			body = renderCode(part)
 		}
+		params := &bot.SendMessageParams{
+			ChatID:              g.chatID,
+			MessageThreadID:     out.ThreadID,
+			Text:                body,
+			ParseMode:           models.ParseModeHTML,
+			DisableNotification: !out.Notify,
+		}
+		if i == 0 && out.ReplyTo != 0 {
+			params.ReplyParameters = &models.ReplyParameters{MessageID: out.ReplyTo, AllowSendingWithoutReply: true}
+		}
 		err := g.queue.Do(ctx, func(ctx context.Context) error {
-			_, err := g.api.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID:              g.chatID,
-				MessageThreadID:     threadID,
-				Text:                body,
-				ParseMode:           models.ParseModeHTML,
-				DisableNotification: true,
-			})
+			_, err := g.api.SendMessage(ctx, params)
 			return translate(err)
 		})
 		if err != nil {
 			g.log.Warn("sendMessage failed",
-				slog.Int("thread_id", threadID), slog.Int("part", i+1), slog.Int("parts", len(parts)), slog.Any("err", err))
-			return fmt.Errorf("sendMessage thread %d part %d/%d: %w", threadID, i+1, len(parts), err)
+				slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)), slog.Any("err", err))
+			return fmt.Errorf("sendMessage thread %d part %d/%d: %w", out.ThreadID, i+1, len(parts), err)
 		}
 		g.log.Debug("sendMessage",
-			slog.Int("thread_id", threadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
+			slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
+			slog.Int("reply_to", out.ReplyTo), slog.Bool("notify", out.Notify),
 			slog.Int("runes", utf8.RuneCountInString(part)))
 	}
 	return nil
+}
+
+// React puts one emoji reaction on a message. Telegram addresses reactions
+// by message id alone; threadID only labels the log line.
+func (g *Gateway) React(ctx context.Context, threadID, messageID int, emoji string) error {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.SetMessageReaction(ctx, &bot.SetMessageReactionParams{
+			ChatID:    g.chatID,
+			MessageID: messageID,
+			Reaction: []models.ReactionType{{
+				Type:              models.ReactionTypeTypeEmoji,
+				ReactionTypeEmoji: &models.ReactionTypeEmoji{Emoji: emoji},
+			}},
+		})
+		return translate(err)
+	})
+	return g.finish("setMessageReaction", err,
+		slog.Int("thread_id", threadID), slog.Int("message_id", messageID), slog.String("emoji", emoji))
 }
 
 // finish logs the outcome of one call and wraps its error with the method

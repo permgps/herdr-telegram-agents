@@ -139,3 +139,101 @@ func TestFakeProcessLifecycle(t *testing.T) {
 		t.Fatalf("Resync unsupported = %v", err)
 	}
 }
+
+func TestFakeTelegramSendAndReact(t *testing.T) {
+	tg := testkit.NewFakeTelegram(nil)
+	ctx := context.Background()
+	topic, _ := tg.CreateTopic(ctx, "a", domain.StatusWorking)
+	if err := tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: "hello general"}); err != nil {
+		t.Fatalf("Send to General = %v", err)
+	}
+	if err := tg.Send(ctx, domain.Outgoing{ThreadID: topic.ThreadID, Text: "screen", Code: true, ReplyTo: 9, Notify: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.Send(ctx, domain.Outgoing{ThreadID: 999, Text: "nowhere"}); !errors.Is(err, domain.ErrTopicGone) {
+		t.Fatalf("Send to unknown topic = %v, want ErrTopicGone", err)
+	}
+	tg.FailNext("react", domain.ErrForbidden)
+	if err := tg.React(ctx, topic.ThreadID, 9, "👍"); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("React = %v, want ErrForbidden", err)
+	}
+	if err := tg.React(ctx, topic.ThreadID, 9, "👍"); err != nil {
+		t.Fatalf("second React = %v", err)
+	}
+	want := []string{
+		"create:a:working",
+		"send:0:hello general",
+		"send:101:screen:reply=9:notify",
+		"send:999:nowhere",
+		"react:101:9:👍",
+		"react:101:9:👍",
+	}
+	got := tg.Calls()
+	if len(got) != len(want) {
+		t.Fatalf("Calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Calls[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	sent := tg.Sent()
+	if len(sent) != 2 || sent[1].ReplyTo != 9 || !sent[1].Notify || !sent[1].Code {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestFakeHerdrRecordsCallsAndFails(t *testing.T) {
+	h := testkit.NewFakeHerdr(nil)
+	ctx := context.Background()
+	h.SetScreen("p1", "line1\nline2")
+	if sc, err := h.ReadScreen(ctx, "p1", domain.ScreenDetection, 25); err != nil || sc.Text != "line1\nline2" {
+		t.Fatalf("ReadScreen = %+v, %v", sc, err)
+	}
+	if sc, _ := h.ReadScreen(ctx, "p2", domain.ScreenVisible, 0); sc.Text != "screen" {
+		t.Fatalf("unscripted screen = %q", sc.Text)
+	}
+	h.FailNext("read", domain.ErrAgentGone)
+	if _, err := h.ReadScreen(ctx, "p1", domain.ScreenVisible, 0); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("ReadScreen after FailNext = %v", err)
+	}
+	if _, err := h.ReadScreen(ctx, "p1", domain.ScreenVisible, 0); err != nil {
+		t.Fatalf("failure fired twice: %v", err)
+	}
+	reads := h.Reads()
+	if len(reads) != 4 || reads[0] != (testkit.ReadCall{Target: "p1", Source: domain.ScreenDetection, Lines: 25}) {
+		t.Fatalf("Reads = %+v", reads)
+	}
+
+	h.FailNext("prompt", domain.ErrDisconnected)
+	if err := h.Prompt(ctx, "p1", "hi"); !errors.Is(err, domain.ErrDisconnected) {
+		t.Fatalf("Prompt = %v", err)
+	}
+	if err := h.SendKeys(ctx, "p1", []string{"esc"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Focus(ctx, "p1"); err != nil {
+		t.Fatal(err)
+	}
+	name := "fixer"
+	if err := h.Rename(ctx, "p1", &name); err != nil {
+		t.Fatal(err)
+	}
+	h.FailNext("rename", domain.ErrAgentGone)
+	if err := h.Rename(ctx, "p1", nil); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("Rename = %v", err)
+	}
+	if p := h.Prompts(); len(p) != 1 || p[0] != "p1: hi" {
+		t.Fatalf("Prompts = %v", p)
+	}
+	if k := h.Keys(); len(k) != 1 || k[0].Target != "p1" || len(k[0].Keys) != 1 || k[0].Keys[0] != "esc" {
+		t.Fatalf("Keys = %+v", k)
+	}
+	if f := h.Focused(); len(f) != 1 || f[0] != "p1" {
+		t.Fatalf("Focused = %v", f)
+	}
+	r := h.Renames()
+	if len(r) != 2 || *r[0].Name != "fixer" || r[1].Name != nil {
+		t.Fatalf("Renames = %+v", r)
+	}
+}

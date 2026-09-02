@@ -48,6 +48,25 @@ func (s Status) Live() bool {
 	return s != StatusExited
 }
 
+// Emoji is the glyph that stands for the status in bot text, the same one
+// the topic icon pack prefers. Unknown values render as StatusUnknown.
+func (s Status) Emoji() string {
+	switch s {
+	case StatusWorking:
+		return "⚡"
+	case StatusIdle:
+		return "✅"
+	case StatusBlocked:
+		return "❓"
+	case StatusDone:
+		return "🏆"
+	case StatusExited:
+		return "🏁"
+	default:
+		return "👀"
+	}
+}
+
 // ReadyForInput reports whether the agent is waiting at a prompt and can take
 // a new instruction without interrupting anything: idle or done.
 func (s Status) ReadyForInput() bool {

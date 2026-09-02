@@ -107,3 +107,34 @@ func Poll(ctx context.Context, b *bot.Bot, log *slog.Logger) {
 	b.Start(ctx)
 	log.Info("telegram polling stopped", slog.Any("reason", ctx.Err()))
 }
+
+// botCommands is the menu Telegram shows for "/" in the configured chat.
+// Descriptions are one line each; the commands work in topics and, for
+// status and help, in General.
+var botCommands = []models.BotCommand{
+	{Command: "screen", Description: "Show the agent screen (add N for the last N lines)"},
+	{Command: "keys", Description: "Send raw keys to the agent, e.g. /keys esc"},
+	{Command: "focus", Description: "Bring the agent's pane to the front in Herdr"},
+	{Command: "status", Description: "Agent status here, all agents in General"},
+	{Command: "help", Description: "List the commands"},
+}
+
+// RegisterCommands publishes the command menu scoped to the chat with
+// setMyCommands. It runs once at connect, outside the queue, like the
+// other startup calls. Failure is not fatal: the commands still work when
+// typed, only the menu is missing.
+func RegisterCommands(ctx context.Context, api *bot.Bot, chatID int64, log *slog.Logger) error {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	_, err := api.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: botCommands,
+		Scope:    &models.BotCommandScopeChat{ChatID: chatID},
+	})
+	if err = translate(err); err != nil {
+		log.Warn("setMyCommands failed, command menu unavailable", slog.Int64("chat_id", chatID), slog.Any("err", err))
+		return fmt.Errorf("setMyCommands: %w", err)
+	}
+	log.Info("commands registered", slog.Int64("chat_id", chatID), slog.Int("count", len(botCommands)))
+	return nil
+}

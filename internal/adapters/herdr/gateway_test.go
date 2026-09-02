@@ -195,6 +195,31 @@ func TestGatewayPromptAndSendKeys(t *testing.T) {
 	}
 }
 
+func TestGatewayFocus(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.focus", ackHandler)
+	g := newGateway(t, s)
+
+	if err := g.Focus(ctxT(t), "w1:p1"); err != nil {
+		t.Fatalf("Focus: %v", err)
+	}
+	want := map[string]any{"target": "w1:p1"}
+	if got := lastParams(t, s, "agent.focus"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("focus params = %v, want %v", got, want)
+	}
+}
+
+func TestGatewayFocusNotFoundIsAgentGone(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.focus", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "not_found", Message: "no such pane"}
+	})
+	g := newGateway(t, s)
+	if err := g.Focus(ctxT(t), "w9:p9"); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("err = %v, want ErrAgentGone", err)
+	}
+}
+
 func TestGatewayRename(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("agent.rename", ackHandler)

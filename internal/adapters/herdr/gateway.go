@@ -184,6 +184,11 @@ func (g *Gateway) SendKeys(ctx context.Context, target string, keys []string) er
 	return g.call(ctx, "agent.send_keys", target, sendKeysParams{Target: target, Keys: keys}, nil)
 }
 
+// Focus brings the agent's pane to the front in Herdr.
+func (g *Gateway) Focus(ctx context.Context, target string) error {
+	return g.call(ctx, "agent.focus", target, focusParams{Target: target}, nil)
+}
+
 // Rename sets the agent's custom name; nil clears it.
 func (g *Gateway) Rename(ctx context.Context, target string, name *string) error {
 	return g.call(ctx, "agent.rename", target, renameParams{Target: target, Name: name}, nil)

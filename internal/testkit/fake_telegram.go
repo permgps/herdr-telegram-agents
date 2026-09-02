@@ -18,12 +18,17 @@ import (
 //
 //	create:<name>:<status>   edit:<thread>:name=<n>,status=<s>
 //	close:<thread>           reopen:<thread>
-//	send:<thread>:<text>     rights
+//	send:<thread>:<text>     send:<thread>:<text>:reply=<id>   (":notify" appended when set)
+//	react:<thread>:<message>:<emoji>
+//	rights
+//
+// Thread 0 in Send stands for the General topic and is always accepted.
 type FakeTelegram struct {
 	mu       sync.Mutex
 	topics   map[int]*domain.Topic
 	nextID   int
 	calls    []string
+	sent     []domain.Outgoing
 	failNext map[string]error
 	rights   domain.Rights
 	rightErr error
@@ -49,7 +54,7 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 }
 
 // FailNext makes the next call of method (create, edit, close, reopen,
-// send, rights) return err. Only one failure is queued per method.
+// send, react, rights) return err. Only one failure is queued per method.
 func (f *FakeTelegram) FailNext(method string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -75,11 +80,19 @@ func (f *FakeTelegram) Calls() []string {
 	return append([]string(nil), f.calls...)
 }
 
-// Reset forgets the recorded calls but keeps the topics.
+// Sent returns every message accepted by Send, in order.
+func (f *FakeTelegram) Sent() []domain.Outgoing {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Outgoing(nil), f.sent...)
+}
+
+// Reset forgets the recorded calls and sent messages but keeps the topics.
 func (f *FakeTelegram) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = nil
+	f.sent = nil
 }
 
 // Topics returns a copy of the topics sorted by thread id.
@@ -184,16 +197,32 @@ func (f *FakeTelegram) ReopenTopic(_ context.Context, threadID int) error {
 	return nil
 }
 
-func (f *FakeTelegram) SendText(_ context.Context, threadID int, text string, _ bool) error {
+func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.record("send", fmt.Sprintf("send:%d:%s", threadID, text)); err != nil {
+	call := fmt.Sprintf("send:%d:%s", out.ThreadID, out.Text)
+	if out.ReplyTo != 0 {
+		call += fmt.Sprintf(":reply=%d", out.ReplyTo)
+	}
+	if out.Notify {
+		call += ":notify"
+	}
+	if err := f.record("send", call); err != nil {
 		return err
 	}
-	if _, ok := f.topics[threadID]; !ok {
-		return domain.ErrTopicGone
+	if out.ThreadID != 0 {
+		if _, ok := f.topics[out.ThreadID]; !ok {
+			return domain.ErrTopicGone
+		}
 	}
+	f.sent = append(f.sent, out)
 	return nil
+}
+
+func (f *FakeTelegram) React(_ context.Context, threadID, messageID int, emoji string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.record("react", fmt.Sprintf("react:%d:%d:%s", threadID, messageID, emoji))
 }
 
 func (f *FakeTelegram) Rights(context.Context) (domain.Rights, error) {

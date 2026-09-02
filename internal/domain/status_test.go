@@ -65,6 +65,26 @@ func TestStatusReadyForInput(t *testing.T) {
 	}
 }
 
+func TestStatusEmoji(t *testing.T) {
+	tests := []struct {
+		st   domain.Status
+		want string
+	}{
+		{domain.StatusWorking, "⚡"},
+		{domain.StatusIdle, "✅"},
+		{domain.StatusBlocked, "❓"},
+		{domain.StatusDone, "🏆"},
+		{domain.StatusUnknown, "👀"},
+		{domain.StatusExited, "🏁"},
+		{domain.Status("garbage"), "👀"},
+	}
+	for _, tt := range tests {
+		if got := tt.st.Emoji(); got != tt.want {
+			t.Errorf("%s.Emoji() = %q, want %q", tt.st, got, tt.want)
+		}
+	}
+}
+
 func TestDisplayName(t *testing.T) {
 	t.Run("short label is untouched", func(t *testing.T) {
 		if got := domain.DisplayName("V3Jobs · claude"); got != "V3Jobs · claude" {

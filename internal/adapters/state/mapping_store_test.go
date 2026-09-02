@@ -27,6 +27,7 @@ func TestMappingStoreRoundTrip(t *testing.T) {
 	at := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	m.Link(a.Key, domain.Topic{ThreadID: 42}, a, at)
 	m.MarkExited(a.Key, at.Add(time.Minute))
+	m.Mute(a.Key, at.Add(time.Minute))
 	if err := s.Save(ctx, m); err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +37,11 @@ func TestMappingStoreRoundTrip(t *testing.T) {
 	}
 	e, ok := got.TopicFor(a.Key)
 	if !ok || got.ChatID != -1001 || got.Version != domain.MappingVersion ||
-		e.ThreadID != 42 || e.Name != "reviewer" || e.Status != domain.StatusExited || e.Closed || !e.UpdatedAt.Equal(at.Add(time.Minute)) {
+		e.ThreadID != 42 || e.Name != "reviewer" || e.Status != domain.StatusExited || e.Closed || !e.Muted || !e.UpdatedAt.Equal(at.Add(time.Minute)) {
 		t.Fatalf("round trip: chat=%d version=%d entry=%+v ok=%v", got.ChatID, got.Version, e, ok)
 	}
 	raw, _ := os.ReadFile(s.Path())
-	for _, key := range []string{`"p1/t1"`, `"thread_id": 42`, `"status": "exited"`, `"updated_at"`} {
+	for _, key := range []string{`"p1/t1"`, `"thread_id": 42`, `"status": "exited"`, `"muted": true`, `"updated_at"`} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("file lacks %s:\n%s", key, raw)
 		}

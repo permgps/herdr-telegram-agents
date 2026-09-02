@@ -159,3 +159,39 @@ func TestPollWarnsOnTransientErrors(t *testing.T) {
 	}
 	assertNoSecret(t, buf)
 }
+
+func TestRegisterCommands(t *testing.T) {
+	h := newHarness(t)
+	if err := telegram.RegisterCommands(h.ctx, h.bot, testChatID, h.log); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("setMyCommands")
+	if len(calls) != 1 {
+		t.Fatalf("setMyCommands calls = %d", len(calls))
+	}
+	f := calls[0].form
+	cmds := f.Get("commands")
+	for _, name := range []string{`"command":"screen"`, `"command":"keys"`, `"command":"focus"`, `"command":"status"`, `"command":"help"`} {
+		if !strings.Contains(cmds, name) {
+			t.Errorf("commands lack %s: %s", name, cmds)
+		}
+	}
+	if scope := f.Get("scope"); !strings.Contains(scope, `"type":"chat"`) || !strings.Contains(scope, `"chat_id":-1001234567890`) {
+		t.Errorf("scope = %q", scope)
+	}
+	if !strings.Contains(h.buf.String(), "commands registered") {
+		t.Errorf("registration not logged: %s", h.buf.String())
+	}
+}
+
+func TestRegisterCommandsFailureIsReturned(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("setMyCommands", func(url.Values) apiReply { return errReply(400, "Bad Request: BOT_COMMANDS_INVALID") })
+	err := telegram.RegisterCommands(h.ctx, h.bot, testChatID, h.log)
+	if err == nil || !strings.Contains(err.Error(), "setMyCommands") {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(h.buf.String(), "setMyCommands failed") {
+		t.Errorf("failure not logged: %s", h.buf.String())
+	}
+}
