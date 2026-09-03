@@ -1,0 +1,43 @@
+# Release build for the five platforms the plugin ships: one static binary
+# per target plus checksums.txt. The install scripts read the version from
+# herdr-plugin.toml and download the matching asset, so the tag, the
+# manifest version and these asset names must stay in step.
+version: 2
+
+project_name: herdr-tg
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: herdr-tg
+    main: ./cmd/herdr-tg
+    binary: herdr-tg
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [binary]
+    name_template: "herdr-tg_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: git
+
+release:
+  draft: false
+  prerelease: auto

@@ -1,6 +1,8 @@
 # herdr-tg build, test and lint entrypoints.
 # `make` builds bin/herdr-tg for the host; `make lint` runs gofmt, go vet,
-# staticcheck, the forbidden-import gate and the cross-compile check.
+# staticcheck, the forbidden-import gate and the cross-compile check;
+# `make release-snapshot` builds every release target into dist/ without
+# publishing anything (needs goreleaser).
 
 .DEFAULT_GOAL := build
 
@@ -8,7 +10,7 @@ VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 
 STATICCHECK ?= $(HOME)/go/bin/staticcheck
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test lint crosscheck clean
+.PHONY: build test lint crosscheck release-snapshot clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/herdr-tg ./cmd/herdr-tg
@@ -27,5 +29,9 @@ lint:
 crosscheck:
 	sh scripts/crosscheck.sh
 
+# Builds all five release targets plus checksums.txt into dist/.
+release-snapshot:
+	goreleaser release --snapshot --clean --skip=publish
+
 clean:
-	rm -rf bin
+	rm -rf bin dist

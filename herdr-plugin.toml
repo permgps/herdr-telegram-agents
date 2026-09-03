@@ -3,8 +3,13 @@
 # Action ids must be unique across the manifest (Herdr rejects a per-platform
 # duplicate with duplicate_plugin_action_id), so one entry serves all
 # platforms: on Windows the process launcher resolves bin/herdr-tg to
-# bin/herdr-tg.exe. [[build]] entries arrive with the distribution milestone;
-# until then `make build` produces the binary before `herdr plugin link`.
+# bin/herdr-tg.exe.
+#
+# `version` must equal the release tag without the "v": the [[build]] scripts
+# read it from this file and download the matching release asset, so a
+# checkout always installs the binary that tag built (scripts/check-version.sh
+# enforces it in the release workflow). `herdr plugin link` skips [[build]];
+# developers run `make build` instead.
 
 id = "permgps.telegram-agents"
 name = "Telegram Agents"
@@ -12,6 +17,18 @@ version = "0.1.0"
 min_herdr_version = "0.7.5"
 description = "One Telegram forum topic per live Herdr agent: status in the topic name and icon, messages both ways."
 platforms = ["linux", "macos", "windows"]
+
+# herdr plugin install runs these after cloning and before registering the
+# plugin: they download the release binary for the host into bin/ and verify
+# its SHA-256. No toolchain is needed, only sh + curl (linux, macos) or
+# PowerShell 5.1+ (windows).
+[[build]]
+command = ["sh", "scripts/install.sh"]
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/install.ps1"]
+platforms = ["windows"]
 
 # Runs once after session restore: starts the daemon when configured,
 # otherwise shows a notification pointing at the setup action.
