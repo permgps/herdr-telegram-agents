@@ -66,6 +66,9 @@ Telegram group on a phone.
 - [ ] **Stale buttons**: answer in Herdr and press the old button: `agent is not waiting anymore` and the keyboard disappears; an agent exiting with buttons pending loses them on exit
 - [ ] **Button access control**: a press from a non-operator account answers `not allowed` and sends nothing
 - [ ] **Done**: a finished agent posts its tail silently
+  - [ ] `Done post` = `Reply` in `/options`, finish a turn: the agent's last message arrives as monospace text, the log has `reply posted` with the transcript path
+  - [ ] `Done post` = `Formatted`, finish a turn whose reply has a list and inline code: bullets and `<code>` render, a fenced block stays one block
+  - [ ] a non-Claude agent, or a Claude pane whose directory has no `~/.claude/projects/<slug>/`, still posts the screen and the log shows `reply source unavailable`
 - [ ] **`/screen`, `/screen 40`, `/screen all`**: the visible screen, a tail, and everything since your last message (a `.txt` document when long)
 - [ ] **Prompts**: plain text in a topic is typed into the agent and the icon turns ⚡
 - [ ] **`/keys`, `/focus`, `/status`, `/help`** in a topic

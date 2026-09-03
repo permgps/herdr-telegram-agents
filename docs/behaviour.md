@@ -62,6 +62,37 @@ in a topic and what gets posted there is in [commands.md](commands.md).
   operator submits with `enter`. Only operators can press; anyone else gets
   `not allowed`.
 
+## Done posts
+
+When an agent turns 🏆 done the topic gets one silent post. What it holds is
+the `Done post` option of the Posts group:
+
+- **Screen** (default): the last 12 lines of the terminal, as a code block.
+  This is what every other post uses too (blocked screens, `/screen`), and it
+  works for any agent Herdr detects.
+- **Reply**: the agent's own last message, taken from the transcript Claude
+  Code writes for itself. Herdr does not say which session a pane runs, so
+  the daemon takes the pane's working directory, maps it to
+  `~/.claude/projects/<cwd with every non-alphanumeric character as "-">/`
+  and reads the newest `.jsonl` there from the end: the last text the agent
+  wrote after your last prompt, skipping tool calls, tool results and
+  subagent traffic. The text is posted as a code block, so Markdown shows as
+  the agent typed it.
+- **Formatted**: the same reply rendered for Telegram: headings become bold,
+  `- ` lists become `•`, quotes get a bar, `[text](url)` becomes a link,
+  inline code and fenced blocks keep their monospace, pipe tables are
+  monospaced too. A fenced block never straddles two messages; long replies
+  are split and stop after five messages with `… (+N chars)` at the end.
+  Should Telegram reject the markup (`can't parse entities`), that part is
+  sent once more as a plain code block and the log says so.
+
+Limits worth knowing: two Claude Code panes in the same directory cannot be
+told apart, so the reply of the one that wrote last wins; other agents
+(Codex, Pi, OpenCode) always get the screen; when no transcript or no text
+is found the daemon posts the screen and logs `reply source unavailable`
+with the reason. Blocked posts and `/screen` are never affected: the dialog
+with its buttons exists only on the screen.
+
 ## Options
 
 `/options` in the General topic answers with one message that is edited in
@@ -71,7 +102,7 @@ keyboard, `✖ Close` leaves a one-line-per-option summary behind. The buttons
 carry everything they need, so a panel still works after the daemon was
 restarted.
 
-- **Level 1** lists the groups (Sync, Quiet, Appearance, Privacy, Topics)
+- **Level 1** lists the groups (Sync, Quiet, Posts, Appearance, Privacy, Topics)
   with a description each.
 - **Level 2** lists the options of a group: a checkbox toggles on the spot
   (`☑` / `☐`), a choice shows its current value and opens the picker,
@@ -82,7 +113,8 @@ restarted.
   the current value in brackets (only those emoji can be topic icons, which
   is why there is no free-text field); for the cleanup age, one row of
   `Off 7d 14d 30d 60d 90d`; for the quiet threshold `1m 2m 3m 5m 10m 15m`;
-  for the posts mode `Silent Held Normal`.
+  for the posts mode `Silent Held Normal`; for the done post `Screen Reply
+  Formatted`.
 
 The options today:
 
@@ -94,6 +126,7 @@ The options today:
 | `Hold topic edits` | Quiet | Default on. While at the desk no topic is created, renamed, closed, reopened or given a new icon; each of those is a Telegram service message that rings the phone. Off keeps topic edits live while at the desk. |
 | `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
+| `Done post` | Posts | Default `Screen`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. Falls back to `Screen` for non-Claude agents or when no reply is found, see [Done posts](#done-posts). |
 | `working` … `exited` | Appearance | The topic icon of each status and the emoji `/status` prints. Picking an emoji another status already uses answers `used by <status>` and changes nothing. A pick repaints every live topic at once (a `resync`), or when sync comes back on. |
 | `Redact secrets` | Privacy | Default on. Every text the daemon posts passes the redaction step described under [Secrets in posts](#secrets-in-posts). Off: raw text. A change applies to the next post. |
 | `Delete closed topics after` | Topics | Default 30 days. The topic of an exited agent is deleted once it has been closed for that long, see [Topic cleanup](#topic-cleanup). `Off` keeps every topic. A number outside the picker's list (say `45`) can be typed into `options.json` by hand; the panel shows it without a bracketed button. |

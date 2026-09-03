@@ -135,6 +135,7 @@ Its groups:
 |-------|---------------|
 | Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working |
 | Quiet | quiet mode while you are at the desk: `Away after` (3 min), `Hold topic edits`, `Screen posts` (Silent, Held, Normal), `Re-announce on leaving` |
+| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code |
 | Appearance | one topic icon per status, from Telegram's topic-icon pack |
 | Privacy | `Redact secrets`: API keys, tokens, passwords and private keys are masked in every post |
 | Topics | `Delete closed topics after`: the topics of exited agents go after 30 days by default |

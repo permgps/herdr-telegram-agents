@@ -10,8 +10,10 @@ names, icons, exit and resume, the options) are in [behaviour.md](behaviour.md).
 
 When an agent turns **blocked** (a question or an approval dialog) the daemon
 waits 1.5 s and posts the last 25 lines of the screen into its topic with a
-notification. When it turns **done** the last 12 lines are posted silently. A
-screen identical to the previous post for that agent is skipped. Agents that
+notification. When it turns **done** the topic gets the last 12 lines of the
+screen, or the agent's last reply when `Done post` in `/options` says so (see
+[Done posts](behaviour.md#done-posts)). A post identical to the previous one
+for that agent is skipped. Agents that
 are already blocked when the daemon starts are posted too.
 
 When the blocked screen ends in a numbered dialog with two to five real
