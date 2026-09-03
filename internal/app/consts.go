@@ -31,6 +31,9 @@ const (
 	bridgeBuffer = 256
 	// bridgeCallTimeout bounds one bridge job (Herdr read plus Telegram send).
 	bridgeCallTimeout = 15 * time.Second
+	// dropReportInterval is how often the daemon warns about bridge jobs
+	// lost to overflow; each drop itself is logged at debug.
+	dropReportInterval = 1 * time.Minute
 	// captureInterval is how often the capture reads the screens of
 	// working agents.
 	captureInterval = 1 * time.Second

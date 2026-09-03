@@ -327,3 +327,63 @@ func TestQueueShutdownCancelsRunningCall(t *testing.T) {
 		t.Fatal("Do did not return after the queue stopped while a call was running")
 	}
 }
+
+// TestQueueManyConcurrentCallers is the "many agents" case: every topic
+// competes for one queue, so calls must still run one at a time and stay
+// inside the window.
+func TestQueueManyConcurrentCallers(t *testing.T) {
+	q, clock, _ := startQueue(t, QueueConfig{})
+	const callers = 50
+	var mu sync.Mutex
+	running, maxRunning, done := 0, 0, 0
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			err := q.Do(context.Background(), func(context.Context) error {
+				mu.Lock()
+				running++
+				if running > maxRunning {
+					maxRunning = running
+				}
+				mu.Unlock()
+				mu.Lock()
+				running--
+				done++
+				mu.Unlock()
+				return nil
+			})
+			if err != nil {
+				t.Errorf("Do: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if maxRunning != 1 {
+		t.Fatalf("max concurrent calls = %d, want 1", maxRunning)
+	}
+	if done != callers {
+		t.Fatalf("completed = %d, want %d", done, callers)
+	}
+	// One wait before every call but the first, and never shorter than the
+	// minimum gap.
+	sleeps := clock.recorded()
+	if len(sleeps) != callers-1 {
+		t.Fatalf("sleeps = %d, want %d", len(sleeps), callers-1)
+	}
+	var elapsed time.Duration
+	for i, d := range sleeps {
+		if d < time.Second {
+			t.Fatalf("sleep %d = %s, shorter than MinGap", i, d)
+		}
+		elapsed += d
+	}
+	// The sliding window forces call i to wait for call i-20 to age out, so
+	// 50 calls cannot finish faster than two full windows.
+	if want := 2 * time.Minute; elapsed < want {
+		t.Fatalf("50 calls took %s of simulated time, want at least %s", elapsed, want)
+	}
+}

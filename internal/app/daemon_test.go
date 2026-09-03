@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -419,5 +420,146 @@ func TestDaemonMarksHistoryOnWorking(t *testing.T) {
 	})
 	if err := f.stop(t); err != nil {
 		t.Fatalf("Run = %v", err)
+	}
+}
+
+func TestDaemonStatsWhileRunning(t *testing.T) {
+	f := newDaemon(t)
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
+	f.start(t)
+	f.waitCalls(t, 3)
+	f.clock.Advance(90 * time.Second)
+	st := f.daemon.Stats()
+	if st.Agents != 1 || st.Dropped != 0 || !st.HerdrOK || st.Version != "1.2.3" || !st.Since.Equal(t0) {
+		t.Fatalf("Stats = %+v", st)
+	}
+	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok" {
+		t.Fatalf("StatsLine = %q", line)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// manyAgents builds n idle agents named a00..a<n-1> on panes p00..p<n-1>.
+func manyAgents(n int, st domain.Status) []domain.Agent {
+	out := make([]domain.Agent, 0, n)
+	for i := range n {
+		pane := fmt.Sprintf("p%02d", i)
+		out = append(out, agent(pane, "t"+pane, fmt.Sprintf("a%02d", i), st))
+	}
+	return out
+}
+
+func countCalls(calls []string, prefix string) int {
+	n := 0
+	for _, c := range calls {
+		if strings.HasPrefix(c, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestDaemonManyAgentsBurst drives 40 agents through repeated status
+// changes: the debounce must coalesce the edits, no job may be dropped and
+// a blocked screen must be posted once per agent.
+func TestDaemonManyAgentsBurst(t *testing.T) {
+	const n = 40
+	f := newDaemon(t)
+	f.herdr.SetAgents(manyAgents(n, domain.StatusIdle))
+	for i := range n {
+		f.herdr.SetScreen(fmt.Sprintf("p%02d", i), fmt.Sprintf("Allow Bash on p%02d?\n1. Yes\n2. No", i))
+	}
+	f.start(t)
+	waitFor(t, "topics created", func() bool { return countCalls(f.tg.Calls(), "create:") == n })
+
+	push := func(i int, st domain.Status) {
+		a := agent(fmt.Sprintf("p%02d", i), "", "", st)
+		f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: a.Key.PaneID, Agent: &a})
+	}
+	for range 5 {
+		for i := range n {
+			push(i, domain.StatusWorking)
+			push(i, domain.StatusIdle)
+		}
+		f.clock.Advance(time.Second)
+	}
+	// The snapshot must agree with the events: the reconcile ticker fires
+	// while the clock is advanced and would otherwise revert the statuses.
+	f.herdr.SetAgents(manyAgents(n, domain.StatusBlocked))
+	for i := range n {
+		push(i, domain.StatusBlocked)
+	}
+	// Let the debounce and the screen settle timers fire. Timers are armed
+	// as jobs are served, so the clock is advanced repeatedly.
+	deadline := time.Now().Add(3 * time.Second)
+	for len(f.tg.Sent()) < n+1 && time.Now().Before(deadline) {
+		f.clock.Advance(5 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	if len(f.tg.Sent()) < n+1 {
+		t.Fatalf("blocked screens posted = %d, want %d", len(f.tg.Sent())-1, n)
+	}
+
+	if dropped := f.daemon.Stats().Dropped; dropped != 0 {
+		t.Fatalf("dropped %d jobs under a 40-agent burst", dropped)
+	}
+	calls := f.tg.Calls()
+	// Ten status flips per agent must not cost ten edits per agent.
+	if edits := countCalls(calls, "edit:"); edits > 3*n {
+		t.Fatalf("edits = %d for %d agents, debounce did not coalesce", edits, n)
+	}
+	// Every agent's blocked screen is posted exactly once (the started
+	// notice is the extra message in the topic-0 thread).
+	posts := map[int]int{}
+	for _, s := range f.tg.Sent() {
+		if s.ThreadID != 0 && strings.HasPrefix(s.Text, "Allow Bash") {
+			posts[s.ThreadID]++
+		}
+	}
+	if len(posts) != n {
+		t.Fatalf("agents with a screen post = %d, want %d", len(posts), n)
+	}
+	for thread, count := range posts {
+		if count != 1 {
+			t.Fatalf("thread %d got %d screen posts, want 1", thread, count)
+		}
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonManyAgentsSnapshotChurn exits agents in waves and checks that
+// every topic is closed once and no topic is created twice.
+func TestDaemonManyAgentsSnapshotChurn(t *testing.T) {
+	const n = 30
+	f := newDaemon(t)
+	all := manyAgents(n, domain.StatusIdle)
+	f.herdr.SetAgents(all)
+	f.start(t)
+	waitFor(t, "topics created", func() bool { return countCalls(f.tg.Calls(), "create:") == n })
+
+	for wave := 1; wave <= 3; wave++ {
+		f.herdr.SetAgents(all[wave*10:])
+		f.daemon.Resync()
+		want := wave * 10
+		waitFor(t, fmt.Sprintf("wave %d closed", wave), func() bool {
+			return countCalls(f.tg.Calls(), "close:") >= want
+		})
+	}
+	calls := f.tg.Calls()
+	if created := countCalls(calls, "create:"); created != n {
+		t.Fatalf("created = %d, want %d (topics recreated)", created, n)
+	}
+	if closed := countCalls(calls, "close:"); closed != n {
+		t.Fatalf("closed = %d, want %d", closed, n)
+	}
+	if dropped := f.daemon.Stats().Dropped; dropped != 0 {
+		t.Fatalf("dropped %d jobs during churn", dropped)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
 	}
 }

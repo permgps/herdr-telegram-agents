@@ -67,6 +67,12 @@ const subscribeTimeout = 5 * time.Second
 // are delivered before it is closed.
 const drainGrace = 100 * time.Millisecond
 
+// stableAfter is how long a subscription must stay up before the reconnect
+// attempt counter resets. A connection that drops sooner counts as a failed
+// attempt, so a socket that flaps every second climbs the backoff schedule
+// instead of reconnecting every Min forever.
+const stableAfter = 5 * time.Second
+
 // Stream owns the write-once subscription connection to Herdr.
 //
 // It subscribes to the global event kinds plus one
@@ -84,6 +90,11 @@ type Stream struct {
 	changed chan struct{}
 
 	drain time.Duration // read grace for the old connection on a swap
+
+	// sleep and now are replaced by tests so backoff delays can be observed
+	// without waiting for them.
+	sleep func(ctx context.Context, d time.Duration) bool
+	now   func() time.Time
 }
 
 // NewStream builds a stream; call Run to start it.
@@ -95,6 +106,8 @@ func NewStream(dial dialFunc, path string, log *slog.Logger, backoff Backoff) *S
 		backoff: backoff,
 		changed: make(chan struct{}, 1),
 		drain:   drainGrace,
+		sleep:   sleep,
+		now:     time.Now,
 	}
 }
 
@@ -126,7 +139,9 @@ func (s *Stream) currentPanes() []string {
 }
 
 // Run connects, streams events into out and reconnects until ctx is done.
-// It returns ctx.Err().
+// It returns ctx.Err(). The attempt counter grows on every failed subscribe
+// and on every connection that lived shorter than stableAfter; only a
+// stable connection resets it.
 func (s *Stream) Run(ctx context.Context, out chan<- domain.Event) error {
 	attempt := 0
 	for {
@@ -139,25 +154,38 @@ func (s *Stream) Run(ctx context.Context, out chan<- domain.Event) error {
 			attempt++
 			s.log.Warn("herdr stream subscribe failed",
 				slog.String("err", err.Error()),
+				slog.Int("attempt", attempt),
 				slog.Int64("retry_ms", delay.Milliseconds()))
-			if !sleep(ctx, delay) {
+			if !s.sleep(ctx, delay) {
 				return ctx.Err()
 			}
 			continue
 		}
-		attempt = 0
+		connectedAt := s.now()
 		err = s.serve(ctx, conn, out)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		delay := s.backoff.Next(0)
+		lived := s.now().Sub(connectedAt)
+		if lived >= stableAfter {
+			if attempt > 0 {
+				s.log.Debug("herdr stream was stable, backoff reset",
+					slog.Int64("lived_ms", lived.Milliseconds()),
+					slog.Int("attempts", attempt))
+			}
+			attempt = 0
+		}
+		delay := s.backoff.Next(attempt)
+		attempt++
 		s.log.Warn("herdr stream reset",
 			slog.String("err", err.Error()),
+			slog.Int64("lived_ms", lived.Milliseconds()),
+			slog.Int("attempt", attempt),
 			slog.Int64("retry_ms", delay.Milliseconds()))
 		if !emit(ctx, out, domain.HerdrEvent{Kind: domain.StreamReset}) {
 			return ctx.Err()
 		}
-		if !sleep(ctx, delay) {
+		if !s.sleep(ctx, delay) {
 			return ctx.Err()
 		}
 	}

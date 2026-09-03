@@ -48,6 +48,81 @@ type Daemon struct {
 	Version string
 
 	resync chan struct{}
+
+	// started is when Run began; Stats reports the uptime from it.
+	started time.Time
+	// lastDropped and lastDropReport rate-limit the overflow warning.
+	lastDropped    int64
+	lastDropReport time.Time
+}
+
+// Stats is the daemon's self-description for the status action, served
+// through the control channel. PID is filled in by the caller.
+type Stats struct {
+	Version           string
+	PID               int
+	Since             time.Time
+	Agents            int
+	Dropped           int64
+	HerdrOK           bool
+	HerdrFailingSince time.Time
+}
+
+// Stats snapshots the running daemon. It is safe to call from another
+// goroutine: every source is mutex-protected or atomic.
+func (d *Daemon) Stats() Stats {
+	h := d.registry.Health()
+	s := Stats{
+		Version: d.Version,
+		Since:   d.started,
+		Agents:  len(d.registry.Live()),
+		Dropped: d.bridge.Dropped(),
+		HerdrOK: h.LastErr == nil,
+	}
+	if h.LastErr != nil {
+		s.HerdrFailingSince = h.LastOK
+		if s.HerdrFailingSince.IsZero() || s.HerdrFailingSince.Before(d.started) {
+			s.HerdrFailingSince = d.started
+		}
+	}
+	d.log.Debug("daemon stats requested", slog.Int("agents", s.Agents), slog.Int64("dropped", s.Dropped), slog.Bool("herdr_ok", s.HerdrOK))
+	return s
+}
+
+// StatsLine renders Stats as the one-line status reply:
+// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s>.
+func StatsLine(s Stats, now time.Time) string {
+	version := s.Version
+	if version == "" {
+		version = "dev"
+	}
+	uptime := now.Sub(s.Since).Round(time.Second)
+	if s.Since.IsZero() || uptime < 0 {
+		uptime = 0
+	}
+	herdr := "ok"
+	if !s.HerdrOK {
+		herdr = fmt.Sprintf("failing since %s", now.Sub(s.HerdrFailingSince).Round(time.Second))
+	}
+	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s",
+		version, s.PID, uptime, s.Agents, s.Dropped, herdr)
+}
+
+// reportDrops warns about bridge jobs lost since the last report, at most
+// once per dropReportInterval, so a sustained overflow does not flood the
+// log while a single burst is still visible.
+func (d *Daemon) reportDrops(now time.Time) {
+	n := d.bridge.Dropped()
+	if n <= d.lastDropped {
+		return
+	}
+	if !d.lastDropReport.IsZero() && now.Sub(d.lastDropReport) < dropReportInterval {
+		d.log.Debug("bridge drops pending report", slog.Int64("delta", n-d.lastDropped), slog.Int64("total", n))
+		return
+	}
+	d.log.Warn("bridge dropped jobs", slog.Int64("delta", n-d.lastDropped), slog.Int64("total", n))
+	d.lastDropped = n
+	d.lastDropReport = now
 }
 
 // NewDaemon wires the loop. The registry, reconciler, bridge and capture
@@ -80,6 +155,7 @@ func (d *Daemon) Resync() {
 // returned as that cause.
 func (d *Daemon) Run(ctx context.Context) error {
 	start := d.clock.Now()
+	d.started = start
 	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle))
 
 	if err := d.checkRights(ctx); err != nil {
@@ -167,6 +243,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		case <-health:
 			health = d.clock.After(d.HealthInterval)
+			d.reportDrops(d.clock.Now())
 			if gone := d.socketGone(start); gone {
 				d.general(ctx, fmt.Sprintf("⏹ %s: Herdr socket unreachable for %s, exiting", d.title(), d.SocketGrace))
 				d.shutdown()

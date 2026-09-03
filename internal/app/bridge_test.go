@@ -145,3 +145,39 @@ func TestBridgeReportsFatalOnce(t *testing.T) {
 	default:
 	}
 }
+
+// TestBridgeOverflowCountsDrops fills the job buffer while nothing serves
+// it, so every extra job is counted rather than silently lost.
+func TestBridgeOverflowCountsDrops(t *testing.T) {
+	f := newBridgeFixture(t)
+	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
+	registry := NewRegistry(f.herdr, f.clock, nil)
+	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, f.clock, nil)
+	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.clock, nil)
+
+	for i := range bridgeBuffer + 10 {
+		b.Submit(topicMsg(101, i+1, "hello"))
+	}
+	if got := b.Dropped(); got != 10 {
+		t.Fatalf("Dropped = %d, want 10", got)
+	}
+	// An unknown job type is rejected without counting as an overflow.
+	b.Submit("not a job")
+	if got := b.Dropped(); got != 10 {
+		t.Fatalf("Dropped after a bad job = %d, want 10", got)
+	}
+	// The buffered jobs drain once the loop runs, and cancelling stops it.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.Run(ctx)
+	}()
+	waitUntil(t, "jobs drained", func() bool { return len(b.jobs) == 0 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+}

@@ -58,8 +58,9 @@ func (b *Bridge) SetSettle(d time.Duration) {
 func (b *Bridge) Fatal() <-chan error { return b.fatal }
 
 // Submit queues a job without blocking: an AgentEvent, a TopicMessage or a
-// GeneralCommand. When the buffer is full the job is dropped with a
-// warning; the next event or a resync brings the state back.
+// GeneralCommand. When the buffer is full the job is dropped and counted;
+// the daemon reports the count at most once per dropReportInterval and the
+// next event or a resync brings the state back.
 func (b *Bridge) Submit(job any) {
 	switch job.(type) {
 	case AgentEvent, domain.TopicMessage, domain.GeneralCommand:
@@ -71,7 +72,7 @@ func (b *Bridge) Submit(job any) {
 	case b.jobs <- job:
 	default:
 		n := b.dropped.Add(1)
-		b.log.Warn("bridge overflow, job dropped", slog.String("type", fmt.Sprintf("%T", job)), slog.Int64("dropped", n))
+		b.log.Debug("bridge overflow, job dropped", slog.String("type", fmt.Sprintf("%T", job)), slog.Int64("dropped", n))
 	}
 }
 

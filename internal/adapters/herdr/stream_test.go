@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -390,5 +391,86 @@ func TestStreamSetPanesKeepsInFlightEvents(t *testing.T) {
 		if got != want {
 			t.Fatalf("round %d: delivered %d of %d events across the resubscribe", r, got, want)
 		}
+	}
+}
+
+// TestStreamFlappingEscalates checks that a subscription which drops before
+// stableAfter counts as a failed attempt, so the delay climbs the schedule,
+// and that a stable one resets it.
+func TestStreamFlappingEscalates(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewStream(dial, s.Path(), testLogger(t), Backoff{Min: 10 * time.Millisecond, Max: 80 * time.Millisecond})
+	delays := make(chan time.Duration, 16)
+	st.sleep = func(ctx context.Context, d time.Duration) bool {
+		delays <- d
+		return ctx.Err() == nil
+	}
+	var mu sync.Mutex
+	now := time.Unix(1000, 0)
+	st.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		now = now.Add(d)
+		mu.Unlock()
+	}
+	out := make(chan domain.Event, 64)
+	done := make(chan error, 1)
+	go func() { done <- st.Run(ctx, out) }()
+
+	drop := func(i int) time.Duration {
+		t.Helper()
+		if got := s.WaitRequests("events.subscribe", i+1, 2*time.Second); len(got) < i+1 {
+			t.Fatalf("subscribe %d did not arrive", i+1)
+		}
+		if !s.WaitConns(1, 2*time.Second) {
+			t.Fatalf("subscription %d not open", i+1)
+		}
+		s.CloseAll()
+		select {
+		case d := <-delays:
+			return d
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no delay after drop %d", i+1)
+			return 0
+		}
+	}
+
+	want := []time.Duration{10, 20, 40, 80, 80}
+	for i, w := range want {
+		if got := drop(i); got != w*time.Millisecond {
+			t.Fatalf("drop %d: delay = %v, want %v", i+1, got, w*time.Millisecond)
+		}
+	}
+	// A connection that lives longer than stableAfter resets the counter.
+	if got := s.WaitRequests("events.subscribe", len(want)+1, 2*time.Second); len(got) < len(want)+1 {
+		t.Fatal("no resubscribe after the last drop")
+	}
+	if !s.WaitConns(1, 2*time.Second) {
+		t.Fatal("stable subscription not open")
+	}
+	advance(stableAfter + time.Second)
+	s.CloseAll()
+	select {
+	case d := <-delays:
+		if d != 10*time.Millisecond {
+			t.Fatalf("delay after a stable run = %v, want 10ms", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no delay after the stable drop")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop")
 	}
 }
