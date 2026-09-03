@@ -209,7 +209,7 @@ that tag was built from.
 | Page | What it covers |
 |------|----------------|
 | [docs/behaviour.md](docs/behaviour.md) | Topic naming and icons, exit and resume rules, manual rename and close, logs and state |
-| [docs/development.md](docs/development.md) | Building from source, `make` targets, the `dev` subcommand, the tree layout |
+| [docs/development.md](docs/development.md) | Building from source, `make` targets, publishing a release, the `dev` subcommand, the tree layout |
 | [docs/testing.md](docs/testing.md) | Automated gates and the manual checklist run before a release |
 
 ## License
