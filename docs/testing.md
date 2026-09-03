@@ -27,18 +27,26 @@ tag and run `scripts/install.sh`; macOS clones the tag into a temporary
 directory and runs the same script with a `PATH` that has no Go. Nothing
 outside the containers and that temporary directory is touched.
 
-- [x] `sh scripts/verify-install.sh <version> linux` prints `verify: linux/amd64 ok` and `verify: linux/arm64 ok` (2026-09-03, v0.1.0)
-- [x] `sh scripts/verify-install.sh <version> macos` prints the version line and `verify: macos ok` (2026-09-03, v0.1.0)
+- [x] `sh scripts/verify-install.sh <version> linux` prints `verify: linux/amd64 ok` and `verify: linux/arm64 ok` (2026-09-03, v0.1.0 and v0.1.1)
+- [x] `sh scripts/verify-install.sh <version> macos` prints the version line and `verify: macos ok` (2026-09-03, v0.1.0 and v0.1.1)
 - [x] A corrupted `checksums.txt` makes `scripts/install.sh` exit non-zero with `checksum mismatch` and leave no binary behind (2026-09-03, against a local snapshot)
-- [x] The release page lists `herdr-tg_darwin_amd64`, `herdr-tg_darwin_arm64`, `herdr-tg_linux_amd64`, `herdr-tg_linux_arm64`, `herdr-tg_windows_amd64.exe` and `checksums.txt` (2026-09-03, v0.1.0)
+- [x] The release page lists `herdr-tg_darwin_amd64`, `herdr-tg_darwin_arm64`, `herdr-tg_linux_amd64`, `herdr-tg_linux_arm64`, `herdr-tg_windows_amd64.exe` and `checksums.txt` (2026-09-03, v0.1.0 and v0.1.1)
 
 Installing the published plugin over a development checkout on your own
 machine is reversible; do it in this order so you end up where you started:
 
-- [ ] `herdr plugin unlink permgps.telegram-agents`
-- [ ] `herdr plugin install permgps/herdr-telegram-agents` succeeds without a Go toolchain on `PATH`
-- [ ] The daemon starts with the existing configuration (the config and state directories are untouched by the install) and the actions work
-- [ ] `herdr plugin uninstall permgps.telegram-agents`, then `herdr plugin link <checkout>` and `make build` to return to development
+- [x] `herdr plugin unlink permgps.telegram-agents` (2026-09-03, v0.1.1)
+- [x] `herdr plugin install permgps/herdr-telegram-agents` succeeds without a Go toolchain on `PATH` (2026-09-03, v0.1.1: the managed copy under `~/.config/herdr/plugins/github/` reports `herdr-tg 0.1.1 darwin/arm64`)
+- [x] The daemon starts with the existing configuration (the config and state directories are untouched by the install) and the actions work (2026-09-03, v0.1.1: `status` reported `version=0.1.1 agents=3 dropped=0 herdr=ok`, no topic was created or renamed)
+- [x] `herdr plugin uninstall permgps.telegram-agents`, then `herdr plugin link <checkout>` and `make build` to return to development (2026-09-03, v0.1.1: `config.json` byte-identical afterwards)
+
+## Marketplace
+
+The card on [herdr.dev/plugins](https://herdr.dev/plugins/) is built from the
+GitHub topic `herdr-plugin` and the manifest on `main`; the index refreshes
+every 30 minutes, so a release becomes visible without any further step.
+
+- [x] The index entry shows the current manifest version and the GitHub repository description (2026-09-03, v0.1.1; `assets.herdr.dev/plugins/index.json` generated at 10:01Z listed `Telegram Agents 0.1.1` with `headCommit` 45911c9 about 15 minutes after the topic was added; the page itself renders that index in the browser)
 
 ## Herdr and Telegram end-to-end
 

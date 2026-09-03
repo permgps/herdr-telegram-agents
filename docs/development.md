@@ -38,6 +38,21 @@ runs the same lint and `go test -race` on every push and pull request, plus
 the unit tests on Windows. The manual checklist, including the install
 verification against the release assets, lives in [testing.md](testing.md).
 
+## Publishing a release
+
+1. Set `version` in `herdr-plugin.toml` to the new number in the commit you
+   are going to tag; the install scripts download the asset named by that
+   version, and the release workflow refuses a tag that does not match it.
+2. `make lint && make test`, push `main` and wait for CI to pass.
+3. `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`. The release
+   workflow builds the five binaries and `checksums.txt`; GoReleaser writes
+   the release notes from the commit list.
+4. Check that the release page lists all six assets, then
+   `sh scripts/verify-install.sh X.Y.Z all`.
+5. Nothing else: the repository carries the GitHub topic `herdr-plugin`, so
+   the [marketplace](https://herdr.dev/plugins/) card picks up the new
+   version within 30 minutes.
+
 ## The `dev` subcommand
 
 The undocumented `dev` subcommand talks to the live Herdr socket and works only
