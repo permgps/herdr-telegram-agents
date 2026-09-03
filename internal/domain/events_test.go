@@ -12,6 +12,7 @@ import (
 var (
 	_ domain.Event = domain.HerdrEvent{}
 	_ domain.Event = domain.TopicMessage{}
+	_ domain.Event = domain.ButtonPressed{}
 	_ domain.Event = domain.TopicRenamed{}
 	_ domain.Event = domain.TopicClosed{}
 	_ domain.Event = domain.TopicReopened{}

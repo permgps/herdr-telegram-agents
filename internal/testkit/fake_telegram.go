@@ -18,24 +18,30 @@ import (
 //
 //	create:<name>:<status>   edit:<thread>:name=<n>,status=<s>
 //	close:<thread>           reopen:<thread>
-//	send:<thread>:<text>     send:<thread>:<text>:reply=<id>   (":notify" appended when set)
+//	send:<thread>:<text>     send:<thread>:<text>:reply=<id>   (":notify" and ":buttons=<n>" appended when set)
+//	buttons:<message>:<text1>|<text2>   (empty text list when the keyboard is removed)
+//	answer:<callback>:<text>
 //	react:<thread>:<message>:<emoji>
 //	document:<thread>:<name>:<bytes>   (":reply=<id>" appended when set)
 //	rights
 //
 // Thread 0 in Send stands for the General topic and is always accepted.
+// Send hands out message ids from 1000 upwards; EditButtons keeps the last
+// keyboard per message id for Buttons.
 type FakeTelegram struct {
-	mu       sync.Mutex
-	topics   map[int]*domain.Topic
-	nextID   int
-	calls    []string
-	sent     []domain.Outgoing
-	docs     []domain.Document
-	failNext map[string]error
-	rights   domain.Rights
-	rightErr error
-	events   chan domain.Event
-	log      *slog.Logger
+	mu        sync.Mutex
+	topics    map[int]*domain.Topic
+	nextID    int
+	nextMsgID int
+	calls     []string
+	sent      []domain.Outgoing
+	buttons   map[int][]domain.Button
+	docs      []domain.Document
+	failNext  map[string]error
+	rights    domain.Rights
+	rightErr  error
+	events    chan domain.Event
+	log       *slog.Logger
 }
 
 var _ domain.TelegramGateway = (*FakeTelegram)(nil)
@@ -46,17 +52,19 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &FakeTelegram{
-		topics:   map[int]*domain.Topic{},
-		nextID:   100,
-		failNext: map[string]error{},
-		rights:   domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true},
-		events:   make(chan domain.Event, 64),
-		log:      log,
+		topics:    map[int]*domain.Topic{},
+		nextID:    100,
+		nextMsgID: 1000,
+		buttons:   map[int][]domain.Button{},
+		failNext:  map[string]error{},
+		rights:    domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true},
+		events:    make(chan domain.Event, 64),
+		log:       log,
 	}
 }
 
 // FailNext makes the next call of method (create, edit, close, reopen,
-// send, document, react, rights) return err. Only one failure is queued per method.
+// send, document, react, rights, buttons, answer) return err. Only one failure is queued per method.
 func (f *FakeTelegram) FailNext(method string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,6 +95,14 @@ func (f *FakeTelegram) Sent() []domain.Outgoing {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]domain.Outgoing(nil), f.sent...)
+}
+
+// Buttons returns the keyboard a message carries after the last Send or
+// EditButtons that touched it; nil when it has none.
+func (f *FakeTelegram) Buttons(messageID int) []domain.Button {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Button(nil), f.buttons[messageID]...)
 }
 
 // Documents returns every file accepted by SendDocument, in order.
@@ -208,7 +224,7 @@ func (f *FakeTelegram) ReopenTopic(_ context.Context, threadID int) error {
 	return nil
 }
 
-func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) error {
+func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	call := fmt.Sprintf("send:%d:%s", out.ThreadID, out.Text)
@@ -218,16 +234,48 @@ func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) error {
 	if out.Notify {
 		call += ":notify"
 	}
+	if len(out.Buttons) > 0 {
+		call += fmt.Sprintf(":buttons=%d", len(out.Buttons))
+	}
 	if err := f.record("send", call); err != nil {
-		return err
+		return 0, err
 	}
 	if out.ThreadID != 0 {
 		if _, ok := f.topics[out.ThreadID]; !ok {
-			return domain.ErrTopicGone
+			return 0, domain.ErrTopicGone
 		}
 	}
 	f.sent = append(f.sent, out)
+	id := f.nextMsgID
+	f.nextMsgID++
+	if len(out.Buttons) > 0 {
+		f.buttons[id] = append([]domain.Button(nil), out.Buttons...)
+	}
+	return id, nil
+}
+
+func (f *FakeTelegram) EditButtons(_ context.Context, messageID int, buttons []domain.Button) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	texts := make([]string, 0, len(buttons))
+	for _, b := range buttons {
+		texts = append(texts, b.Text)
+	}
+	if err := f.record("buttons", fmt.Sprintf("buttons:%d:%s", messageID, strings.Join(texts, "|"))); err != nil {
+		return err
+	}
+	if len(buttons) == 0 {
+		delete(f.buttons, messageID)
+		return nil
+	}
+	f.buttons[messageID] = append([]domain.Button(nil), buttons...)
 	return nil
+}
+
+func (f *FakeTelegram) AnswerButton(_ context.Context, callbackID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.record("answer", fmt.Sprintf("answer:%s:%s", callbackID, text))
 }
 
 func (f *FakeTelegram) SendDocument(_ context.Context, doc domain.Document) error {

@@ -217,7 +217,7 @@ func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
 		if text == "" {
 			text = "(screen is empty)"
 		}
-		if err := i.absorb(i.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, ReplyTo: f.messageID})); err != nil {
+		if err := i.absorb(i.send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, ReplyTo: f.messageID})); err != nil {
 			return err
 		}
 		i.log.Info("command screen posted", slog.String("key", key.String()), slog.String("word", f.word),
@@ -247,7 +247,7 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 	switch parsed.Kind {
 	case domain.CmdStatus:
 		text := i.statusSummary()
-		return i.absorb(i.tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: text, HTML: true, ReplyTo: cmd.MessageID}))
+		return i.absorb(i.send(ctx, domain.Outgoing{ThreadID: 0, Text: text, HTML: true, ReplyTo: cmd.MessageID}))
 	case domain.CmdHelp:
 		return i.reply(ctx, 0, cmd.MessageID, helpText)
 	default:
@@ -308,7 +308,14 @@ func (i *inbound) failed(ctx context.Context, msg domain.TopicMessage, key domai
 
 // reply posts a silent message quoting the operator's message.
 func (i *inbound) reply(ctx context.Context, threadID, messageID int, text string) error {
-	return i.absorb(i.tg.Send(ctx, domain.Outgoing{ThreadID: threadID, Text: text, ReplyTo: messageID}))
+	return i.absorb(i.send(ctx, domain.Outgoing{ThreadID: threadID, Text: text, ReplyTo: messageID}))
+}
+
+// send posts one message and drops the message id, which replies and
+// command screens never need.
+func (i *inbound) send(ctx context.Context, out domain.Outgoing) error {
+	_, err := i.tg.Send(ctx, out)
+	return err
 }
 
 // absorb logs a Telegram failure and returns it only when it is fatal for

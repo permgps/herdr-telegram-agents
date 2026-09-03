@@ -58,11 +58,20 @@ type HerdrGateway interface {
 	WatchPanes(ctx context.Context, paneIDs []string) error
 }
 
+// Button is one inline button under a bot message. Text is what the
+// operator sees; Data comes back verbatim in ButtonPressed and must stay
+// within Telegram's 64-byte limit.
+type Button struct {
+	Text string
+	Data string
+}
+
 // Outgoing is one message for the forum group. ThreadID 0 addresses the
 // General topic. Code renders the text as a code block; HTML sends it as
 // ready HTML the caller has escaped (used for links). ReplyTo quotes the
 // operator message with that id when non-zero. Notify sends the message
-// with a sound; everything else is silent.
+// with a sound; everything else is silent. Buttons, when set, are attached
+// to the last message part as an inline keyboard, one button per row.
 type Outgoing struct {
 	ThreadID int
 	Text     string
@@ -70,6 +79,7 @@ type Outgoing struct {
 	HTML     bool
 	ReplyTo  int
 	Notify   bool
+	Buttons  []Button
 }
 
 // Document is one file for the forum group, sent silently as a single
@@ -95,8 +105,15 @@ type TelegramGateway interface {
 	// ReopenTopic reopens a closed topic.
 	ReopenTopic(ctx context.Context, threadID int) error
 	// Send posts a message into a topic, or into General when ThreadID is
-	// 0; long text is split into several messages.
-	Send(ctx context.Context, out Outgoing) error
+	// 0; long text is split into several messages. It returns the id of
+	// the last message sent (the one carrying Buttons), 0 on error.
+	Send(ctx context.Context, out Outgoing) (int, error)
+	// EditButtons replaces the inline keyboard of a bot message; an empty
+	// slice removes it.
+	EditButtons(ctx context.Context, messageID int, buttons []Button) error
+	// AnswerButton closes the spinner of a pressed button with a short
+	// toast; callbackID comes from ButtonPressed.
+	AnswerButton(ctx context.Context, callbackID, text string) error
 	// SendDocument uploads one file into a topic, or into General when
 	// ThreadID is 0, as a single silent message.
 	SendDocument(ctx context.Context, doc Document) error
@@ -107,9 +124,9 @@ type TelegramGateway interface {
 	// its topics and delete messages; the daemon checks it on start and
 	// after RightsChanged.
 	Rights(ctx context.Context) (Rights, error)
-	// Events streams TopicMessage, GeneralCommand, TopicRenamed,
-	// TopicClosed, TopicReopened and RightsChanged values until the
-	// gateway is closed.
+	// Events streams TopicMessage, ButtonPressed, GeneralCommand,
+	// TopicRenamed, TopicClosed, TopicReopened and RightsChanged values
+	// until the gateway is closed.
 	Events() <-chan Event
 }
 

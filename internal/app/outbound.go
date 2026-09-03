@@ -115,7 +115,7 @@ func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
 		return o.skip(key, "duplicate")
 	}
 	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, Notify: agent.Status == domain.StatusBlocked}
-	if err := o.tg.Send(ctx, out); err != nil {
+	if _, err := o.tg.Send(ctx, out); err != nil {
 		return o.sendFailed(key, err)
 	}
 	o.lastPosted[key] = hash
@@ -141,7 +141,7 @@ func (o *outbound) Screen(ctx context.Context, key domain.Key, lines int) error 
 	if text == "" {
 		text = "(screen is empty)"
 	}
-	if err := o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true}); err != nil {
+	if _, err := o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true}); err != nil {
 		return err
 	}
 	o.log.Info("screen posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
@@ -167,7 +167,8 @@ func (o *outbound) ScreenAll(ctx context.Context, key domain.Key) error {
 	text := trimScreen(strings.Join(lines, "\n"))
 	if text == "" {
 		o.log.Debug("screen all empty", slog.String("key", key.String()), slog.Bool("marked", marked))
-		return o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "(no output since your last message)"})
+		_, err := o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "(no output since your last message)"})
+		return err
 	}
 	since := "your last message"
 	if !marked {
@@ -185,7 +186,7 @@ func (o *outbound) ScreenAll(ctx context.Context, key domain.Key) error {
 		}
 		err = o.tg.SendDocument(ctx, doc)
 	} else {
-		err = o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true})
+		_, err = o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true})
 	}
 	if err != nil {
 		return err

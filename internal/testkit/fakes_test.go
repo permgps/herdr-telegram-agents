@@ -144,13 +144,13 @@ func TestFakeTelegramSendAndReact(t *testing.T) {
 	tg := testkit.NewFakeTelegram(nil)
 	ctx := context.Background()
 	topic, _ := tg.CreateTopic(ctx, "a", domain.StatusWorking)
-	if err := tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: "hello general"}); err != nil {
+	if _, err := tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: "hello general"}); err != nil {
 		t.Fatalf("Send to General = %v", err)
 	}
-	if err := tg.Send(ctx, domain.Outgoing{ThreadID: topic.ThreadID, Text: "screen", Code: true, ReplyTo: 9, Notify: true}); err != nil {
+	if _, err := tg.Send(ctx, domain.Outgoing{ThreadID: topic.ThreadID, Text: "screen", Code: true, ReplyTo: 9, Notify: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tg.Send(ctx, domain.Outgoing{ThreadID: 999, Text: "nowhere"}); !errors.Is(err, domain.ErrTopicGone) {
+	if _, err := tg.Send(ctx, domain.Outgoing{ThreadID: 999, Text: "nowhere"}); !errors.Is(err, domain.ErrTopicGone) {
 		t.Fatalf("Send to unknown topic = %v, want ErrTopicGone", err)
 	}
 	tg.FailNext("react", domain.ErrForbidden)

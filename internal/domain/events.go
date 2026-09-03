@@ -57,6 +57,17 @@ type TopicMessage struct {
 	Text      string
 }
 
+// ButtonPressed is emitted when an operator presses an inline button under
+// a bot message in a topic. CallbackID answers the press; MessageID names
+// the message carrying the keyboard; Data is the button's Data.
+type ButtonPressed struct {
+	CallbackID string
+	ThreadID   int
+	MessageID  int
+	FromID     int64
+	Data       string
+}
+
 // GeneralCommand is a slash command an operator wrote in the General topic.
 // Only text starting with "/" reaches the application from General.
 type GeneralCommand struct {
@@ -88,6 +99,7 @@ type RightsChanged struct {
 
 func (HerdrEvent) isEvent()     {}
 func (TopicMessage) isEvent()   {}
+func (ButtonPressed) isEvent()  {}
 func (GeneralCommand) isEvent() {}
 func (TopicRenamed) isEvent()   {}
 func (TopicClosed) isEvent()    {}

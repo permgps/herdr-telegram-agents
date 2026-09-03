@@ -477,7 +477,7 @@ func (r *Reconciler) renameTab(ctx context.Context, key domain.Key, a domain.Age
 func (r *Reconciler) renameFailed(ctx context.Context, key domain.Key, entry *domain.TopicEntry, name, what string, err error) error {
 	r.log.Warn(what+" rename from telegram failed", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 		slog.String("name", name), slog.String("err", err.Error()))
-	if sendErr := r.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "rename failed: " + failureReason(err)}); sendErr != nil {
+	if _, sendErr := r.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "rename failed: " + failureReason(err)}); sendErr != nil {
 		r.log.Warn("rename failure note not sent", slog.String("key", key.String()), slog.String("err", sendErr.Error()))
 	}
 	return nil

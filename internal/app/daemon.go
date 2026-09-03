@@ -437,7 +437,7 @@ func (d *Daemon) title() string {
 func (d *Daemon) general(ctx context.Context, text string) {
 	gctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), generalTimeout)
 	defer cancel()
-	if err := d.tg.Send(gctx, domain.Outgoing{ThreadID: 0, Text: text}); err != nil {
+	if _, err := d.tg.Send(gctx, domain.Outgoing{ThreadID: 0, Text: text}); err != nil {
 		d.log.Warn("general notice failed", slog.String("text", text), slog.String("err", err.Error()))
 		return
 	}
