@@ -277,3 +277,22 @@ func TestFakeHerdrScreenRevision(t *testing.T) {
 		t.Fatalf("SetScreenAt read = %+v", sc)
 	}
 }
+
+func TestFakeIdle(t *testing.T) {
+	idle := testkit.NewFakeIdle(5 * time.Second)
+	ctx := context.Background()
+	if d, err := idle.Idle(ctx); err != nil || d != 5*time.Second {
+		t.Fatalf("Idle = %v, %v", d, err)
+	}
+	idle.Unsupported()
+	if _, err := idle.Idle(ctx); !errors.Is(err, domain.ErrIdleUnsupported) {
+		t.Fatalf("Idle after Unsupported = %v", err)
+	}
+	idle.Set(time.Minute)
+	if d, err := idle.Idle(ctx); err != nil || d != time.Minute {
+		t.Fatalf("Idle after Set = %v, %v", d, err)
+	}
+	if idle.Calls() != 3 {
+		t.Errorf("Calls = %d", idle.Calls())
+	}
+}

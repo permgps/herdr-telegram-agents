@@ -52,7 +52,7 @@ func TestPanelOpenShowsGroupsAndRetiresPrevious(t *testing.T) {
 	if len(sent) != 1 || sent[0].ThreadID != 0 || !sent[0].HTML || sent[0].ReplyTo != 50 {
 		t.Fatalf("Sent = %+v", sent)
 	}
-	if got := texts(sent[0].Buttons); strings.Join(got, "|") != "Sync|Appearance|Privacy|Topics|✖ Close" {
+	if got := texts(sent[0].Buttons); strings.Join(got, "|") != "Sync|Quiet|Appearance|Privacy|Topics|✖ Close" {
 		t.Errorf("home buttons = %v", got)
 	}
 	if !strings.Contains(sent[0].Text, "<b>Sync</b>: What the mirror writes to Telegram.") {
@@ -97,7 +97,7 @@ func TestPanelToggleSync(t *testing.T) {
 func TestPanelIconGridPickAndDuplicate(t *testing.T) {
 	f := newBridgeFixture(t)
 	f.tg.SetIconPack(testPack())
-	pressPanel(f, t, 900, dataGroup(1))
+	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupAppearance)))
 	if got := texts(f.tg.Buttons(900)); got[0] != "⚡ working" || got[5] != "🏁 exited" || len(got) != 9 {
 		t.Fatalf("appearance buttons = %v", got)
 	}
@@ -151,12 +151,12 @@ func TestPanelIconGridPickAndDuplicate(t *testing.T) {
 
 	// Reset restores ⚡.
 	f.tg.Reset()
-	pressPanel(f, t, 900, dataReset(1))
+	pressPanel(f, t, 900, dataReset(groupIndex(domain.GroupAppearance)))
 	if calls := f.tg.Calls(); calls[0] != "answer:cb:saved" || f.opts.StatusIcons().Working != "⚡" {
 		t.Fatalf("reset: calls=%q icons=%+v", calls, f.opts.StatusIcons())
 	}
 	f.tg.Reset()
-	pressPanel(f, t, 900, dataReset(1))
+	pressPanel(f, t, 900, dataReset(groupIndex(domain.GroupAppearance)))
 	if got := lastCall(f); f.tg.Calls()[0] != "answer:cb:already at defaults" {
 		t.Errorf("second reset calls = %q (%s)", f.tg.Calls(), got)
 	}
@@ -221,7 +221,7 @@ func TestPanelStringsAreEnglish(t *testing.T) {
 
 func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
 	f := newBridgeFixture(t)
-	pressPanel(f, t, 900, dataGroup(2))
+	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPrivacy)))
 	if got := texts(f.tg.Buttons(900)); got[0] != "☑ Redact secrets" || len(got) != 4 {
 		t.Fatalf("privacy buttons = %v", got)
 	}
@@ -230,7 +230,7 @@ func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
 		t.Fatalf("after toggle: buttons=%v saves=%d", got, f.options.Saved())
 	}
 
-	pressPanel(f, t, 900, dataGroup(3))
+	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupTopics)))
 	if got := texts(f.tg.Buttons(900)); got[0] != "30 days Delete closed topics after" || len(got) != 4 {
 		t.Fatalf("topics buttons = %v", got)
 	}
@@ -242,7 +242,7 @@ func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
 	if got := texts(buttons); strings.Join(got, "|") != "Off|7d|14d|[30d]|60d|90d|‹ Back" {
 		t.Fatalf("days row = %v", got)
 	}
-	if buttons[0].Row != 1 || buttons[5].Row != 1 || buttons[6].Data != dataGroup(3) {
+	if buttons[0].Row != 1 || buttons[5].Row != 1 || buttons[6].Data != dataGroup(groupIndex(domain.GroupTopics)) {
 		t.Fatalf("days rows = %+v", buttons)
 	}
 	if text := f.tg.Text(900); !strings.Contains(text, "<b>Delete closed topics after</b>") || strings.Contains(text, panelOnlyPackIcons) || !strings.Contains(text, "Current: 30 days") {
@@ -275,5 +275,44 @@ func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
 	pressPanel(f, t, 900, dataClose())
 	if text := f.tg.Text(900); !strings.Contains(text, "Delete closed topics after: 45 days") || !strings.Contains(text, "Redact secrets: off") {
 		t.Fatalf("summary = %s", text)
+	}
+}
+
+func TestPanelQuietGroup(t *testing.T) {
+	f := newBridgeFixture(t)
+	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupQuiet)))
+	got := texts(f.tg.Buttons(900))
+	want := "☑ Quiet while at the desk|3 min Away after|☑ Hold topic edits|Silent Screen posts|☑ Re-announce on leaving|↺ Reset to defaults|‹ Back|✖ Close"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("quiet buttons = %v", got)
+	}
+
+	pressPanel(f, t, 900, dataGrid(domain.OptionQuietIdleMinutes, 0))
+	buttons := f.tg.Buttons(900)
+	if got := texts(buttons); strings.Join(got, "|") != "1m|2m|[3m]|5m|10m|15m|‹ Back" {
+		t.Fatalf("minutes grid = %v", got)
+	}
+	if buttons[0].Row != 1 || buttons[5].Row != 1 || buttons[6].Data != dataGroup(groupIndex(domain.GroupQuiet)) {
+		t.Errorf("minutes grid layout: rows %d/%d back %q", buttons[0].Row, buttons[5].Row, buttons[6].Data)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionQuietIdleMinutes, 0))
+	if f.opts.Get().QuietIdle() != time.Minute || f.options.Saved() != 1 {
+		t.Fatalf("pick 1m: idle=%v saves=%d", f.opts.Get().QuietIdle(), f.options.Saved())
+	}
+
+	pressPanel(f, t, 900, dataGrid(domain.OptionQuietPosts, 0))
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "[Silent]|Held|Normal|‹ Back" {
+		t.Fatalf("posts grid = %v", got)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionQuietPosts, 1))
+	if f.opts.Get().QuietPosts() != domain.PostsHeld {
+		t.Fatalf("pick held: posts=%q", f.opts.Get().QuietPosts())
+	}
+	pressPanel(f, t, 900, dataToggle(domain.OptionQuietEnabled))
+	if f.opts.Get().QuietEnabled() {
+		t.Error("toggle did not switch quiet off")
+	}
+	if got := texts(f.tg.Buttons(900)); got[0] != "☐ Quiet while at the desk" || got[1] != "1 min Away after" || got[3] != "Held Screen posts" {
+		t.Errorf("quiet buttons after edits = %v", got)
 	}
 }

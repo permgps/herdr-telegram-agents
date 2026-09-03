@@ -216,6 +216,13 @@ type PaneOpener interface {
 	OpenPane(ctx context.Context, pluginID, entrypoint string) error
 }
 
+// IdleSource reports how long the machine's keyboard and mouse have been
+// untouched; presence tracking calls it every few seconds. A platform
+// without a source returns ErrIdleUnsupported on every call.
+type IdleSource interface {
+	Idle(ctx context.Context) (time.Duration, error)
+}
+
 // Clock abstracts time so the application layer is testable without sleeping.
 type Clock interface {
 	Now() time.Time

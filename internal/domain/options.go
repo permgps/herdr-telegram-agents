@@ -58,13 +58,35 @@ const (
 	// OptionDeleteAfterDays is how long a closed topic of an exited agent
 	// stays before the sweep deletes it; "0" keeps every topic.
 	OptionDeleteAfterDays = "topics.delete_after_days"
+	// OptionQuietEnabled is the master switch of quiet mode: while the
+	// operator is at the desk, topic writes wait and posts are silent.
+	OptionQuietEnabled = "quiet.enabled"
+	// OptionQuietIdleMinutes is how many minutes without keyboard or mouse
+	// input count as "away".
+	OptionQuietIdleMinutes = "quiet.idle_minutes"
+	// OptionQuietTopics holds every topic write (create, icon, name, close,
+	// reopen) while at the desk; each of them is a Telegram service message
+	// that rings the phone.
+	OptionQuietTopics = "quiet.topics"
+	// OptionQuietPosts says what happens to screen posts while at the desk:
+	// a PostsMode value.
+	OptionQuietPosts = "quiet.posts"
+	// OptionQuietReannounce re-posts, with sound, the screen of every agent
+	// still blocked when the operator leaves, once per question.
+	OptionQuietReannounce = "quiet.reannounce"
 	// ChoiceSourceIcons is the choice list of the free topic-icon pack.
 	ChoiceSourceIcons = "icons"
 	// ChoiceSourceDays is the static list of day counts offered by the
 	// panel for OptionDeleteAfterDays (see DaysChoices).
 	ChoiceSourceDays = "days"
+	// ChoiceSourceMinutes is the static list of idle thresholds offered by
+	// the panel for OptionQuietIdleMinutes (see MinutesChoices).
+	ChoiceSourceMinutes = "minutes"
+	// ChoiceSourcePosts is the static list of PostsMode values.
+	ChoiceSourcePosts = "posts"
 	// Group names, in the panel's display order.
 	GroupSync       = "sync"
+	GroupQuiet      = "quiet"
 	GroupAppearance = "appearance"
 	GroupPrivacy    = "privacy"
 	GroupTopics     = "topics"
@@ -72,10 +94,26 @@ const (
 	iconKeyPrefix = "icons."
 )
 
+// PostsMode is what quiet mode does with screen posts while the operator
+// is at the desk.
+type PostsMode string
+
+const (
+	// PostsSilent sends the post without a sound (Telegram still shows a
+	// silent banner).
+	PostsSilent PostsMode = "silent"
+	// PostsHeld does not send the post at all; the catch-up on leaving
+	// posts agents that are still blocked.
+	PostsHeld PostsMode = "held"
+	// PostsNormal posts as if quiet mode were off.
+	PostsNormal PostsMode = "normal"
+)
+
 // OptionGroupSpecs lists the groups in display order. Every OptionSpec.Group
 // must name one of them (TestOptionSpecsReferenceKnownGroups guards it).
 var OptionGroupSpecs = []OptionGroup{
 	{Name: GroupSync, Title: "Sync", Description: "What the mirror writes to Telegram."},
+	{Name: GroupQuiet, Title: "Quiet", Description: "Less noise while you are at the machine."},
 	{Name: GroupAppearance, Title: "Appearance", Description: "How topics and status lines look."},
 	{Name: GroupPrivacy, Title: "Privacy", Description: "What never leaves this machine."},
 	{Name: GroupTopics, Title: "Topics", Description: "Lifecycle of the forum topics."},
@@ -95,6 +133,49 @@ func buildOptionSpecs() []OptionSpec {
 			Group:       GroupSync,
 			Title:       "Herdr → Telegram sync",
 			Description: "Mirror Herdr agents into Telegram topics. Off: no topic edits and no screen posts until it is on again.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionQuietEnabled,
+			Group:       GroupQuiet,
+			Title:       "Quiet while at the desk",
+			Description: "While you are typing on this machine, topic edits wait and screen posts are silent; everything catches up when you leave.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionQuietIdleMinutes,
+			Group:       GroupQuiet,
+			Title:       "Away after",
+			Description: "Minutes without keyboard or mouse input before you count as away.",
+			Kind:        KindChoice,
+			Default:     "3",
+			Choices:     ChoiceSourceMinutes,
+			Validate:    validateMinutes,
+		},
+		{
+			Key:         OptionQuietTopics,
+			Group:       GroupQuiet,
+			Title:       "Hold topic edits",
+			Description: "While at the desk, no topic is created, renamed, closed or given a new icon; each of those rings the phone.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionQuietPosts,
+			Group:       GroupQuiet,
+			Title:       "Screen posts",
+			Description: "While at the desk: Silent posts without sound, Held waits until you leave, Normal posts as usual.",
+			Kind:        KindChoice,
+			Default:     string(PostsSilent),
+			Choices:     ChoiceSourcePosts,
+		},
+		{
+			Key:         OptionQuietReannounce,
+			Group:       GroupQuiet,
+			Title:       "Re-announce on leaving",
+			Description: "When you leave, post the screen of every agent still waiting, with sound, once per question.",
 			Kind:        KindBool,
 			Default:     "true",
 		},
@@ -151,11 +232,36 @@ const maxDeleteAfterDays = 3650
 // and 90 days.
 func DaysChoices() []string { return append([]string(nil), daysChoices...) }
 
+// minutesChoices is the list the panel offers for OptionQuietIdleMinutes.
+var minutesChoices = []string{"1", "2", "3", "5", "10", "15"}
+
+// maxIdleMinutes bounds a hand-edited idle threshold (one day).
+const maxIdleMinutes = 1440
+
+// defaultQuietIdle is the threshold in force when the stored value cannot
+// be parsed.
+const defaultQuietIdle = 3 * time.Minute
+
+// MinutesChoices returns the idle thresholds the panel offers: 1, 2, 3, 5,
+// 10 and 15 minutes.
+func MinutesChoices() []string { return append([]string(nil), minutesChoices...) }
+
+// postsChoices is the list the panel offers for OptionQuietPosts.
+var postsChoices = []string{string(PostsSilent), string(PostsHeld), string(PostsNormal)}
+
+// PostsChoices returns the PostsMode values the panel offers.
+func PostsChoices() []string { return append([]string(nil), postsChoices...) }
+
 // StaticChoices answers the choice lists the domain owns itself; the
 // application layer asks it before the external ChoiceSource.
 func StaticChoices(name string) ([]string, bool) {
-	if name == ChoiceSourceDays {
+	switch name {
+	case ChoiceSourceDays:
 		return DaysChoices(), true
+	case ChoiceSourceMinutes:
+		return MinutesChoices(), true
+	case ChoiceSourcePosts:
+		return PostsChoices(), true
 	}
 	return nil, false
 }
@@ -168,40 +274,81 @@ func validateDays(value string) error {
 	return nil
 }
 
-// ChoiceLabel is the human form of a choice value in panel text: days
-// become "Off", "1 day" or "30 days"; other sources show the value itself.
-func ChoiceLabel(spec OptionSpec, value string) string {
-	if spec.Choices != ChoiceSourceDays {
-		return value
-	}
+func validateMinutes(value string) error {
 	n, err := strconv.Atoi(strings.TrimSpace(value))
-	switch {
-	case err != nil:
-		return value
-	case n == 0:
-		return "Off"
-	case n == 1:
-		return "1 day"
-	default:
-		return fmt.Sprintf("%d days", n)
+	if err != nil || n < 1 || n > maxIdleMinutes {
+		return fmt.Errorf("%q is not a minute count between 1 and %d: %w", value, maxIdleMinutes, ErrInvalidOption)
 	}
+	return nil
+}
+
+// ChoiceLabel is the human form of a choice value in panel text: days
+// become "Off", "1 day" or "30 days", minutes "1 min" or "3 min", posts
+// modes "Silent", "Held", "Normal"; other sources show the value itself.
+func ChoiceLabel(spec OptionSpec, value string) string {
+	switch spec.Choices {
+	case ChoiceSourceDays:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Off"
+		case n == 1:
+			return "1 day"
+		default:
+			return fmt.Sprintf("%d days", n)
+		}
+	case ChoiceSourceMinutes:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return value
+		}
+		return fmt.Sprintf("%d min", n)
+	case ChoiceSourcePosts:
+		return postsWord(value)
+	}
+	return value
 }
 
 // ChoiceButton is the short form of a choice value on a button: "Off",
-// "7d"; other sources show the value itself.
+// "7d", "3m", "Silent"; other sources show the value itself.
 func ChoiceButton(spec OptionSpec, value string) string {
-	if spec.Choices != ChoiceSourceDays {
-		return value
+	switch spec.Choices {
+	case ChoiceSourceDays:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Off"
+		default:
+			return fmt.Sprintf("%dd", n)
+		}
+	case ChoiceSourceMinutes:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return value
+		}
+		return fmt.Sprintf("%dm", n)
+	case ChoiceSourcePosts:
+		return postsWord(value)
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(value))
-	switch {
-	case err != nil:
-		return value
-	case n == 0:
-		return "Off"
-	default:
-		return fmt.Sprintf("%dd", n)
+	return value
+}
+
+// postsWord capitalises a known PostsMode value ("silent" → "Silent") and
+// returns anything else as is.
+func postsWord(value string) string {
+	switch PostsMode(strings.TrimSpace(value)) {
+	case PostsSilent:
+		return "Silent"
+	case PostsHeld:
+		return "Held"
+	case PostsNormal:
+		return "Normal"
 	}
+	return value
 }
 
 // OptionGroups returns the groups in display order.
@@ -334,6 +481,36 @@ func (o Options) DeleteAfter() time.Duration {
 	}
 	return time.Duration(n) * 24 * time.Hour
 }
+
+// QuietEnabled is the quiet-mode master switch.
+func (o Options) QuietEnabled() bool { return o.Bool(OptionQuietEnabled) }
+
+// QuietIdle is how long the machine's input must be idle before the
+// operator counts as away; three minutes for an unparsable value.
+func (o Options) QuietIdle() time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionQuietIdleMinutes)))
+	if err != nil || n < 1 {
+		return defaultQuietIdle
+	}
+	return time.Duration(n) * time.Minute
+}
+
+// QuietTopics reports whether topic writes wait while at the desk.
+func (o Options) QuietTopics() bool { return o.Bool(OptionQuietTopics) }
+
+// QuietPosts is what quiet mode does with screen posts; PostsSilent for an
+// unknown value.
+func (o Options) QuietPosts() PostsMode {
+	switch m := PostsMode(strings.TrimSpace(o.String(OptionQuietPosts))); m {
+	case PostsSilent, PostsHeld, PostsNormal:
+		return m
+	}
+	return PostsSilent
+}
+
+// QuietReannounce reports whether leaving re-posts still-blocked agents
+// with sound.
+func (o Options) QuietReannounce() bool { return o.Bool(OptionQuietReannounce) }
 
 // StatusIcons collects the six icon options.
 func (o Options) StatusIcons() StatusIcons {

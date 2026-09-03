@@ -49,6 +49,9 @@ var (
 	ErrInvalidOption = errors.New("invalid option value")
 	// ErrDuplicateIcon means two statuses would share the same topic icon.
 	ErrDuplicateIcon = errors.New("two statuses share an icon")
+	// ErrIdleUnsupported means this platform has no source for the input
+	// idle time, so presence cannot be measured automatically.
+	ErrIdleUnsupported = errors.New("input idle time not available on this platform")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

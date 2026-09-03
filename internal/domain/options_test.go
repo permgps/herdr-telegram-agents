@@ -122,8 +122,30 @@ func TestValidateOptionsAgainstSource(t *testing.T) {
 
 func TestOptionGroupsAndSpecs(t *testing.T) {
 	groups := OptionGroups()
-	if len(groups) != 4 || groups[0].Name != GroupSync || groups[1].Name != GroupAppearance || groups[2].Name != GroupPrivacy || groups[3].Name != GroupTopics {
+	if len(groups) != 5 || groups[0].Name != GroupSync || groups[1].Name != GroupQuiet || groups[2].Name != GroupAppearance || groups[3].Name != GroupPrivacy || groups[4].Name != GroupTopics {
 		t.Fatalf("groups = %+v", groups)
+	}
+	quiet := OptionsInGroup(GroupQuiet)
+	wantQuiet := []struct {
+		key     string
+		kind    OptionKind
+		def     string
+		choices string
+	}{
+		{OptionQuietEnabled, KindBool, "true", ""},
+		{OptionQuietIdleMinutes, KindChoice, "3", ChoiceSourceMinutes},
+		{OptionQuietTopics, KindBool, "true", ""},
+		{OptionQuietPosts, KindChoice, "silent", ChoiceSourcePosts},
+		{OptionQuietReannounce, KindBool, "true", ""},
+	}
+	if len(quiet) != len(wantQuiet) {
+		t.Fatalf("quiet options = %+v", quiet)
+	}
+	for i, w := range wantQuiet {
+		got := quiet[i]
+		if got.Key != w.key || got.Kind != w.kind || got.Default != w.def || got.Choices != w.choices {
+			t.Errorf("quiet option %d = %+v, want %+v", i, got, w)
+		}
 	}
 	if got := OptionsInGroup(GroupPrivacy); len(got) != 1 || got[0].Key != OptionRedact || got[0].Kind != KindBool || got[0].Default != "true" {
 		t.Errorf("privacy options = %+v", got)
@@ -281,5 +303,100 @@ func TestDeleteAfterAndLabels(t *testing.T) {
 	}
 	if _, ok := StaticChoices(ChoiceSourceIcons); ok {
 		t.Error("icons are not a static source")
+	}
+}
+
+func TestQuietOptionsDefaultsAndAccessors(t *testing.T) {
+	o := DefaultOptions()
+	if !o.QuietEnabled() || !o.QuietTopics() || !o.QuietReannounce() {
+		t.Error("quiet switches should default to on")
+	}
+	if got := o.QuietIdle(); got != 3*time.Minute {
+		t.Errorf("QuietIdle default = %v", got)
+	}
+	if got := o.QuietPosts(); got != PostsSilent {
+		t.Errorf("QuietPosts default = %q", got)
+	}
+	off, _ := o.With(OptionQuietEnabled, "false")
+	if off.QuietEnabled() || !o.QuietEnabled() {
+		t.Error("With did not switch quiet off, or mutated the receiver")
+	}
+	for value, want := range map[string]PostsMode{"silent": PostsSilent, "held": PostsHeld, "normal": PostsNormal, "loud": PostsSilent, " held ": PostsHeld} {
+		next, _ := o.With(OptionQuietPosts, value)
+		if got := next.QuietPosts(); got != want {
+			t.Errorf("QuietPosts(%q) = %q, want %q", value, got, want)
+		}
+	}
+	for value, want := range map[string]time.Duration{"1": time.Minute, "45": 45 * time.Minute, "x": 3 * time.Minute, "0": 3 * time.Minute} {
+		next, _ := o.With(OptionQuietIdleMinutes, value)
+		if got := next.QuietIdle(); got != want {
+			t.Errorf("QuietIdle(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
+
+func TestQuietOptionsValidation(t *testing.T) {
+	o := DefaultOptions()
+	for _, v := range []string{"1", "3", "45", "1440"} {
+		next, _ := o.With(OptionQuietIdleMinutes, v)
+		if err := ValidateOptions(next, nil); err != nil {
+			t.Errorf("ValidateOptions(minutes %q): %v", v, err)
+		}
+	}
+	for _, v := range []string{"0", "-1", "x", "", "1441", "3 min"} {
+		next, _ := o.With(OptionQuietIdleMinutes, v)
+		if err := ValidateOptions(next, nil); !errors.Is(err, ErrInvalidOption) {
+			t.Errorf("ValidateOptions(minutes %q) = %v, want ErrInvalidOption", v, err)
+		}
+	}
+	for _, v := range []string{"silent", "held", "normal"} {
+		next, _ := o.With(OptionQuietPosts, v)
+		if err := ValidateOptions(next, nil); err != nil {
+			t.Errorf("ValidateOptions(posts %q): %v", v, err)
+		}
+	}
+	// The posts list is static, so it is enforced even without an external source.
+	loud, _ := o.With(OptionQuietPosts, "loud")
+	if err := ValidateOptions(loud, nil); !errors.Is(err, ErrInvalidOption) {
+		t.Errorf("ValidateOptions(posts loud) = %v, want ErrInvalidOption", err)
+	}
+	// A hand-edited threshold outside the panel's list survives sanitising; a bad mode does not.
+	dirty, _ := o.With(OptionQuietIdleMinutes, "45")
+	dirty, _ = dirty.With(OptionQuietPosts, "loud")
+	clean, dropped := SanitizeOptions(dirty, nil)
+	if clean.String(OptionQuietIdleMinutes) != "45" || strings.Join(dropped, ",") != OptionQuietPosts || clean.QuietPosts() != PostsSilent {
+		t.Errorf("sanitize kept %q / %q, dropped %v", clean.String(OptionQuietIdleMinutes), clean.String(OptionQuietPosts), dropped)
+	}
+	for name, want := range map[string][]string{ChoiceSourceMinutes: MinutesChoices(), ChoiceSourcePosts: PostsChoices()} {
+		list, ok := StaticChoices(name)
+		if !ok || strings.Join(list, ",") != strings.Join(want, ",") {
+			t.Errorf("StaticChoices(%q) = %v, %v", name, list, ok)
+		}
+	}
+}
+
+func TestQuietChoiceLabels(t *testing.T) {
+	minutes, _ := LookupOption(OptionQuietIdleMinutes)
+	posts, _ := LookupOption(OptionQuietPosts)
+	cases := []struct {
+		spec          OptionSpec
+		value         string
+		label, button string
+	}{
+		{minutes, "1", "1 min", "1m"},
+		{minutes, "15", "15 min", "15m"},
+		{minutes, "garbage", "garbage", "garbage"},
+		{posts, "silent", "Silent", "Silent"},
+		{posts, "held", "Held", "Held"},
+		{posts, "normal", "Normal", "Normal"},
+		{posts, "loud", "loud", "loud"},
+	}
+	for _, tc := range cases {
+		if got := ChoiceLabel(tc.spec, tc.value); got != tc.label {
+			t.Errorf("ChoiceLabel(%s, %q) = %q, want %q", tc.spec.Key, tc.value, got, tc.label)
+		}
+		if got := ChoiceButton(tc.spec, tc.value); got != tc.button {
+			t.Errorf("ChoiceButton(%s, %q) = %q, want %q", tc.spec.Key, tc.value, got, tc.button)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package domain_test
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -49,6 +50,17 @@ func TestParseCommand(t *testing.T) {
 		{"forward model with name", "/model sonnet", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/model sonnet", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
 		{"forward model with suffix and name", "/model@herdr_bot opus", "herdr_bot", domain.Command{Kind: domain.CmdForward, Text: "/model opus", Forward: domain.ForwardRule{Post: domain.ForwardPostTail}}},
 		{"near miss stays unknown", "/models", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/models"}},
+		{"away until here", "/away", "herdr_bot", domain.Command{Kind: domain.CmdAway}},
+		{"away hours", "/away 2h", "herdr_bot", domain.Command{Kind: domain.CmdAway, Away: 2 * time.Hour}},
+		{"away minutes upper case", "/AWAY 30M", "herdr_bot", domain.Command{Kind: domain.CmdAway, Away: 30 * time.Minute}},
+		{"away mixed", "/away@herdr_bot 1h30m", "herdr_bot", domain.Command{Kind: domain.CmdAway, Away: 90 * time.Minute}},
+		{"away too short", "/away 30s", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/away 30s"}},
+		{"away too long", "/away 200h", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/away 200h"}},
+		{"away garbage", "/away tomorrow", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/away tomorrow"}},
+		{"away two args", "/away 2 h", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/away 2 h"}},
+		{"here", "/here", "herdr_bot", domain.Command{Kind: domain.CmdHere}},
+		{"here with suffix", "/Here@herdr_bot", "herdr_bot", domain.Command{Kind: domain.CmdHere}},
+		{"here with arg", "/here now", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/here now"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

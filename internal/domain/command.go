@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // CommandKind names what an operator asked for in a topic or in General.
@@ -28,6 +29,11 @@ const (
 	// CmdOptions opens the settings panel; only General serves it, a
 	// topic answers with a hint.
 	CmdOptions CommandKind = "options"
+	// CmdAway treats the operator as away (General only): quiet mode is
+	// off until /here, or for Command.Away when it is non-zero.
+	CmdAway CommandKind = "away"
+	// CmdHere returns presence to the automatic verdict (General only).
+	CmdHere CommandKind = "here"
 	// CmdForward types the slash line into the agent as one of its own
 	// commands (Claude Code /clear, /compact, /usage, /model); Text holds
 	// the exact line and Forward says what to do once it has run.
@@ -141,7 +147,15 @@ type Command struct {
 	All bool
 	// Forward is the follow-up rule for CmdForward.
 	Forward ForwardRule
+	// Away is how long CmdAway lasts; zero means until /here.
+	Away time.Duration
 }
+
+// Bounds of the /away duration argument.
+const (
+	MinAway = time.Minute
+	MaxAway = 7 * 24 * time.Hour
+)
 
 // shortReplies maps what an operator types while an agent is blocked to the
 // Herdr key name that answers the dialog. Digits 1..9 are handled in code.
@@ -196,6 +210,13 @@ func ParseCommand(text, botUsername string) Command {
 		return Command{Kind: CmdHelp}
 	case "options":
 		return Command{Kind: CmdOptions}
+	case "away":
+		return parseAway(args)
+	case "here":
+		if len(args) > 0 {
+			return Command{Kind: CmdUnknown, Text: "/here " + strings.Join(args, " ")}
+		}
+		return Command{Kind: CmdHere}
 	}
 	if rule, ok := forwardRuleFor(word, rest != ""); ok {
 		line := "/" + word
@@ -205,6 +226,23 @@ func ParseCommand(text, botUsername string) Command {
 		return Command{Kind: CmdForward, Text: line, Forward: rule}
 	}
 	return Command{Kind: CmdUnknown, Text: "/" + word}
+}
+
+// parseAway accepts no argument (away until /here) or one Go duration such
+// as 2h, 30m or 1h30m between MinAway and MaxAway.
+func parseAway(args []string) Command {
+	if len(args) == 0 {
+		return Command{Kind: CmdAway}
+	}
+	unknown := Command{Kind: CmdUnknown, Text: "/away " + strings.Join(args, " ")}
+	if len(args) > 1 {
+		return unknown
+	}
+	d, err := time.ParseDuration(strings.ToLower(args[0]))
+	if err != nil || d < MinAway || d > MaxAway {
+		return unknown
+	}
+	return Command{Kind: CmdAway, Away: d}
 }
 
 func parseScreen(args []string) Command {
