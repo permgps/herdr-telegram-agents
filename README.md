@@ -96,7 +96,8 @@ What gets stored:
 | File | Location | Content |
 |------|----------|---------|
 | `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, log level |
-| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping, pruned after 7 days |
+| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping; entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
+| `options.json` | config dir, mode 0600 | the `/options` choices |
 | `daemon.pid` | state dir | pid of the running daemon |
 | `daemon.log`, `daemon.log.1`, `daemon.log.2` | state dir | JSON log, rotated at 5 MiB |
 | `daemon.err.log` | state dir | stderr of the last daemon start |
@@ -184,8 +185,12 @@ closing topics and stops posting screens until you tick it again, while
 everything you send to agents keeps working; ticking it runs a full resync.
 **Appearance** holds one icon per status, chosen from a grid of the emoji
 Telegram allows as topic icons (no two statuses may share one); a pick
-repaints the live topics at once. The choices are saved in `options.json`
-next to `config.json` and survive restarts; see
+repaints the live topics at once. **Privacy** holds `Redact secrets` (on by
+default): API keys, tokens, passwords and private keys in every screen the
+daemon posts are masked, `sk-…a1b2`. **Topics** holds `Delete closed topics
+after`: the topic of an exited agent is deleted once it has been closed for
+that long, 30 days by default, `Off` keeps every topic. The choices are
+saved in `options.json` next to `config.json` and survive restarts; see
 [docs/behaviour.md](docs/behaviour.md#options).
 
 ## Actions
@@ -199,6 +204,8 @@ next to `config.json` and survive restarts; see
 | `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs, Herdr socket health and whether the sync switch is on |
 | `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents (control socket, SIGHUP as the Unix fallback) |
 | `Telegram Agents: logs` | Opens an overlay with the last 100 log lines and follows the file |
+| `Telegram Agents: doctor` | Opens an overlay with one line per check: config, options, bot token, group rights, Herdr socket and version, daemon, mapping file |
+| `Telegram Agents: send test message` | Posts a test message into General straight from the action (the daemon need not run) and reports the outcome |
 
 Every action reports its outcome as a Herdr notification. `stop`, `resync` and
 `status` reach the daemon through a local control channel: a unix socket
@@ -209,9 +216,10 @@ is killed if it answers neither.
 ## How the sync behaves
 
 Topic naming, the status icons, what happens when an agent exits or comes
-back, renaming and closing topics by hand, the options panel, the daemon's
-own exit rules and where its logs live are described in
-[docs/behaviour.md](docs/behaviour.md).
+back, renaming and closing topics by hand, the options panel, which secrets
+are masked in posts, when closed topics are deleted (30 days after the agent
+exited by default), the daemon's own exit rules and where its logs live are
+described in [docs/behaviour.md](docs/behaviour.md).
 
 ## Upgrade
 
