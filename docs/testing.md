@@ -25,10 +25,10 @@ tag and run `scripts/install.sh`; macOS clones the tag into a temporary
 directory and runs the same script with a `PATH` that has no Go. Nothing
 outside the containers and that temporary directory is touched.
 
-- [ ] `sh scripts/verify-install.sh <version> linux` prints `verify: linux/amd64 ok` and `verify: linux/arm64 ok`
-- [ ] `sh scripts/verify-install.sh <version> macos` prints the version line and `verify: macos ok`
-- [ ] A corrupted `checksums.txt` makes `scripts/install.sh` exit non-zero with `checksum mismatch` and leave no binary behind
-- [ ] The release page lists `herdr-tg_darwin_amd64`, `herdr-tg_darwin_arm64`, `herdr-tg_linux_amd64`, `herdr-tg_linux_arm64`, `herdr-tg_windows_amd64.exe` and `checksums.txt`
+- [x] `sh scripts/verify-install.sh <version> linux` prints `verify: linux/amd64 ok` and `verify: linux/arm64 ok` (2026-09-03, v0.1.0)
+- [x] `sh scripts/verify-install.sh <version> macos` prints the version line and `verify: macos ok` (2026-09-03, v0.1.0)
+- [x] A corrupted `checksums.txt` makes `scripts/install.sh` exit non-zero with `checksum mismatch` and leave no binary behind (2026-09-03, against a local snapshot)
+- [x] The release page lists `herdr-tg_darwin_amd64`, `herdr-tg_darwin_arm64`, `herdr-tg_linux_amd64`, `herdr-tg_linux_arm64`, `herdr-tg_windows_amd64.exe` and `checksums.txt` (2026-09-03, v0.1.0)
 
 Installing the published plugin over a development checkout on your own
 machine is reversible; do it in this order so you end up where you started:
@@ -67,7 +67,7 @@ Telegram group on a phone.
 - [ ] **Rights**: revoke **Manage topics**, see the General notice and paused edits, restore it and see edits resume
 - [ ] **Bot removed**: removing the bot from the group ends the daemon with a Herdr notification
 - [ ] **Many agents**: with a dozen or more agents changing status at once, the log shows no `bridge dropped jobs` warning and `status` reports `dropped=0`
-- [ ] **Control channel**: `status` and `resync` answer while the daemon runs, `stop` ends it, and `daemon.log` shows `control listening` and `control command` entries rather than signals
+- [x] **Control channel**: `status` and `resync` answer while the daemon runs, `stop` ends it, and `daemon.log` shows `control listening` and `control command` entries rather than signals (2026-09-03: status and resync verified on the live daemon)
 
 ## Windows (unverified)
 

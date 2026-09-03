@@ -37,7 +37,8 @@ Early development. Done so far:
   start / stop / rights notices.
 
 - **Distribution** — prebuilt binaries for macOS, Linux and Windows, installed
-  by `herdr plugin install` with no toolchain on your machine.
+  by `herdr plugin install` with no toolchain on your machine; releases are
+  built and published by GitHub Actions from a `v*` tag.
 
 Windows is built and unit-tested on every change, but has not been run
 against a real Herdr on Windows yet.
