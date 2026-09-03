@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/permgps/herdr-telegram-agents/internal/compose"
 )
 
 const (
@@ -117,7 +119,9 @@ func (t *tailer) run(ctx context.Context, out io.Writer, n int) error {
 }
 
 func (t *tailer) open() error {
-	f, err := os.Open(t.path)
+	// Shared open: on Windows a plain os.Open would keep the daemon from
+	// renaming the file when it rotates the log.
+	f, err := compose.OpenShared(t.path)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/adapters/herdr"
@@ -131,6 +132,11 @@ func Notify(ctx context.Context, env PluginEnv, body string, log *slog.Logger) e
 }
 
 // PaneOpener returns the herdr CLI runner used to open manifest panes.
+// OpenShared opens a file for reading without blocking a rename or delete
+// by another process; the logs pane uses it so that following the log does
+// not stop the daemon from rotating it on Windows.
+func OpenShared(path string) (*os.File, error) { return system.OpenShared(path) }
+
 // OpenURL opens a link in the user's browser (best effort).
 func OpenURL(ctx context.Context, url string) error { return system.OpenURL(ctx, url) }
 
