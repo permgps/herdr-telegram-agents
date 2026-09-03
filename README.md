@@ -36,25 +36,64 @@ Early development. Done so far:
 - **General topic panel** — `/status` with links to every topic, `/help`, daemon
   start / stop / rights notices.
 
-Not there yet: release binaries, Windows daemon control.
+- **Distribution** — prebuilt binaries for macOS, Linux and Windows, installed
+  by `herdr plugin install` with no toolchain on your machine.
+
+Windows is built and unit-tested on every change, but has not been run
+against a real Herdr on Windows yet.
 
 ## Requirements
 
 - Herdr `0.7.5` or newer
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - A Telegram supergroup with **Topics** enabled, where you can promote the bot
-- Go `1.25` or newer (development builds only; releases will ship prebuilt binaries)
-- `staticcheck` in `$HOME/go/bin` for `make lint`
+- `sh` and `curl` (macOS, Linux) or PowerShell 5.1+ (Windows) for the install step
+- Go `1.25` or newer and `staticcheck` in `$HOME/go/bin` only to build from source
 
-## Build and link
+## Install
+
+```bash
+herdr plugin install permgps/herdr-telegram-agents
+```
+
+Herdr clones the repository and runs the plugin's build step, which downloads
+the release binary for your OS and architecture into `bin/`, verifies its
+SHA-256 against the release checksums and makes it executable. No Go, no Node,
+nothing else to install. Supported targets: `darwin/amd64`, `darwin/arm64`,
+`linux/amd64`, `linux/arm64`, `windows/amd64`.
+
+Then run the setup below. Herdr shows the **Telegram Agents** actions listed
+further down and runs `bin/herdr-tg startup` after every session restore.
+
+If you download a binary with a browser instead, macOS marks it quarantined;
+`xattr -d com.apple.quarantine bin/herdr-tg` clears that. Binaries fetched by
+the install script carry no quarantine attribute.
+
+## Upgrade
+
+Herdr has no `plugin update`: reinstall to move to a newer version.
+
+```bash
+herdr plugin uninstall permgps.telegram-agents
+herdr plugin install permgps/herdr-telegram-agents
+```
+
+Your `config.json`, `mapping.json` and the Telegram topics survive: Herdr keeps
+the plugin's config and state directories and never deletes their contents, so
+the daemon picks up the same group and the same topics after the upgrade. The
+manifest version always equals the release tag, so a checkout runs the binary
+that tag was built from.
+
+## Build from source
 
 ```bash
 make build
 herdr plugin link /path/to/herdr-telegram-agents
 ```
 
-Herdr then shows the **Telegram Agents** actions listed below and runs
-`bin/herdr-tg startup` after every session restore.
+`herdr plugin link` skips the build step, so `make build` produces
+`bin/herdr-tg` for your platform first. Unlink before installing the published
+plugin over it.
 
 ## Setup
 
@@ -83,6 +122,7 @@ What gets stored:
 | `daemon.pid` | state dir | pid of the running daemon |
 | `daemon.log`, `daemon.log.1`, `daemon.log.2` | state dir | JSON log, rotated at 5 MiB |
 | `daemon.err.log` | state dir | stderr of the last daemon start |
+| `control.sock` | state dir | the daemon's control channel for the stop, resync and status actions (a named pipe on Windows, so no file) |
 
 Run the setup action again to reconfigure; it asks before overwriting.
 
@@ -92,15 +132,17 @@ Run the setup action again to reconfigure; it asks before overwriting.
 |--------|--------------|
 | `Telegram Agents: setup` | Opens the setup popup |
 | `Telegram Agents: start` | Starts the daemon if it is not running |
-| `Telegram Agents: stop` | Asks the daemon to exit (SIGTERM, then SIGKILL after 10 s) |
+| `Telegram Agents: stop` | Asks the daemon to exit through its control socket (SIGTERM as the Unix fallback, then SIGKILL after 10 s) |
 | `Telegram Agents: restart` | Stop followed by start |
-| `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime |
-| `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents (SIGHUP) |
+| `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs and Herdr socket health |
+| `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents (control socket, SIGHUP as the Unix fallback) |
 | `Telegram Agents: logs` | Opens an overlay with the last 100 log lines and follows the file |
 
-Every action reports its outcome as a Herdr notification. `stop` and `resync`
-use POSIX signals and report "not available on this platform" on Windows until
-the Windows milestone.
+Every action reports its outcome as a Herdr notification. `stop`, `resync` and
+`status` reach the daemon through a local control channel: a unix socket
+(`control.sock` in the state dir) or a named pipe on Windows. A daemon from an
+older build that does not answer still receives SIGTERM or SIGHUP on Unix and
+is killed if it answers neither.
 
 ## How the sync behaves
 
@@ -213,7 +255,15 @@ make lint    # gofmt, go vet, staticcheck, import layering gate, cross-compile c
 ```
 
 `make crosscheck` alone builds and vets darwin/amd64, darwin/arm64, linux/amd64,
-linux/arm64 and windows/amd64.
+linux/arm64 and windows/amd64. `make release-snapshot` builds every release
+target plus `checksums.txt` into `dist/` without publishing (needs
+[GoReleaser](https://goreleaser.com)). GitHub Actions runs the same lint and
+`go test -race` on every push and pull request, plus the unit tests on Windows.
+
+`docs/testing.md` holds the manual checklist: the end-to-end run against a real
+Herdr session and Telegram group, the resilience scenarios, and the install
+verification (`scripts/verify-install.sh <version>` replays the install in
+throwaway Debian containers and in a temporary clone with no Go on `PATH`).
 
 The undocumented `dev` subcommand talks to the live Herdr socket and works only
 inside a Herdr pane (`HERDR_ENV=1`):
@@ -241,7 +291,8 @@ The socket path comes from `HERDR_SOCKET_PATH` and falls back to
 | `internal/cli/` | Subcommands behind the single binary |
 | `internal/compose/` | Composition root wiring adapters into the use cases |
 | `internal/testkit/` | Fakes for every port and a fake Herdr socket server |
-| `scripts/` | Import layering gate and cross-compile check |
+| `scripts/` | Import layering gate, cross-compile check, install scripts, version gate, install verification |
+| `.github/workflows/` | CI (lint, race tests, Windows tests) and the release workflow |
 | `herdr-plugin.toml` | Plugin manifest |
 
 Dependencies point inward (`cli` → `compose` → `app` → `domain`, adapters →
@@ -251,4 +302,4 @@ a fake socket server and the Telegram adapter against an in-process HTTP fake.
 
 ## License
 
-Not chosen yet; a `LICENSE` file will be added before the first release.
+[MIT](LICENSE).
