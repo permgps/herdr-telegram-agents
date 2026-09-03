@@ -26,7 +26,7 @@ func newRunningBridge(t *testing.T) *runningBridge {
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
 	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, nil, f.clock, nil)
-	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, f.clock, nil)
+	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, nil, f.clock, nil)
 	// The fixture's agent map stands in for the registry so tests control
 	// statuses directly.
 	b.out.agents = f.out.agents
@@ -154,7 +154,7 @@ func TestBridgeOverflowCountsDrops(t *testing.T) {
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
 	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, nil, f.clock, nil)
-	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, f.clock, nil)
+	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, nil, f.clock, nil)
 
 	for i := range bridgeBuffer + 10 {
 		b.Submit(topicMsg(101, i+1, "hello"))

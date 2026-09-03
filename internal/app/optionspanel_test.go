@@ -316,3 +316,26 @@ func TestPanelQuietGroup(t *testing.T) {
 		t.Errorf("quiet buttons after edits = %v", got)
 	}
 }
+
+func TestPanelPostsGroup(t *testing.T) {
+	f := newBridgeFixture(t)
+	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|↺ Reset to defaults|‹ Back|✖ Close" {
+		t.Fatalf("posts buttons = %v", got)
+	}
+	pressPanel(f, t, 900, dataGrid(domain.OptionPostsDone, 0))
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "[Screen]|Reply|Formatted|‹ Back" {
+		t.Fatalf("done grid = %v", got)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionPostsDone, 2))
+	if f.opts.Get().PostsDone() != domain.DoneFormatted || f.options.Saved() != 1 {
+		t.Fatalf("pick formatted: mode=%q saves=%d", f.opts.Get().PostsDone(), f.options.Saved())
+	}
+	saved, err := f.options.Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.String(domain.OptionPostsDone); got != "formatted" {
+		t.Fatalf("saved value = %q", got)
+	}
+}

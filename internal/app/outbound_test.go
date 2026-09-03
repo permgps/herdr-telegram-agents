@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,8 @@ type bridgeFixture struct {
 	capture *Capture
 	options *testkit.MemOptionsStore
 	opts    *Options
+	replies *testkit.FakeReplies
+	logBuf  *bytes.Buffer
 	out     *outbound
 	in      *inbound
 	ctx     context.Context
@@ -59,9 +63,12 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	f.capture = NewCapture(f.herdr, live, f.clock, nil)
 	f.options = testkit.NewMemOptionsStore()
 	f.opts = NewOptions(domain.DefaultOptions(), f.options, func(name string) []string { return f.tg.IconPack() }, nil)
+	f.replies = testkit.NewFakeReplies()
+	f.logBuf = &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(f.logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	// Same wrapping as NewBridge: the fake records what really leaves.
 	tg := newRedactingGateway(f.tg, domain.NewRedactor(testBotToken), f.opts.RedactEnabled, nil)
-	f.out = newOutbound(f.herdr, tg, f.view, lookup, live, f.capture, f.opts, f.clock, nil)
+	f.out = newOutbound(f.herdr, tg, f.view, lookup, live, f.capture, f.opts, f.replies, f.clock, log)
 	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, -1001234567890, "agents_bot", f.clock, nil)
 	return f
 }
@@ -651,5 +658,182 @@ func TestOutboundCatchUpRules(t *testing.T) {
 	f.tg.FailNext("send", domain.ErrBotUnauthorized)
 	if err := f.out.CatchUp(f.ctx); !errors.Is(err, domain.ErrBotUnauthorized) {
 		t.Fatalf("fatal error not returned: %v", err)
+	}
+}
+
+func TestOutboundDoneModes(t *testing.T) {
+	for _, tc := range []struct {
+		mode     domain.DoneMode
+		text     string
+		code     bool
+		markdown bool
+		maxParts int
+		reads    int
+	}{
+		{domain.DoneScreen, "recap: all tests pass", true, false, 0, 1},
+		{domain.DoneReply, "Done. **All** tests pass.", true, false, replyMaxParts, 0},
+		{domain.DoneFormatted, "Done. **All** tests pass.", false, true, replyMaxParts, 0},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			f := newBridgeFixture(t)
+			if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(tc.mode), 1); err != nil {
+				t.Fatal(err)
+			}
+			a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+			f.herdr.SetScreen("p1", "recap: all tests pass")
+			f.replies.Set(a.Key, "  Done. **All** tests pass.\n")
+			f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+			f.fire(t, 1)
+			sent := f.tg.Sent()
+			if len(sent) != 1 {
+				t.Fatalf("Sent = %+v", sent)
+			}
+			got := sent[0]
+			if got.Text != tc.text || got.Code != tc.code || got.Markdown != tc.markdown || got.MaxParts != tc.maxParts || got.Notify {
+				t.Fatalf("Sent = %+v", got)
+			}
+			if reads := len(f.herdr.Reads()); reads != tc.reads {
+				t.Errorf("screen reads = %d, want %d", reads, tc.reads)
+			}
+			wantCalls := 1
+			if tc.mode == domain.DoneScreen {
+				wantCalls = 0
+			}
+			if calls := len(f.replies.Calls()); calls != wantCalls {
+				t.Errorf("reply lookups = %d, want %d", calls, wantCalls)
+			}
+			line := "screen posted"
+			if tc.mode != domain.DoneScreen {
+				line = "reply posted"
+			}
+			if !strings.Contains(f.logBuf.String(), line) {
+				t.Errorf("log lacks %q: %s", line, f.logBuf.String())
+			}
+		})
+	}
+}
+
+func TestOutboundDoneReplyFallsBackToScreen(t *testing.T) {
+	f := newBridgeFixture(t)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneFormatted), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "recap: all tests pass")
+	f.replies.Fail(a.Key, fmt.Errorf("%w: unsupported agent %q", domain.ErrNoReply, "codex"))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || sent[0].Text != "recap: all tests pass" || !sent[0].Code || sent[0].Markdown || sent[0].MaxParts != 0 {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if calls := f.tg.Calls(); len(calls) != 1 || strings.Contains(calls[0], "⚠️") {
+		t.Errorf("calls = %v", calls)
+	}
+	logs := f.logBuf.String()
+	if !strings.Contains(logs, "reply source unavailable") || !strings.Contains(logs, "unsupported agent") || !strings.Contains(logs, "screen posted") {
+		t.Errorf("log = %s", logs)
+	}
+}
+
+func TestOutboundDoneReplyDuplicate(t *testing.T) {
+	f := newBridgeFixture(t)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneReply), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.replies.Set(a.Key, "Same reply")
+	for i := 0; i < 2; i++ {
+		a = f.setStatus(a, domain.StatusWorking)
+		f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+		f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+		f.fire(t, 1)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 {
+		t.Fatalf("same reply posted %d times", len(sent))
+	}
+	f.replies.Set(a.Key, "A different reply")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 2 || sent[1].Text != "A different reply" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestOutboundDoneReplyQuiet(t *testing.T) {
+	f := newBridgeFixture(t)
+	quiet := quietOutbound(f)
+	*quiet = true
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneFormatted), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.replies.Set(a.Key, "First reply")
+	a = f.setStatus(a, domain.StatusDone)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Notify || !sent[0].Markdown {
+		t.Fatalf("done reply while quiet (silent) = %+v", sent)
+	}
+	if err := f.opts.Set(f.ctx, domain.OptionQuietPosts, string(domain.PostsHeld), 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	f.replies.Set(a.Key, "Second reply")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.fire(t, 1)
+	if len(f.tg.Sent()) != 0 || len(f.replies.Calls()) != 1 {
+		t.Fatalf("held: sent=%+v lookups=%d", f.tg.Sent(), len(f.replies.Calls()))
+	}
+}
+
+func TestOutboundDoneReplyRedacted(t *testing.T) {
+	f := newBridgeFixture(t)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneFormatted), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	token := "ghp_" + strings.Repeat("A", 32) + "wxyz" // built from parts so secret scanners ignore it
+	f.replies.Set(a.Key, "Pushed with `"+token+"` to origin.")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || strings.Contains(sent[0].Text, token) || !strings.Contains(sent[0].Text, "ghp_") || !sent[0].Markdown {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestOutboundBlockedIgnoresDoneMode(t *testing.T) {
+	f := newBridgeFixture(t)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneFormatted), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	f.replies.Set(a.Key, "not for blocked")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || !sent[0].Code || sent[0].Markdown || sent[0].MaxParts != 0 || len(sent[0].Buttons) != 2 {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if len(f.replies.Calls()) != 0 {
+		t.Error("blocked post consulted the reply source")
+	}
+}
+
+func TestOutboundDoneNilReplySourceUsesScreen(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.out.replies = nil
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneFormatted), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "recap: all tests pass")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "recap: all tests pass" || !sent[0].Code || sent[0].Markdown {
+		t.Fatalf("Sent = %+v", sent)
 	}
 }

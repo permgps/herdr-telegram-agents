@@ -47,7 +47,7 @@ func newDaemon(t *testing.T) *daemonFixture {
 	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.opts, f.clock, nil)
 	f.rec = reconciler
 	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
-	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, f.clock, nil)
+	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, nil, f.clock, nil)
 	f.idle = testkit.NewFakeIdle(0)
 	f.idle.Unsupported() // quiet mode stays off unless a test sets an idle time
 	f.presence = app.NewPresence(f.idle, f.opts, f.clock, nil)

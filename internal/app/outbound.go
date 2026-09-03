@@ -40,6 +40,10 @@ type outbound struct {
 	posts      func() domain.PostsMode
 	reannounce func() bool
 	live       func() []domain.Agent
+	// replies finds the agent's last reply in its transcript for the done
+	// post when doneMode asks for it; nil means the screen is always used.
+	replies  domain.ReplySource
+	doneMode func() domain.DoneMode
 
 	deb        *debouncer
 	lastPosted map[domain.Key]string // SHA-256 of the last screen posted per key
@@ -59,13 +63,15 @@ type keyboard struct {
 }
 
 func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	live func() []domain.Agent, capture *Capture, opts *Options, clock domain.Clock, log *slog.Logger) *outbound {
+	live func() []domain.Agent, capture *Capture, opts *Options, replies domain.ReplySource, clock domain.Clock, log *slog.Logger) *outbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	paused := func() bool { return false }
+	doneMode := func() domain.DoneMode { return domain.DoneScreen }
 	if opts != nil {
 		paused = func() bool { return !opts.SyncEnabled() }
+		doneMode = opts.PostsDone
 	}
 	if live == nil {
 		live = func() []domain.Agent { return nil }
@@ -82,6 +88,8 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 		quiet:      func() bool { return false },
 		posts:      func() domain.PostsMode { return domain.PostsNormal },
 		reannounce: func() bool { return false },
+		replies:    replies,
+		doneMode:   doneMode,
 		log:        log,
 		deb:        newDebouncer(clock, screenSettle, log),
 		lastPosted: map[domain.Key]string{},
@@ -186,12 +194,34 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 			notify = false
 		}
 	}
-	screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, lines)
-	if err != nil {
-		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
-		return nil
+	// A done post may come from the agent's transcript instead of the
+	// screen; any failure there falls back to the screen with one info line.
+	mode := domain.DoneScreen
+	if agent.Status == domain.StatusDone {
+		mode = o.doneMode()
 	}
-	text := trimScreen(screen.Text)
+	var text string
+	var reply domain.Reply
+	if mode != domain.DoneScreen && o.replies == nil {
+		mode = domain.DoneScreen
+	}
+	if mode != domain.DoneScreen {
+		r, err := o.replies.LastReply(ctx, agent)
+		if err != nil {
+			o.log.Info("reply source unavailable", slog.String("key", key.String()), slog.String("mode", string(mode)), slog.Any("err", err))
+			mode = domain.DoneScreen
+		} else {
+			reply, text = r, strings.TrimSpace(r.Text)
+		}
+	}
+	if mode == domain.DoneScreen {
+		screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, lines)
+		if err != nil {
+			o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
+			return nil
+		}
+		text = trimScreen(screen.Text)
+	}
 	if text == "" {
 		return o.skip(key, "empty")
 	}
@@ -202,7 +232,10 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	if err := o.retire(ctx, key, "superseded"); err != nil {
 		return err
 	}
-	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, Notify: notify}
+	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: mode != domain.DoneFormatted, Markdown: mode == domain.DoneFormatted, Notify: notify}
+	if mode != domain.DoneScreen {
+		out.MaxParts = replyMaxParts
+	}
 	var choices []domain.Choice
 	if agent.Status == domain.StatusBlocked {
 		choices = domain.ParseChoices(text)
@@ -219,6 +252,13 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	}
 	if notify && agent.Status == domain.StatusBlocked {
 		o.announced[key] = true
+	}
+	if mode != domain.DoneScreen {
+		o.log.Info("reply posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
+			slog.String("mode", string(mode)), slog.Int("lines", strings.Count(text, "\n")+1), slog.Int("bytes", len(text)),
+			slog.String("source", reply.Source), slog.Int64("age_ms", reply.Age.Milliseconds()),
+			slog.Int("message_id", id), slog.Bool("notify", notify), slog.Bool("forced", force))
+		return nil
 	}
 	o.log.Info("screen posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 		slog.String("status", string(agent.Status)), slog.Int("lines", strings.Count(text, "\n")+1), slog.Int("bytes", len(text)),

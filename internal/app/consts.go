@@ -27,6 +27,9 @@ const (
 	blockedLines = 25
 	// doneLines is the shorter tail posted on done.
 	doneLines = 12
+	// replyMaxParts caps a done post taken from the transcript: a reply
+	// longer than this many messages is cut with a trailer.
+	replyMaxParts = 5
 	// bridgeBuffer bounds jobs waiting for the bridge goroutine.
 	bridgeBuffer = 256
 	// bridgeCallTimeout bounds one bridge job (Herdr read plus Telegram send).
