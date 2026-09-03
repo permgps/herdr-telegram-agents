@@ -3,45 +3,44 @@
 > One Telegram forum topic per live Herdr agent: status in the topic icon, messages both ways.
 
 A [Herdr](https://herdr.dev) plugin that mirrors the Herdr **Agents** panel into a
-Telegram forum supergroup. Every coding agent Herdr detects (Claude Code, Codex,
-Gemini, ...) gets its own topic; the topic icon follows the status, the agent's
-questions land in the topic, and what you write there goes back to the agent.
-The goal is a remote control surface for your agents from a phone, installed
-with one command and no extra toolchain.
+Telegram forum supergroup, so you can watch and drive your coding agents
+(Claude Code, Codex, Gemini, ...) from a phone. Every agent gets its own topic,
+the topic icon follows the agent's status, its questions land in the topic with
+a notification, and what you write there goes back to the agent. One command
+installs it; no Go, no Node, nothing else on your machine.
 
-## Status
+<img src="docs/images/herdr-agents.png" alt="Herdr window with the agents panel: three agents and their statuses" width="900">
 
-Early development. Done so far:
+*The Herdr agents panel: three agents, one working, one idle, one waiting.*
 
-- **Project skeleton** — single Go binary `herdr-tg`, plugin manifest, `make` targets.
-- **Herdr adapter** — socket client for protocol 17 (`agent.list`, `agent.read`,
-  `agent.prompt`, `agent.send_keys`, `agent.rename`, `notification.show`) and a
-  reconnecting `events.subscribe` stream.
-- **Telegram adapter** — forum topic lifecycle, rate-limited call queue with 429
-  back-off, message chunking, status icons, inbound update filtering.
-- **Setup wizard** — token check, discovery of the forum group where the bot was
-  promoted, operator capture, `config.json` under Herdr's plugin config dir.
-- **Daemon lifecycle** — detached daemon started from the `[[startup]]` hook, pid
-  file, `start` / `stop` / `restart` / `status` / `resync` / `logs` actions, JSON
-  logs with rotation, automatic exit when the Herdr socket disappears.
-- **Agent to topic sync** — one topic per agent, renamed on label or status change
-  (debounced), closed with a 🏁 marker when the agent exits, drift healed on
-  start and on `resync`.
-- **Herdr to Telegram messages** — the screen tail is posted when an agent gets
-  blocked (with a notification) or done (silently), `/screen` on demand,
-  `/screen all` for everything since your last message.
-- **Telegram to Herdr control** — topic text becomes a prompt, short replies
-  answer dialogs, `/keys` `/focus` `/status` `/help`, rename and close a topic
-  to rename or mute the agent.
-- **General topic panel** — `/status` with links to every topic, `/help`, daemon
-  start / stop / rights notices.
+<img src="docs/images/telegram-topics.png" alt="Telegram forum with one topic per Herdr agent; the open topic shows a Claude Code question" width="900">
 
-- **Distribution** — prebuilt binaries for macOS, Linux and Windows, installed
-  by `herdr plugin install` with no toolchain on your machine; releases are
-  built and published by GitHub Actions from a `v*` tag.
+*The same agents in Telegram: one topic each, the icon is the status, and the
+open topic shows a Claude Code question you can answer from the phone.*
 
-Windows is built and unit-tested on every change, but has not been run
-against a real Herdr on Windows yet.
+## What you get
+
+- **A topic per agent**, named like the Agents panel row (`V3Jobs · claude`),
+  created when the agent appears and reused after a restart.
+- **Status at a glance**: the topic icon is ⚡ working, ✅ idle, ❓ blocked,
+  🏆 done, 👀 unknown, 🏁 exited.
+- **Questions come to you**: when an agent gets blocked on a question or an
+  approval, the screen is posted with a notification; when it finishes, the
+  tail is posted silently.
+- **Answers go back**: plain text becomes a prompt, `y` / `n` / `1`..`9` /
+  `enter` / `esc` answer dialogs, `/keys` sends raw keys.
+- **Look at the screen** with `/screen`, or `/screen all` for everything the
+  agent printed since your last message.
+- **Claude Code commands** `/clear`, `/compact`, `/usage`, `/model` are typed
+  into the agent and the result is posted back.
+- **Rename or close** a topic in Telegram to rename or mute the agent in Herdr.
+- **A control panel** in the General topic: `/status` with links to every
+  agent, `/help`, daemon notices.
+- **A daemon that looks after itself**: starts with Herdr, exits when Herdr
+  is gone, heals topic drift on start and on `resync`.
+
+Version `0.1.0`. macOS and Linux are verified end to end; Windows is built and
+unit-tested on every change but has not been run against a real Herdr yet.
 
 ## Requirements
 
@@ -49,7 +48,6 @@ against a real Herdr on Windows yet.
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - A Telegram supergroup with **Topics** enabled, where you can promote the bot
 - `sh` and `curl` (macOS, Linux) or PowerShell 5.1+ (Windows) for the install step
-- Go `1.25` or newer and `staticcheck` in `$HOME/go/bin` only to build from source
 
 ## Install
 
@@ -59,9 +57,9 @@ herdr plugin install permgps/herdr-telegram-agents
 
 Herdr clones the repository and runs the plugin's build step, which downloads
 the release binary for your OS and architecture into `bin/`, verifies its
-SHA-256 against the release checksums and makes it executable. No Go, no Node,
-nothing else to install. Supported targets: `darwin/amd64`, `darwin/arm64`,
-`linux/amd64`, `linux/arm64`, `windows/amd64`.
+SHA-256 against the release checksums and makes it executable. Supported
+targets: `darwin/amd64`, `darwin/arm64`, `linux/amd64`, `linux/arm64`,
+`windows/amd64`.
 
 Then run the setup below. Herdr shows the **Telegram Agents** actions listed
 further down and runs `bin/herdr-tg startup` after every session restore.
@@ -69,32 +67,6 @@ further down and runs `bin/herdr-tg startup` after every session restore.
 If you download a binary with a browser instead, macOS marks it quarantined;
 `xattr -d com.apple.quarantine bin/herdr-tg` clears that. Binaries fetched by
 the install script carry no quarantine attribute.
-
-## Upgrade
-
-Herdr has no `plugin update`: reinstall to move to a newer version.
-
-```bash
-herdr plugin uninstall permgps.telegram-agents
-herdr plugin install permgps/herdr-telegram-agents
-```
-
-Your `config.json`, `mapping.json` and the Telegram topics survive: Herdr keeps
-the plugin's config and state directories and never deletes their contents, so
-the daemon picks up the same group and the same topics after the upgrade. The
-manifest version always equals the release tag, so a checkout runs the binary
-that tag was built from.
-
-## Build from source
-
-```bash
-make build
-herdr plugin link /path/to/herdr-telegram-agents
-```
-
-`herdr plugin link` skips the build step, so `make build` produces
-`bin/herdr-tg` for your platform first. Unlink before installing the published
-plugin over it.
 
 ## Setup
 
@@ -126,57 +98,6 @@ What gets stored:
 | `control.sock` | state dir | the daemon's control channel for the stop, resync and status actions (a named pipe on Windows, so no file) |
 
 Run the setup action again to reconfigure; it asks before overwriting.
-
-## Actions
-
-| Action | What it does |
-|--------|--------------|
-| `Telegram Agents: setup` | Opens the setup popup |
-| `Telegram Agents: start` | Starts the daemon if it is not running |
-| `Telegram Agents: stop` | Asks the daemon to exit through its control socket (SIGTERM as the Unix fallback, then SIGKILL after 10 s) |
-| `Telegram Agents: restart` | Stop followed by start |
-| `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs and Herdr socket health |
-| `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents (control socket, SIGHUP as the Unix fallback) |
-| `Telegram Agents: logs` | Opens an overlay with the last 100 log lines and follows the file |
-
-Every action reports its outcome as a Herdr notification. `stop`, `resync` and
-`status` reach the daemon through a local control channel: a unix socket
-(`control.sock` in the state dir) or a named pipe on Windows. A daemon from an
-older build that does not answer still receives SIGTERM or SIGHUP on Unix and
-is killed if it answers neither.
-
-## How the sync behaves
-
-- A topic is named like the row in Herdr's Agents panel: `<workspace> ·
-  <agent>`, where the agent part is the custom agent name, else the tab label,
-  else the agent kind (for example `V3Jobs · claude`). The terminal title is
-  not used, so a topic keeps its name while the agent works through tasks.
-- The status is the topic icon: ⚡ working, ✅ idle (the check Herdr shows),
-  ❓ blocked, 🏆 done, 👀 unknown, 🏁 exited. The icons come from Telegram's free topic-icon pack;
-  the colour is the fallback when the pack lacks an emoji.
-- Agents are identified by pane and terminal id; a topic is created the first
-  time an agent appears and reused after a restart.
-- When an agent's pane closes the topic gets the 🏁 icon and is closed. If the
-  same agent comes back in that pane (for example `claude --resume`), the
-  finished topic is reopened and refreshed instead of a new one being made. Topics
-  of agents that vanished while the daemon was down are closed on the next
-  start.
-- The daemon exits by itself when the Herdr socket is gone for 60 s, when the
-  bot token is rejected, when another process polls the same bot, or when the
-  bot is removed from the group. Losing **Manage topics** only pauses edits
-  until the right is granted again.
-- Every status change makes Telegram post a "changed the topic icon" notice
-  into the topic. The daemon deletes its own notices right away, which needs
-  **Delete messages**; without that right they stay and the log says so once.
-  Topic creation notices cannot be deleted and remain.
-- Rename a topic by hand and the change goes back to Herdr: the tab is
-  renamed (`tab.rename`), which is what the Agents panel shows on its first
-  line, or the custom agent name when the agent has one (`agent.rename`).
-  The `<workspace> · ` prefix is optional; an empty remainder is ignored for
-  a tab and clears a custom name. The topic settles on the canonical form.
-- Close a topic by hand and the mirror goes quiet for that agent: no icon
-  edits, no screen posts, until you reopen it. Reopening refreshes name and
-  icon; if the agent exited meanwhile the topic gets 🏁 and is closed again.
 
 ## Talking to agents
 
@@ -238,68 +159,56 @@ the daemon posts silent notices there when it starts, stops, loses or regains
 the **Manage topics** right, or gives up on the Herdr socket. Other messages in
 General are ignored. The commands appear in Telegram's `/` menu for the group.
 
-## Logs and state
+## Actions
 
-`LOG_LEVEL=debug|info|warn|error` in Herdr's environment overrides the level
-saved in `config.json` (default `info`). The daemon writes JSON lines to
-`daemon.log` in the state dir; the logs action renders them as
-`15:04:05 INFO message key=value`. Delete `mapping.json` while the daemon is
-stopped to forget every topic; the next start creates fresh ones and leaves the
-old topics untouched.
+| Action | What it does |
+|--------|--------------|
+| `Telegram Agents: setup` | Opens the setup popup |
+| `Telegram Agents: start` | Starts the daemon if it is not running |
+| `Telegram Agents: stop` | Asks the daemon to exit through its control socket (SIGTERM as the Unix fallback, then SIGKILL after 10 s) |
+| `Telegram Agents: restart` | Stop followed by start |
+| `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs and Herdr socket health |
+| `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents (control socket, SIGHUP as the Unix fallback) |
+| `Telegram Agents: logs` | Opens an overlay with the last 100 log lines and follows the file |
 
-## Development
+Every action reports its outcome as a Herdr notification. `stop`, `resync` and
+`status` reach the daemon through a local control channel: a unix socket
+(`control.sock` in the state dir) or a named pipe on Windows. A daemon from an
+older build that does not answer still receives SIGTERM or SIGHUP on Unix and
+is killed if it answers neither.
 
-```bash
-make build   # bin/herdr-tg for the host platform
-make test    # go test -race ./...
-make lint    # gofmt, go vet, staticcheck, import layering gate, cross-compile check
-```
+## How the sync behaves
 
-`make crosscheck` alone builds and vets darwin/amd64, darwin/arm64, linux/amd64,
-linux/arm64 and windows/amd64. `make release-snapshot` builds every release
-target plus `checksums.txt` into `dist/` without publishing (needs
-[GoReleaser](https://goreleaser.com)). GitHub Actions runs the same lint and
-`go test -race` on every push and pull request, plus the unit tests on Windows.
+Topic naming, the status icons, what happens when an agent exits or comes
+back, renaming and closing topics by hand, the daemon's own exit rules and
+where its logs live are described in [docs/behaviour.md](docs/behaviour.md).
 
-`docs/testing.md` holds the manual checklist: the end-to-end run against a real
-Herdr session and Telegram group, the resilience scenarios, and the install
-verification (`scripts/verify-install.sh <version>` replays the install in
-throwaway Debian containers and in a temporary clone with no Go on `PATH`).
+## Upgrade
 
-The undocumented `dev` subcommand talks to the live Herdr socket and works only
-inside a Herdr pane (`HERDR_ENV=1`):
+Herdr has no `plugin update`: reinstall to move to a newer version.
 
 ```bash
-bin/herdr-tg dev agents   # list agents Herdr currently tracks
-bin/herdr-tg dev watch    # stream agent events until Ctrl-C
+herdr plugin uninstall permgps.telegram-agents
+herdr plugin install permgps/herdr-telegram-agents
 ```
 
-The socket path comes from `HERDR_SOCKET_PATH` and falls back to
-`~/.config/herdr/herdr.sock`.
+The two commands name the same plugin in the two forms Herdr uses: `uninstall`
+takes the plugin id, as printed by `herdr plugin list`, and `install` takes the
+GitHub repository.
 
-### Layout
+Your `config.json`, `mapping.json` and the Telegram topics survive: Herdr keeps
+the plugin's config and state directories and never deletes their contents, so
+the daemon picks up the same group and the same topics after the upgrade. The
+manifest version always equals the release tag, so a checkout runs the binary
+that tag was built from.
 
-| Path | Purpose |
-|------|---------|
-| `cmd/herdr-tg/` | Binary entry point |
-| `internal/domain/` | Agents, statuses, topics, mapping, commands, config, events and the ports (standard library only) |
-| `internal/app/` | Use cases: agent registry, reconciler, debounce, bridge (screens out, commands in), screen capture for `/screen all`, setup wizard, supervisor, daemon loop |
-| `internal/adapters/herdr/` | Herdr socket adapter: dialers, one-shot calls, event stream, `herdr` CLI runner |
-| `internal/adapters/telegram/` | Telegram Bot API adapter: bot, queue, formatting, icons, inbound updates, setup probe |
-| `internal/adapters/state/` | `config.json`, `mapping.json` and pid file stores |
-| `internal/adapters/logging/` | JSON file logger with size-based rotation |
-| `internal/adapters/system/` | `HERDR_*` environment, detached process spawn, signals |
-| `internal/cli/` | Subcommands behind the single binary |
-| `internal/compose/` | Composition root wiring adapters into the use cases |
-| `internal/testkit/` | Fakes for every port and a fake Herdr socket server |
-| `scripts/` | Import layering gate, cross-compile check, install scripts, version gate, install verification |
-| `.github/workflows/` | CI (lint, race tests, Windows tests) and the release workflow |
-| `herdr-plugin.toml` | Plugin manifest |
+## Documentation
 
-Dependencies point inward (`cli` → `compose` → `app` → `domain`, adapters →
-`domain`); the layering is enforced by `scripts/check-imports.sh` in
-`make lint`. No test touches the network: the Herdr adapter is tested against
-a fake socket server and the Telegram adapter against an in-process HTTP fake.
+| Page | What it covers |
+|------|----------------|
+| [docs/behaviour.md](docs/behaviour.md) | Topic naming and icons, exit and resume rules, manual rename and close, logs and state |
+| [docs/development.md](docs/development.md) | Building from source, `make` targets, the `dev` subcommand, the tree layout |
+| [docs/testing.md](docs/testing.md) | Automated gates and the manual checklist run before a release |
 
 ## License
 

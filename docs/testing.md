@@ -1,3 +1,5 @@
+[← Development](development.md) · [Back to README](../README.md)
+
 # Testing
 
 What the machines check on every change, and what a human has to check before
@@ -80,3 +82,8 @@ built and unit-tested on a Windows CI runner only.
 - [ ] `stop` and `resync` reach the daemon through the control pipe (`\\.\pipe\herdr-tg-<hash>`), with no POSIX signals involved
 - [ ] `status` reports the daemon's line
 - [ ] A daemon that is not listening is reported as "not listening on its control channel" and `stop` escalates to a kill
+
+## See Also
+
+- [Development](development.md): building from source, make targets and the tree layout
+- [README: Upgrade](../README.md#upgrade): reinstall-based updates and what survives them
