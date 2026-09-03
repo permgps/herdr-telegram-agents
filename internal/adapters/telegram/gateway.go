@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -274,13 +275,27 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 // Send posts one message, split into parts below Telegram's message limit,
 // each as its own queued call. ThreadID 0 addresses the General topic, so
 // message_thread_id is omitted. Code wraps every part in <pre>; HTML passes
-// the part through as caller-escaped markup. ReplyTo quotes the operator's
-// message on the first part only; Buttons ride on the last part as an
-// inline keyboard. Messages are silent unless Notify is set. The first
-// failure stops the remaining parts. The id of the last part is returned
-// so the caller can edit its keyboard later.
+// the part through as caller-escaped markup; Markdown splits on fence
+// boundaries and renders each part to HTML, and a part Telegram rejects
+// with "can't parse entities" is sent once more as <pre>. MaxParts drops
+// the tail of a long text and says so at the end of the last kept part.
+// ReplyTo quotes the operator's message on the first part only; Buttons
+// ride on the last part as an inline keyboard. Messages are silent unless
+// Notify is set. The first failure stops the remaining parts. The id of
+// the last part is returned so the caller can edit its keyboard later.
 func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
-	parts := chunk(out.Text, textMax)
+	markdown := out.Markdown && !out.Code && !out.HTML
+	var parts []string
+	if markdown {
+		parts = splitMarkdown(out.Text, textMax)
+	} else {
+		parts = chunk(out.Text, textMax)
+	}
+	parts, droppedParts, droppedChars := capParts(parts, out.MaxParts)
+	if markdown || out.MaxParts > 0 {
+		g.log.Debug("message split", slog.Int("thread_id", out.ThreadID), slog.Bool("markdown", markdown),
+			slog.Int("parts", len(parts)), slog.Int("dropped_parts", droppedParts), slog.Int("dropped_chars", droppedChars))
+	}
 	lastID := 0
 	for i, part := range parts {
 		body := renderPlain(part)
@@ -289,6 +304,8 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 			body = renderCode(part)
 		case out.HTML:
 			body = part
+		case markdown:
+			body = renderMarkdown(part)
 		}
 		params := &bot.SendMessageParams{
 			ChatID:              g.chatID,
@@ -305,24 +322,62 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 			params.ReplyMarkup = inlineKeyboard(out.Buttons)
 			buttons = len(out.Buttons)
 		}
-		err := g.queue.Do(ctx, func(ctx context.Context) error {
-			msg, err := g.api.SendMessage(ctx, params)
-			if err == nil && msg != nil {
-				lastID = msg.ID
-			}
-			return translate(err)
-		})
+		id, err := g.sendPart(ctx, params)
+		if err != nil && markdown && isMarkupError(err) {
+			g.log.Warn("markdown rejected, re-sent as pre",
+				slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
+				slog.String("html_head", head(body, 200)), slog.Any("err", err))
+			params.Text = renderCode(part)
+			id, err = g.sendPart(ctx, params)
+		}
 		if err != nil {
 			g.log.Warn("sendMessage failed",
 				slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)), slog.Any("err", err))
 			return 0, fmt.Errorf("sendMessage thread %d part %d/%d: %w", out.ThreadID, i+1, len(parts), err)
 		}
+		lastID = id
 		g.log.Debug("sendMessage",
 			slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
 			slog.Int("reply_to", out.ReplyTo), slog.Bool("notify", out.Notify),
 			slog.Int("runes", utf8.RuneCountInString(part)), slog.Int("buttons", buttons), slog.Int("message_id", lastID))
 	}
 	return lastID, nil
+}
+
+// sendPart sends one message through the queue and returns its id.
+func (g *Gateway) sendPart(ctx context.Context, params *bot.SendMessageParams) (int, error) {
+	id := 0
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		msg, err := g.api.SendMessage(ctx, params)
+		if err == nil && msg != nil {
+			id = msg.ID
+		}
+		return translate(err)
+	})
+	return id, err
+}
+
+// capParts keeps at most max parts (0 = all) and appends a trailer naming
+// the dropped characters to the last kept part. It reports how many parts
+// and characters were dropped.
+func capParts(parts []string, max int) ([]string, int, int) {
+	if max <= 0 || len(parts) <= max {
+		return parts, 0, 0
+	}
+	dropped := strings.Join(parts[max:], "\n")
+	chars := utf8.RuneCountInString(dropped)
+	kept := append([]string(nil), parts[:max]...)
+	kept[max-1] += fmt.Sprintf("\n… (+%d chars)", chars)
+	return kept, len(parts) - max, chars
+}
+
+// head returns the first n runes of s, for log lines.
+func head(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n])
 }
 
 // inlineKeyboard renders buttons as an inline keyboard with one button per

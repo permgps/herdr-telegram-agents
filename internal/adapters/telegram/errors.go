@@ -114,6 +114,20 @@ func classify400(err error) error {
 	return &APIError{Code: 400, Description: desc, Err: err}
 }
 
+// isMarkupError reports whether Telegram rejected a message for how it was
+// rendered rather than where it went: bad HTML ("Bad Request: can't parse
+// entities: ...") or a text that grew past the limit ("Bad Request:
+// message is too long"). A Markdown post recovers from both by re-sending
+// the part as <pre>, which is never longer than its source.
+func isMarkupError(err error) bool {
+	var api *APIError
+	if !errors.As(err, &api) || api.Code != 400 {
+		return false
+	}
+	lower := strings.ToLower(api.Description)
+	return strings.Contains(lower, "can't parse entities") || strings.Contains(lower, "message is too long")
+}
+
 // isRetryable reports whether the queue may run the same call again. It
 // accepts both raw library errors and translated ones. Client-side failures
 // (400, 401, 403, 404, 409, chat migration) and a cancelled context are

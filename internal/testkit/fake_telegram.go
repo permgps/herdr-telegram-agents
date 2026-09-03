@@ -282,6 +282,9 @@ func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) (int, error)
 	if len(out.Buttons) > 0 {
 		call += fmt.Sprintf(":buttons=%d", len(out.Buttons))
 	}
+	if out.Markdown {
+		call += ":markdown"
+	}
 	if err := f.record("send", call); err != nil {
 		return 0, err
 	}

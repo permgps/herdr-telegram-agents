@@ -423,3 +423,136 @@ func TestInlineKeyboardGroupsRows(t *testing.T) {
 		t.Errorf("reply_markup = %s\nwant %s", markup, want)
 	}
 }
+
+func TestSendMarkdownRenders(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 5}) })
+	id, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "**hi** `a<b`\n- one", Markdown: true})
+	if err != nil || id != 5 {
+		t.Fatalf("Send = %d, %v", id, err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	if got := calls[0].form.Get("text"); got != "<b>hi</b> <code>a&lt;b</code>\n• one" {
+		t.Errorf("text = %q", got)
+	}
+	if got := calls[0].form.Get("parse_mode"); got != "HTML" {
+		t.Errorf("parse_mode = %q", got)
+	}
+}
+
+func TestSendMarkdownFallsBackToPre(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		n++
+		if n == 1 {
+			return errReply(400, `Bad Request: can't parse entities: Unsupported start tag "x" at byte offset 1`)
+		}
+		return okReply(map[string]any{"message_id": 7})
+	})
+	id, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "**hi** <x>", Markdown: true})
+	if err != nil || id != 7 {
+		t.Fatalf("Send = %d, %v", id, err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want the rejected part and its <pre> retry", len(calls))
+	}
+	if got := calls[1].form.Get("text"); got != "<pre>**hi** &lt;x&gt;</pre>" {
+		t.Errorf("retry text = %q", got)
+	}
+	if !strings.Contains(h.buf.String(), "markdown rejected, re-sent as pre") {
+		t.Errorf("no warn line in log: %s", h.buf.String())
+	}
+}
+
+func TestSendMarkdownTooLongFallsBackToPre(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		n++
+		if n == 1 {
+			return errReply(400, "Bad Request: message is too long")
+		}
+		return okReply(map[string]any{"message_id": 9})
+	})
+	id, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "**x**", Markdown: true})
+	if err != nil || id != 9 || len(h.api.callsOf("sendMessage")) != 2 {
+		t.Fatalf("Send = %d, %v, calls = %d", id, err, len(h.api.callsOf("sendMessage")))
+	}
+}
+
+func TestSendMarkdownFallbackFailsOnce(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		return errReply(400, "Bad Request: can't parse entities: boom")
+	})
+	_, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "x", Markdown: true})
+	if err == nil {
+		t.Fatal("second rejection must surface")
+	}
+	if got := len(h.api.callsOf("sendMessage")); got != 2 {
+		t.Errorf("calls = %d, want exactly one retry", got)
+	}
+}
+
+func TestSendMaxPartsTrailer(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		n++
+		return okReply(map[string]any{"message_id": n})
+	})
+	text := strings.Repeat("a", 4032) + "\n" + strings.Repeat("b", 4032) + "\n" + strings.Repeat("c", 10)
+	id, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, Code: true, MaxParts: 2})
+	if err != nil || id != 2 {
+		t.Fatalf("Send = %d, %v", id, err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	if got := calls[1].form.Get("text"); !strings.HasSuffix(got, "\n… (+10 chars)</pre>") {
+		t.Errorf("last part = %.40q (tail %q)", got, got[len(got)-30:])
+	}
+	if got := calls[0].form.Get("text"); strings.Contains(got, "chars)") {
+		t.Error("trailer on a non-final part")
+	}
+}
+
+func TestSendMarkdownFenceAcrossParts(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		n++
+		return okReply(map[string]any{"message_id": n})
+	})
+	var b strings.Builder
+	b.WriteString("Result:\n```go\n")
+	for i := 0; i < 300; i++ {
+		b.WriteString(strings.Repeat("x", 39) + "\n")
+	}
+	b.WriteString("```\ndone")
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: b.String(), Markdown: true}); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) < 3 {
+		t.Fatalf("calls = %d, want several parts", len(calls))
+	}
+	for i, c := range calls {
+		body := c.form.Get("text")
+		if !strings.Contains(body, `<pre><code class="language-go">`) || !strings.Contains(body, "</code></pre>") {
+			t.Errorf("part %d lacks a complete code block: %.60q", i+1, body)
+		}
+		if strings.Contains(body, "```") {
+			t.Errorf("part %d leaks a raw fence", i+1)
+		}
+	}
+	if !strings.HasSuffix(calls[len(calls)-1].form.Get("text"), "</code></pre>\ndone") {
+		t.Errorf("last part = %q", calls[len(calls)-1].form.Get("text"))
+	}
+}
