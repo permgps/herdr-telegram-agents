@@ -22,6 +22,7 @@ type daemonFixture struct {
 	capture *app.Capture
 	options *testkit.MemOptionsStore
 	opts    *app.Options
+	rec     *app.Reconciler
 	daemon  *app.Daemon
 	done    chan error
 	cancel  context.CancelCauseFunc
@@ -42,6 +43,7 @@ func newDaemon(t *testing.T) *daemonFixture {
 	f.options = testkit.NewMemOptionsStore()
 	f.opts = app.NewOptions(f.options.Stored(), f.options, func(string) []string { return f.tg.IconPack() }, nil)
 	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.opts, f.clock, nil)
+	f.rec = reconciler
 	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
 	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, f.clock, nil)
 	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.opts, f.clock, nil)
@@ -111,7 +113,7 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 	// A status event flows through registry -> reconciler -> debounce -> edit.
 	idle := agent("p1", "", "", domain.StatusIdle)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
-	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 4 }) // registry tick, health, capture, debounce
+	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 5 }) // registry tick, health, sweep, capture, debounce
 	f.clock.Advance(3 * time.Second)
 	f.waitCalls(t, 4)
 	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1, "edit:101:status=idle")
@@ -304,7 +306,7 @@ func TestDaemonBlockedScreenIsPosted(t *testing.T) {
 	blocked := agent("p1", "", "", domain.StatusBlocked)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
 	// registry tick, health, capture, edit debounce, screen settle
-	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 5 })
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 6 })
 	f.clock.Advance(1500 * time.Millisecond)
 	f.waitCalls(t, 4)
 	sent := f.tg.Sent()
@@ -437,7 +439,7 @@ func TestDaemonStatsWhileRunning(t *testing.T) {
 	if st.Agents != 1 || st.Dropped != 0 || !st.HerdrOK || st.Version != "1.2.3" || !st.Since.Equal(t0) {
 		t.Fatalf("Stats = %+v", st)
 	}
-	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on" {
+	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on cleanup=30d" {
 		t.Fatalf("StatsLine = %q", line)
 	}
 	if err := f.stop(t); err != nil {
@@ -578,7 +580,7 @@ func TestDaemonSyncOffStartAndResume(t *testing.T) {
 	f.start(t)
 	f.waitCalls(t, 2)
 	assertCalls(t, f.tg, "rights", started1+" (sync off, see /options)")
-	if st := f.daemon.Stats(); !st.SyncOff || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "sync=off") {
+	if st := f.daemon.Stats(); !st.SyncOff || !strings.Contains(app.StatsLine(st, f.clock.Now()), "sync=off") {
 		t.Fatalf("Stats = %+v", st)
 	}
 	if f.tg.Icons() != domain.DefaultStatusIcons() {
@@ -624,5 +626,74 @@ func TestDaemonIconChangeWhilePausedSkipsResync(t *testing.T) {
 	}
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// stale seeds a closed topic of an exited agent, closed at the given time.
+func (f *daemonFixture) stale(t *testing.T, pane string, closedAt time.Time) {
+	t.Helper()
+	a := agent(pane, "t", pane, domain.StatusWorking)
+	topic, err := f.tg.CreateTopic(context.Background(), a.Label(), domain.StatusExited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := f.rec.Mapping()
+	m.Link(a.Key, topic, a, closedAt)
+	m.MarkExited(a.Key, closedAt)
+	m.MarkClosed(a.Key, closedAt)
+}
+
+func TestDaemonSweepsAtStartDailyAndOnOptionChange(t *testing.T) {
+	f := newDaemon(t)
+	f.stale(t, "old", t0.Add(-40*day))            // stale at start
+	f.stale(t, "soon", t0.Add(-30*day+time.Hour)) // stale after the daily pass
+	f.stale(t, "later", t0.Add(-10*day))          // stale once the option drops to 7 days
+	f.tg.Reset()
+	f.start(t)
+	f.waitCalls(t, 3)
+	assertCalls(t, f.tg, "rights", started0, "delete:101")
+
+	waitFor(t, "timers", func() bool { return f.clock.Pending() >= 4 }) // registry tick, health, sweep, capture
+	f.clock.Advance(app.SweepIntervalForTest)
+	f.waitCalls(t, 4)
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "delete:102" {
+		t.Fatalf("calls after a day = %v", calls)
+	}
+
+	if err := f.opts.Set(context.Background(), domain.OptionDeleteAfterDays, "7", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.waitCalls(t, 5)
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "delete:103" {
+		t.Fatalf("calls after the option change = %v", calls)
+	}
+	if st := f.daemon.Stats(); st.DeleteAfterDays != 7 || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "cleanup=7d") {
+		t.Fatalf("Stats = %+v", st)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.rec.Mapping().Topics) != 0 {
+		t.Fatalf("entries left: %v", f.rec.Mapping().Keys())
+	}
+}
+
+func TestDaemonSweepOffAndWithoutDeleteRight(t *testing.T) {
+	f := newDaemon(t)
+	f.tg.SetRights(domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true}, nil)
+	f.stale(t, "old", t0.Add(-40*day))
+	f.tg.Reset()
+	f.start(t)
+	f.waitCalls(t, 2)
+	assertCalls(t, f.tg, "rights", started0)
+	if err := f.opts.Set(context.Background(), domain.OptionDeleteAfterDays, "0", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "rights", started0, stopping)
+	if len(f.rec.Mapping().Topics) != 1 {
+		t.Fatal("entry dropped without the delete right")
 	}
 }

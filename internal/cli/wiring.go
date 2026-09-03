@@ -20,6 +20,11 @@ type supervisor interface {
 	Describe(ctx context.Context) string
 }
 
+// doctor is the slice of compose.Doctor the doctor pane uses.
+type doctor interface {
+	Run(ctx context.Context) []domain.Check
+}
+
 // wiring holds the composition-root entry points the subcommands call.
 // Tests replace individual fields and restore them with t.Cleanup; the
 // defaults are the real compose functions.
@@ -36,6 +41,9 @@ type wiring struct {
 	paneOpener      func(env compose.PluginEnv, log *slog.Logger) domain.PaneOpener
 	openURL         func(ctx context.Context, url string) error
 	teeLogger       func(loggers ...*slog.Logger) *slog.Logger
+	buildDoctor     func(env compose.PluginEnv, version string, log *slog.Logger) doctor
+	buildInspector  func(cfg domain.Config, log *slog.Logger) (domain.TelegramInspector, error)
+	sendTest        func(ctx context.Context, insp domain.TelegramInspector, version string, log *slog.Logger) (string, error)
 }
 
 var wire = defaultWiring()
@@ -58,6 +66,11 @@ func defaultWiring() wiring {
 		paneOpener: compose.PaneOpener,
 		openURL:    compose.OpenURL,
 		teeLogger:  compose.TeeLogger,
+		buildDoctor: func(env compose.PluginEnv, version string, log *slog.Logger) doctor {
+			return compose.BuildDoctor(env, version, log)
+		},
+		buildInspector: compose.BuildInspector,
+		sendTest:       compose.SendTest,
 	}
 }
 

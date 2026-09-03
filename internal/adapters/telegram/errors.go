@@ -92,14 +92,17 @@ func description400(err error) string {
 //
 // Verified on a live forum group 2026-09-02: editForumTopic with the same
 // name and icon answers "Bad Request: TOPIC_NOT_MODIFIED".
-// TODO: 2026-09-02 — confirm the exact 400 descriptions for a deleted, a
-// closed, and an unknown message_thread_id on a real forum group and adjust
-// the matchers.
+// Verified 2026-09-03: deleteForumTopic on a thread that no longer exists
+// answers "Bad Request: TOPIC_ID_INVALID"; a live closed topic is deleted
+// with a plain true.
+// TODO: 2026-09-02 — confirm the exact 400 descriptions for a deleted and
+// a closed message_thread_id on editForumTopic and adjust the matchers.
 func classify400(err error) error {
 	desc := description400(err)
 	lower := strings.ToLower(desc)
 	switch {
-	case strings.Contains(lower, "thread not found"), strings.Contains(lower, "topic_deleted"):
+	case strings.Contains(lower, "thread not found"), strings.Contains(lower, "topic not found"),
+		strings.Contains(lower, "topic_deleted"), strings.Contains(lower, "topic_id_invalid"):
 		return fmt.Errorf("%w: %w", domain.ErrTopicGone, err)
 	case strings.Contains(lower, "topic_closed"):
 		return fmt.Errorf("%w: %w", domain.ErrTopicClosed, err)

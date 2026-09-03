@@ -16,7 +16,10 @@ import (
 const actionTimeout = 20 * time.Second
 
 // actionIDs lists the [[actions]] entrypoints, in manifest order.
-var actionIDs = []string{"setup", "start", "stop", "restart", "status", "resync", "logs"}
+var actionIDs = []string{"setup", "start", "stop", "restart", "status", "resync", "logs", "doctor", "send-test"}
+
+// sendTestTimeout bounds the send-test action's Telegram call.
+const sendTestTimeout = 10 * time.Second
 
 // runAction handles `action <id>`. Every outcome goes to stdout and, best
 // effort, to a Herdr notification because actions run without a visible
@@ -58,11 +61,13 @@ func runAction(rc *runContext, args []string) int {
 // doAction performs one action and returns the human-readable outcome.
 func doAction(ctx context.Context, rc *runContext, pluginID, id string, sup supervisor, panes domain.PaneOpener) (string, error) {
 	switch id {
-	case "setup", "logs":
+	case "setup", "logs", "doctor":
 		if err := panes.OpenPane(ctx, pluginID, id); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("opened the %s pane", id), nil
+	case "send-test":
+		return sendTest(ctx, rc)
 	case "start":
 		pid, already, err := sup.Start(ctx)
 		if err != nil {
@@ -98,6 +103,37 @@ func doAction(ctx context.Context, rc *runContext, pluginID, id string, sup supe
 		return "resync requested", nil
 	}
 	return "", fmt.Errorf("unknown action %q", id)
+}
+
+// sendTest posts a test message into General straight from this process
+// through the light Telegram client, so it works with the daemon stopped
+// and never touches its polling.
+func sendTest(ctx context.Context, rc *runContext) (string, error) {
+	env, err := wire.env()
+	if err != nil {
+		return "", err
+	}
+	cfg, err := wire.loadConfig(ctx, env, rc.log)
+	if errors.Is(err, domain.ErrNotConfigured) {
+		return "send-test failed: not configured, run the setup action", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	insp, err := wire.buildInspector(cfg, rc.log)
+	if err != nil {
+		return "", err
+	}
+	sctx, cancel := context.WithTimeout(ctx, sendTestTimeout)
+	defer cancel()
+	msg, err := wire.sendTest(sctx, insp, rc.version, rc.log)
+	if err != nil {
+		// The reason is already in the sentence; report it as the outcome
+		// rather than as a CLI failure so the notification reads cleanly.
+		rc.log.Warn("send-test failed", slog.String("err", err.Error()))
+		return err.Error(), nil
+	}
+	return msg, nil
 }
 
 func isAction(id string) bool {

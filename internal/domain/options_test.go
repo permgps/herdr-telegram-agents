@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultOptionsMatchStatusEmoji(t *testing.T) {
@@ -121,8 +122,14 @@ func TestValidateOptionsAgainstSource(t *testing.T) {
 
 func TestOptionGroupsAndSpecs(t *testing.T) {
 	groups := OptionGroups()
-	if len(groups) != 2 || groups[0].Name != GroupSync || groups[1].Name != GroupAppearance {
+	if len(groups) != 4 || groups[0].Name != GroupSync || groups[1].Name != GroupAppearance || groups[2].Name != GroupPrivacy || groups[3].Name != GroupTopics {
 		t.Fatalf("groups = %+v", groups)
+	}
+	if got := OptionsInGroup(GroupPrivacy); len(got) != 1 || got[0].Key != OptionRedact || got[0].Kind != KindBool || got[0].Default != "true" {
+		t.Errorf("privacy options = %+v", got)
+	}
+	if got := OptionsInGroup(GroupTopics); len(got) != 1 || got[0].Key != OptionDeleteAfterDays || got[0].Kind != KindChoice || got[0].Default != "30" || got[0].Choices != ChoiceSourceDays {
+		t.Errorf("topics options = %+v", got)
 	}
 	if got := OptionsInGroup(GroupAppearance); len(got) != 6 || got[0].Key != "icons.working" || got[5].Key != "icons.exited" {
 		t.Errorf("appearance options = %+v", got)
@@ -201,5 +208,78 @@ func TestSanitizeOptionsDropsOnlyBadKeys(t *testing.T) {
 	}
 	if _, d := SanitizeOptions(DefaultOptions(), pack); len(d) != 0 {
 		t.Errorf("defaults dropped %v", d)
+	}
+}
+
+func TestDeleteAfterDaysValidation(t *testing.T) {
+	o := DefaultOptions()
+	for _, v := range []string{"0", "7", "45", "3650"} {
+		next, err := o.With(OptionDeleteAfterDays, v)
+		if err != nil {
+			t.Fatalf("With(%q): %v", v, err)
+		}
+		if err := ValidateOptions(next, nil); err != nil {
+			t.Errorf("ValidateOptions(%q): %v", v, err)
+		}
+	}
+	for _, v := range []string{"-1", "x", "", "3651", "7 days"} {
+		next, err := o.With(OptionDeleteAfterDays, v)
+		if err != nil {
+			t.Fatalf("With(%q): %v", v, err)
+		}
+		if err := ValidateOptions(next, nil); !errors.Is(err, ErrInvalidOption) {
+			t.Errorf("ValidateOptions(%q) = %v, want ErrInvalidOption", v, err)
+		}
+	}
+	// A hand-edited value outside the panel's list survives sanitising.
+	dirty, _ := o.With(OptionDeleteAfterDays, "45")
+	clean, dropped := SanitizeOptions(dirty, nil)
+	if len(dropped) != 0 || clean.String(OptionDeleteAfterDays) != "45" {
+		t.Errorf("sanitize kept %q, dropped %v", clean.String(OptionDeleteAfterDays), dropped)
+	}
+}
+
+func TestDeleteAfterAndLabels(t *testing.T) {
+	spec, _ := LookupOption(OptionDeleteAfterDays)
+	cases := []struct {
+		value  string
+		want   time.Duration
+		label  string
+		button string
+	}{
+		{"0", 0, "Off", "Off"},
+		{"1", 24 * time.Hour, "1 day", "1d"},
+		{"30", 30 * 24 * time.Hour, "30 days", "30d"},
+		{"garbage", 0, "garbage", "garbage"},
+	}
+	for _, tc := range cases {
+		o, _ := DefaultOptions().With(OptionDeleteAfterDays, tc.value)
+		if got := o.DeleteAfter(); got != tc.want {
+			t.Errorf("DeleteAfter(%q) = %v, want %v", tc.value, got, tc.want)
+		}
+		if got := ChoiceLabel(spec, tc.value); got != tc.label {
+			t.Errorf("ChoiceLabel(%q) = %q, want %q", tc.value, got, tc.label)
+		}
+		if got := ChoiceButton(spec, tc.value); got != tc.button {
+			t.Errorf("ChoiceButton(%q) = %q, want %q", tc.value, got, tc.button)
+		}
+	}
+	if !DefaultOptions().RedactEnabled() {
+		t.Error("redaction should default to on")
+	}
+	off, _ := DefaultOptions().With(OptionRedact, "false")
+	if off.RedactEnabled() {
+		t.Error("redaction should be off")
+	}
+	icons, _ := LookupOption(IconKey(StatusWorking))
+	if ChoiceLabel(icons, "⚡") != "⚡" || ChoiceButton(icons, "⚡") != "⚡" {
+		t.Error("icon labels must pass through")
+	}
+	list, ok := StaticChoices(ChoiceSourceDays)
+	if !ok || len(list) != 6 || list[0] != "0" || list[5] != "90" {
+		t.Errorf("StaticChoices(days) = %v, %v", list, ok)
+	}
+	if _, ok := StaticChoices(ChoiceSourceIcons); ok {
+		t.Error("icons are not a static source")
 	}
 }

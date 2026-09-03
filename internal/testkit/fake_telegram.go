@@ -17,7 +17,7 @@ import (
 // Recorded call shapes:
 //
 //	create:<name>:<status>   edit:<thread>:name=<n>,status=<s>
-//	close:<thread>           reopen:<thread>
+//	close:<thread>           reopen:<thread>          delete:<thread>
 //	send:<thread>:<text>     send:<thread>:<text>:reply=<id>   (":notify" and ":buttons=<n>" appended when set)
 //	buttons:<message>:<text1>|<text2>   (empty text list when the keyboard is removed)
 //	answer:<callback>:<text>
@@ -253,6 +253,19 @@ func (f *FakeTelegram) ReopenTopic(_ context.Context, threadID int) error {
 		return domain.ErrTopicGone
 	}
 	t.Closed = false
+	return nil
+}
+
+func (f *FakeTelegram) DeleteTopic(_ context.Context, threadID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.record("delete", fmt.Sprintf("delete:%d", threadID)); err != nil {
+		return err
+	}
+	if _, ok := f.topics[threadID]; !ok {
+		return domain.ErrTopicGone
+	}
+	delete(f.topics, threadID)
 	return nil
 }
 

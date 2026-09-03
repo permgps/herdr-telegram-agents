@@ -107,6 +107,10 @@ type TelegramGateway interface {
 	CloseTopic(ctx context.Context, threadID int) error
 	// ReopenTopic reopens a closed topic.
 	ReopenTopic(ctx context.Context, threadID int) error
+	// DeleteTopic deletes the topic with all its messages; needs the
+	// can_delete_messages right. A topic that is already gone is
+	// ErrTopicGone.
+	DeleteTopic(ctx context.Context, threadID int) error
 	// Send posts a message into a topic, or into General when ThreadID is
 	// 0; long text is split into several messages. It returns the id of
 	// the last message sent (the one carrying Buttons), 0 on error.
@@ -174,6 +178,37 @@ type OptionsStore interface {
 type MappingStore interface {
 	Load(ctx context.Context) (*Mapping, error)
 	Save(ctx context.Context, m *Mapping) error
+}
+
+// GroupInfo is what the doctor learns about the configured group.
+type GroupInfo struct {
+	Title  string
+	Rights Rights
+}
+
+// TelegramInspector is the light Telegram client of the doctor and
+// send-test actions: single calls with no polling and no webhook change,
+// so it never disturbs a running daemon.
+type TelegramInspector interface {
+	// Identity is getMe.
+	Identity(ctx context.Context) (BotIdentity, error)
+	// Group reads the chat title, whether it is a forum and the bot's
+	// rights in it.
+	Group(ctx context.Context) (GroupInfo, error)
+	// SendTest posts text into General with a notification and returns
+	// the message id.
+	SendTest(ctx context.Context, text string) (int, error)
+}
+
+// HerdrInfo is what the Herdr socket answers to a ping.
+type HerdrInfo struct {
+	Version  string
+	Protocol int
+}
+
+// HerdrProber pings the Herdr socket without starting an event stream.
+type HerdrProber interface {
+	Ping(ctx context.Context) (HerdrInfo, error)
 }
 
 // PaneOpener opens one of the plugin's manifest panes through Herdr.

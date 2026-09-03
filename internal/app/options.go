@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -53,8 +54,19 @@ func (o *Options) SyncEnabled() bool { return o.Get().SyncEnabled() }
 // StatusIcons is the icon table in force.
 func (o *Options) StatusIcons() domain.StatusIcons { return o.Get().StatusIcons() }
 
+// RedactEnabled is the secret redaction switch.
+func (o *Options) RedactEnabled() bool { return o.Get().RedactEnabled() }
+
+// DeleteAfter is the stale-topic age in force; zero means the sweep is off.
+func (o *Options) DeleteAfter() time.Duration { return o.Get().DeleteAfter() }
+
 // Choices lists the allowed values of a choice source; nil when unknown.
+// Lists the domain owns (the day counts) are answered without asking the
+// external source.
 func (o *Options) Choices(name string) []string {
+	if list, ok := domain.StaticChoices(name); ok {
+		return list
+	}
 	if o.choices == nil {
 		return nil
 	}

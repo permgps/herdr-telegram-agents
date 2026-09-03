@@ -37,7 +37,10 @@ type Gateway struct {
 	wg     sync.WaitGroup
 }
 
-var _ domain.HerdrGateway = (*Gateway)(nil)
+var (
+	_ domain.HerdrGateway = (*Gateway)(nil)
+	_ domain.HerdrProber  = (*Gateway)(nil)
+)
 
 // NewGateway prepares a gateway for the socket at path; call Start to
 // connect. A zero Backoff falls back to DefaultBackoff.
@@ -67,7 +70,7 @@ func (g *Gateway) Start(ctx context.Context) error {
 	if g.cancel != nil {
 		return errors.New("herdr gateway already started")
 	}
-	pong, err := ping(ctx, g.dial, g.path, g.log)
+	pong, err := g.Ping(ctx)
 	if err != nil {
 		return err
 	}
@@ -84,6 +87,18 @@ func (g *Gateway) Start(ctx context.Context) error {
 		slog.String("herdr_version", pong.Version),
 		slog.Int("protocol", pong.Protocol))
 	return nil
+}
+
+// Ping asks the server for its version and protocol on a fresh
+// connection; it works before Start and without a stream, so the doctor
+// can probe the socket with nothing else running.
+func (g *Gateway) Ping(ctx context.Context) (domain.HerdrInfo, error) {
+	pong, err := ping(ctx, g.dial, g.path, g.log)
+	if err != nil {
+		return domain.HerdrInfo{}, err
+	}
+	g.log.Debug("herdr ping", slog.String("socket", g.path), slog.String("herdr_version", pong.Version), slog.Int("protocol", pong.Protocol))
+	return domain.HerdrInfo{Version: pong.Version, Protocol: pong.Protocol}, nil
 }
 
 // Close stops the stream, waits for it and closes the events channel. It

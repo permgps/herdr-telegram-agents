@@ -60,6 +60,25 @@ func ctxT(t *testing.T) context.Context {
 	return ctx
 }
 
+func TestGatewayPing(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("ping", pingHandler)
+	g := NewGateway(s.Path(), testLogger(t), fastBackoff)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	info, err := g.Ping(ctx)
+	if err != nil || info.Version != "0.7.5" || info.Protocol != 17 {
+		t.Fatalf("Ping = %+v, %v", info, err)
+	}
+	if got := s.WaitRequests("events.subscribe", 1, 50*time.Millisecond); len(got) != 0 {
+		t.Fatal("Ping must not start the stream")
+	}
+	dead := NewGateway("/nonexistent/herdr.sock", testLogger(t), fastBackoff)
+	if _, err := dead.Ping(ctx); err == nil {
+		t.Fatal("Ping on a missing socket should fail")
+	}
+}
+
 func TestGatewayStartFailsWithoutServer(t *testing.T) {
 	g := NewGateway("/nonexistent/herdr.sock", testLogger(t), fastBackoff)
 	if err := g.Start(ctxT(t)); err == nil {

@@ -2,7 +2,9 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // OptionKind says how an option is edited and validated.
@@ -33,7 +35,10 @@ type OptionGroup struct {
 // options.json, validation and /help. Title is the short label on the
 // button, Description one English sentence shown in the panel text.
 // Default is the value in string form. Choices names a ChoiceSource list
-// for KindChoice and is empty otherwise.
+// for KindChoice and is empty otherwise. Validate, when set, replaces the
+// list check of a KindChoice: the list is then a set of suggestions the
+// panel offers and any value Validate accepts is stored (a number typed
+// into options.json by hand, for example).
 type OptionSpec struct {
 	Key         string
 	Group       string
@@ -42,17 +47,27 @@ type OptionSpec struct {
 	Kind        OptionKind
 	Default     string
 	Choices     string
+	Validate    func(value string) error
 }
 
 // Option keys and group names referenced from the application layer.
 const (
 	OptionSyncEnabled = "sync.enabled"
+	// OptionRedact switches the secret redaction of every post on or off.
+	OptionRedact = "privacy.redact"
+	// OptionDeleteAfterDays is how long a closed topic of an exited agent
+	// stays before the sweep deletes it; "0" keeps every topic.
+	OptionDeleteAfterDays = "topics.delete_after_days"
 	// ChoiceSourceIcons is the choice list of the free topic-icon pack.
 	ChoiceSourceIcons = "icons"
-	// GroupSync and GroupAppearance are the group names of the first
-	// options.
+	// ChoiceSourceDays is the static list of day counts offered by the
+	// panel for OptionDeleteAfterDays (see DaysChoices).
+	ChoiceSourceDays = "days"
+	// Group names, in the panel's display order.
 	GroupSync       = "sync"
 	GroupAppearance = "appearance"
+	GroupPrivacy    = "privacy"
+	GroupTopics     = "topics"
 
 	iconKeyPrefix = "icons."
 )
@@ -62,6 +77,8 @@ const (
 var OptionGroupSpecs = []OptionGroup{
 	{Name: GroupSync, Title: "Sync", Description: "What the mirror writes to Telegram."},
 	{Name: GroupAppearance, Title: "Appearance", Description: "How topics and status lines look."},
+	{Name: GroupPrivacy, Title: "Privacy", Description: "What never leaves this machine."},
+	{Name: GroupTopics, Title: "Topics", Description: "Lifecycle of the forum topics."},
 }
 
 // iconStatuses is the order of the status-icon options and of StatusIcons.
@@ -101,7 +118,90 @@ func buildOptionSpecs() []OptionSpec {
 			Choices:     ChoiceSourceIcons,
 		})
 	}
+	specs = append(specs,
+		OptionSpec{
+			Key:         OptionRedact,
+			Group:       GroupPrivacy,
+			Title:       "Redact secrets",
+			Description: "Mask API keys, tokens, passwords and private keys in every screen posted to Telegram.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		OptionSpec{
+			Key:         OptionDeleteAfterDays,
+			Group:       GroupTopics,
+			Title:       "Delete closed topics after",
+			Description: "Delete the topic of an exited agent once it has been closed for this long, and forget it. Off keeps every topic.",
+			Kind:        KindChoice,
+			Default:     "30",
+			Choices:     ChoiceSourceDays,
+			Validate:    validateDays,
+		},
+	)
 	return specs
+}
+
+// daysChoices is the list the panel offers for OptionDeleteAfterDays.
+var daysChoices = []string{"0", "7", "14", "30", "60", "90"}
+
+// maxDeleteAfterDays bounds a hand-edited value (ten years).
+const maxDeleteAfterDays = 3650
+
+// DaysChoices returns the day counts the panel offers: Off, 7, 14, 30, 60
+// and 90 days.
+func DaysChoices() []string { return append([]string(nil), daysChoices...) }
+
+// StaticChoices answers the choice lists the domain owns itself; the
+// application layer asks it before the external ChoiceSource.
+func StaticChoices(name string) ([]string, bool) {
+	if name == ChoiceSourceDays {
+		return DaysChoices(), true
+	}
+	return nil, false
+}
+
+func validateDays(value string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 || n > maxDeleteAfterDays {
+		return fmt.Errorf("%q is not a day count between 0 and %d: %w", value, maxDeleteAfterDays, ErrInvalidOption)
+	}
+	return nil
+}
+
+// ChoiceLabel is the human form of a choice value in panel text: days
+// become "Off", "1 day" or "30 days"; other sources show the value itself.
+func ChoiceLabel(spec OptionSpec, value string) string {
+	if spec.Choices != ChoiceSourceDays {
+		return value
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	switch {
+	case err != nil:
+		return value
+	case n == 0:
+		return "Off"
+	case n == 1:
+		return "1 day"
+	default:
+		return fmt.Sprintf("%d days", n)
+	}
+}
+
+// ChoiceButton is the short form of a choice value on a button: "Off",
+// "7d"; other sources show the value itself.
+func ChoiceButton(spec OptionSpec, value string) string {
+	if spec.Choices != ChoiceSourceDays {
+		return value
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	switch {
+	case err != nil:
+		return value
+	case n == 0:
+		return "Off"
+	default:
+		return fmt.Sprintf("%dd", n)
+	}
 }
 
 // OptionGroups returns the groups in display order.
@@ -222,6 +322,19 @@ func (o Options) IsDefault(key string) bool {
 // SyncEnabled is the Herdr → Telegram mirror switch.
 func (o Options) SyncEnabled() bool { return o.Bool(OptionSyncEnabled) }
 
+// RedactEnabled is the secret redaction switch.
+func (o Options) RedactEnabled() bool { return o.Bool(OptionRedact) }
+
+// DeleteAfter is the age at which the sweep deletes a closed topic of an
+// exited agent; zero means the sweep is off (also for an unparsable value).
+func (o Options) DeleteAfter() time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionDeleteAfterDays)))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * 24 * time.Hour
+}
+
 // StatusIcons collects the six icon options.
 func (o Options) StatusIcons() StatusIcons {
 	return StatusIcons{
@@ -299,6 +412,8 @@ func emojiKey(e string) string { return strings.ReplaceAll(e, "️", "") }
 
 // ChoiceSource returns the allowed values of a choice list by name. An
 // empty result means the list is not known yet and any value is accepted.
+// Lists the domain owns (StaticChoices) are answered before the source is
+// asked; a spec with its own Validate never consults the list.
 type ChoiceSource func(name string) []string
 
 // ValidateOptions checks every value against its spec: bools parse, a
@@ -316,10 +431,16 @@ func ValidateOptions(o Options, choices ChoiceSource) error {
 			if v == "" {
 				return fmt.Errorf("option %q: empty: %w", spec.Key, ErrInvalidOption)
 			}
-			if choices == nil {
+			if spec.Validate != nil {
+				if err := spec.Validate(v); err != nil {
+					return fmt.Errorf("option %q: %w", spec.Key, err)
+				}
 				continue
 			}
-			list := choices(spec.Choices)
+			list, known := StaticChoices(spec.Choices)
+			if !known && choices != nil {
+				list = choices(spec.Choices)
+			}
 			if len(list) > 0 && !containsEmoji(list, v) {
 				return fmt.Errorf("option %q: %q is not in the %s list: %w", spec.Key, v, spec.Choices, ErrInvalidOption)
 			}

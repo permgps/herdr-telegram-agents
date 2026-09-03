@@ -138,14 +138,16 @@ func TestMappingPrune(t *testing.T) {
 		linked(t, m, a, i)
 		m.MarkExited(a.Key, t0.Add(time.Duration(i)*time.Hour))
 	}
-	// Age: entries 1 and 2 are older than 2 h relative to t0+4.5h.
-	now := t0.Add(4*time.Hour + 30*time.Minute)
-	if got := m.Prune(now, 2*time.Hour, 0); got != 2 {
-		t.Fatalf("Prune by age removed %d, want 2", got)
+	// Age alone removes nothing any more: the sweep owns that.
+	if got := m.Prune(10); got != 0 {
+		t.Fatalf("Prune under the cap removed %d", got)
 	}
-	// Count: 3 left (live + 2 exited); cap at 2 removes the oldest exited.
-	if got := m.Prune(now, 24*time.Hour, 2); got != 1 {
-		t.Fatalf("Prune by count removed %d, want 1", got)
+	if len(m.Topics) != 5 {
+		t.Fatalf("entries = %d, want 5", len(m.Topics))
+	}
+	// Count: cap at 3 removes the two oldest exited.
+	if got := m.Prune(3); got != 2 {
+		t.Fatalf("Prune by count removed %d, want 2", got)
 	}
 	if _, ok := m.TopicFor(live.Key); !ok {
 		t.Fatal("live entry pruned")
@@ -153,9 +155,50 @@ func TestMappingPrune(t *testing.T) {
 	if _, ok := m.TopicFor(domain.Key{PaneID: "p4", TerminalID: "t"}); !ok {
 		t.Fatal("newest exited entry pruned instead of the oldest")
 	}
-	// Cap can never remove live entries.
-	if got := m.Prune(now, 24*time.Hour, 0); got != 0 {
+	// Cap 0 disables the prune.
+	if got := m.Prune(0); got != 0 {
 		t.Fatalf("Prune with cap 0 removed %d", got)
+	}
+}
+
+func TestMappingStale(t *testing.T) {
+	m := domain.NewMapping(-1)
+	now := t0.Add(40 * 24 * time.Hour)
+	live := agent("p0", "t0", "live", domain.StatusWorking)
+	linked(t, m, live, 0)
+	m.MarkClosed(live.Key, t0) // a closed live topic is never stale
+
+	oldClosed := agent("p1", "t", "old", domain.StatusWorking)
+	linked(t, m, oldClosed, 1)
+	m.MarkExited(oldClosed.Key, t0)
+	m.MarkClosed(oldClosed.Key, t0.Add(time.Hour))
+
+	older := agent("p2", "t", "older", domain.StatusWorking)
+	linked(t, m, older, 2)
+	m.MarkExited(older.Key, t0)
+	m.MarkClosed(older.Key, t0)
+	m.Mute(older.Key, t0) // muted and exited still counts
+
+	young := agent("p3", "t", "young", domain.StatusWorking)
+	linked(t, m, young, 3)
+	m.MarkExited(young.Key, now.Add(-time.Hour))
+	m.MarkClosed(young.Key, now.Add(-time.Hour))
+
+	open := agent("p4", "t", "open", domain.StatusWorking)
+	linked(t, m, open, 4)
+	m.MarkExited(open.Key, t0)
+	m.MarkReopened(open.Key, t0) // exited but reopened by hand
+
+	got := m.Stale(now, 30*24*time.Hour)
+	if len(got) != 2 || got[0] != older.Key || got[1] != oldClosed.Key {
+		t.Fatalf("Stale = %v, want [%v %v]", got, older.Key, oldClosed.Key)
+	}
+	if got := m.Stale(now, 0); len(got) != 3 {
+		t.Fatalf("Stale with zero age = %v, want three closed exited entries", got)
+	}
+	l, e, mu := m.Counts()
+	if l != 1 || e != 4 || mu != 1 {
+		t.Fatalf("Counts = %d %d %d", l, e, mu)
 	}
 }
 

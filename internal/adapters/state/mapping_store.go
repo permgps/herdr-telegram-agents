@@ -51,6 +51,21 @@ func NewMappingStore(dir string, log *slog.Logger) *MappingStore {
 // Path returns the file the store reads and writes.
 func (s *MappingStore) Path() string { return s.path }
 
+// BrokenFiles lists the mapping.json.broken-* backups Load left behind
+// (base names only), so the doctor can point at them.
+func (s *MappingStore) BrokenFiles() ([]string, error) {
+	matches, err := filepath.Glob(s.path + ".broken-*")
+	if err != nil {
+		return nil, fmt.Errorf("list broken mapping files: %w", err)
+	}
+	names := make([]string, 0, len(matches))
+	for _, m := range matches {
+		names = append(names, filepath.Base(m))
+	}
+	s.log.Debug("broken mapping files", slog.Int("count", len(names)))
+	return names, nil
+}
+
 // Load reads the mapping. A missing file yields an empty mapping. A file
 // that cannot be decoded is moved aside as mapping.json.broken-<timestamp>
 // and an empty mapping is returned, so one corrupt write never blocks the

@@ -20,7 +20,7 @@ const helpText = `Commands
 /focus: bring the agent's pane to the front in Herdr
 /clear, /compact [instructions], /usage, /model [name]: typed into the agent as Claude Code commands while it is idle; the screen after the command is posted as a reply, /usage and a bare /model are closed with esc for you
 /status: this agent's status; in General, every agent with a link to its topic
-/options: settings panel (General only): sync on/off, status icons
+/options: settings panel (General only): sync, status icons, secret redaction, topic cleanup
 /help: this list
 
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.

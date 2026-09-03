@@ -36,7 +36,13 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	if opts == nil {
+		opts = NewOptions(domain.DefaultOptions(), nil, nil, log)
+	}
 	topics := reconciler.topics()
+	// Every post of the bridge passes the redactor; the reconciler keeps
+	// the raw gateway because topic names are agent labels.
+	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
 	out := newOutbound(herdr, tg, topics, registry.Agent, capture, opts, clock, log)
 	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, cfg.ChatID, cfg.BotUsername, clock, log)
 	return &Bridge{

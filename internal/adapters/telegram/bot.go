@@ -121,7 +121,7 @@ var botCommands = []models.BotCommand{
 	{Command: "usage", Description: "Claude Code /usage: show the usage panel, closed for you afterwards"},
 	{Command: "model", Description: "Claude Code /model [name]: show the picker or set the model"},
 	{Command: "status", Description: "Agent status here, all agents in General"},
-	{Command: "options", Description: "Settings panel (General): sync on/off, status icons"},
+	{Command: "options", Description: "Settings panel (General): sync, icons, redaction, topic cleanup"},
 	{Command: "help", Description: "List the commands"},
 }
 

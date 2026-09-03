@@ -10,6 +10,7 @@ import (
 
 	"github.com/permgps/herdr-telegram-agents/internal/compose"
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
+	"github.com/permgps/herdr-telegram-agents/internal/testkit"
 )
 
 type fakeOpener struct {
@@ -40,6 +41,7 @@ func TestActionDispatch(t *testing.T) {
 	}{
 		{id: "setup", wantCode: exitOK, wantOut: "opened the setup pane", wantPane: []string{"permgps.telegram-agents/setup"}},
 		{id: "logs", wantCode: exitOK, wantOut: "opened the logs pane", wantPane: []string{"permgps.telegram-agents/logs"}},
+		{id: "doctor", wantCode: exitOK, wantOut: "opened the doctor pane", wantPane: []string{"permgps.telegram-agents/doctor"}},
 		{id: "start", sup: fakeSupervisor{startPID: 77}, wantCode: exitOK, wantOut: "daemon started (pid 77)", wantSup: []string{"start"}},
 		{id: "start", sup: fakeSupervisor{startPID: 77, already: true}, wantCode: exitOK, wantOut: "already running (pid 77)", wantSup: []string{"start"}},
 		{id: "stop", wantCode: exitOK, wantOut: "daemon stopped", wantSup: []string{"stop"}},
@@ -89,8 +91,54 @@ func TestActionUsage(t *testing.T) {
 	testEnv(t)
 	for _, args := range [][]string{{"action"}, {"action", "bogus"}, {"action", "start", "extra"}} {
 		code, _, stderr := runCLI(t, args...)
-		if code != exitUsage || !strings.Contains(stderr, "usage: herdr-tg action setup|start|stop|restart|status|resync|logs") {
+		if code != exitUsage || !strings.Contains(stderr, "usage: herdr-tg action setup|start|stop|restart|status|resync|logs|doctor|send-test") {
 			t.Fatalf("Run(%v) = %d, stderr %q", args, code, stderr)
 		}
 	}
+}
+
+func TestActionSendTest(t *testing.T) {
+	t.Run("delivered", func(t *testing.T) {
+		env, rec := testEnv(t)
+		saveConfig(t, env)
+		insp := testkit.NewFakeInspector()
+		wire.buildInspector = func(domain.Config, *slog.Logger) (domain.TelegramInspector, error) { return insp, nil }
+		useFakes(t, &fakeSupervisor{}, &fakeOpener{})
+		code, stdout, _ := runCLI(t, "action", "send-test")
+		if code != exitOK || !strings.Contains(stdout, "send-test: delivered to General (message 500)") {
+			t.Fatalf("exit = %d, stdout = %q", code, stdout)
+		}
+		if calls := insp.Calls(); len(calls) != 1 || !strings.HasPrefix(calls[0], "send-test:🔔 Telegram Agents test: test message from the send-test action") {
+			t.Fatalf("inspector calls = %v", calls)
+		}
+		if got := rec.Bodies(); len(got) != 1 || !strings.Contains(got[0], "delivered to General") {
+			t.Fatalf("notifications = %q", got)
+		}
+	})
+	t.Run("not configured", func(t *testing.T) {
+		_, rec := testEnv(t)
+		useFakes(t, &fakeSupervisor{}, &fakeOpener{})
+		code, stdout, _ := runCLI(t, "action", "send-test")
+		if code != exitOK || !strings.Contains(stdout, "send-test failed: not configured, run the setup action") {
+			t.Fatalf("exit = %d, stdout = %q", code, stdout)
+		}
+		if got := rec.Bodies(); len(got) != 1 || !strings.Contains(got[0], "not configured") {
+			t.Fatalf("notifications = %q", got)
+		}
+	})
+	t.Run("telegram refuses", func(t *testing.T) {
+		env, rec := testEnv(t)
+		saveConfig(t, env)
+		insp := testkit.NewFakeInspector()
+		insp.SetSend(0, domain.ErrBotUnauthorized)
+		wire.buildInspector = func(domain.Config, *slog.Logger) (domain.TelegramInspector, error) { return insp, nil }
+		useFakes(t, &fakeSupervisor{}, &fakeOpener{})
+		code, stdout, _ := runCLI(t, "action", "send-test")
+		if code != exitOK || !strings.Contains(stdout, "send-test failed: token rejected, run the setup action") {
+			t.Fatalf("exit = %d, stdout = %q", code, stdout)
+		}
+		if got := rec.Bodies(); len(got) != 1 || !strings.Contains(got[0], "token rejected") {
+			t.Fatalf("notifications = %q", got)
+		}
+	})
 }

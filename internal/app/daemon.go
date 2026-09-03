@@ -49,6 +49,9 @@ type Daemon struct {
 	Version string
 
 	resync chan struct{}
+	sweep  chan struct{}
+	// rights is the bot's last known standing, read by the sweep.
+	rights domain.Rights
 
 	// started is when Run began; Stats reports the uptime from it.
 	started time.Time
@@ -69,6 +72,8 @@ type Stats struct {
 	HerdrFailingSince time.Time
 	// SyncOff is set while the operator's sync switch is off.
 	SyncOff bool
+	// DeleteAfterDays is the stale-topic age in force; 0 means off.
+	DeleteAfterDays int
 }
 
 // Stats snapshots the running daemon. It is safe to call from another
@@ -76,12 +81,13 @@ type Stats struct {
 func (d *Daemon) Stats() Stats {
 	h := d.registry.Health()
 	s := Stats{
-		Version: d.Version,
-		Since:   d.started,
-		Agents:  len(d.registry.Live()),
-		Dropped: d.bridge.Dropped(),
-		HerdrOK: h.LastErr == nil,
-		SyncOff: !d.opts.SyncEnabled(),
+		Version:         d.Version,
+		Since:           d.started,
+		Agents:          len(d.registry.Live()),
+		Dropped:         d.bridge.Dropped(),
+		HerdrOK:         h.LastErr == nil,
+		SyncOff:         !d.opts.SyncEnabled(),
+		DeleteAfterDays: days(d.opts.DeleteAfter()),
 	}
 	if h.LastErr != nil {
 		s.HerdrFailingSince = h.LastOK
@@ -94,7 +100,7 @@ func (d *Daemon) Stats() Stats {
 }
 
 // StatsLine renders Stats as the one-line status reply:
-// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off.
+// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off cleanup=<n>d|off.
 func StatsLine(s Stats, now time.Time) string {
 	version := s.Version
 	if version == "" {
@@ -112,8 +118,12 @@ func StatsLine(s Stats, now time.Time) string {
 	if s.SyncOff {
 		sync = "off"
 	}
-	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s",
-		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync)
+	cleanup := "off"
+	if s.DeleteAfterDays > 0 {
+		cleanup = fmt.Sprintf("%dd", s.DeleteAfterDays)
+	}
+	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s",
+		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync, cleanup)
 }
 
 // reportDrops warns about bridge jobs lost since the last report, at most
@@ -145,11 +155,15 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	if opts == nil {
 		opts = NewOptions(domain.DefaultOptions(), nil, nil, log)
 	}
+	// General notices go through the redactor too; rights, icons and
+	// events pass through the wrapper untouched.
+	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
 	d := &Daemon{
 		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge, capture: capture,
 		configs: configs, opts: opts, clock: clock, log: log,
 		SocketGrace: socketGrace, HealthInterval: healthInterval,
 		resync: make(chan struct{}, 1),
+		sweep:  make(chan struct{}, 1),
 	}
 	// Option hooks run on the bridge goroutine (the panel calls Set) and
 	// only signal: a resync request for the loop, an icon table for the
@@ -171,7 +185,29 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 			d.Resync()
 		}
 	})
+	opts.OnChange(domain.OptionDeleteAfterDays, func(_ string, cur domain.Options) {
+		if cur.DeleteAfter() <= 0 {
+			d.log.Info("stale topic cleanup switched off")
+			return
+		}
+		d.log.Info("sweep requested", slog.Int("max_age_days", days(cur.DeleteAfter())))
+		d.SweepNow()
+	})
 	return d
+}
+
+// SweepNow asks the loop for a stale-topic sweep. It never blocks.
+func (d *Daemon) SweepNow() {
+	select {
+	case d.sweep <- struct{}{}:
+	default:
+	}
+}
+
+// runSweep deletes stale topics with the option and rights in force.
+func (d *Daemon) runSweep(ctx context.Context) error {
+	_, err := d.reconciler.Sweep(ctx, d.opts.DeleteAfter(), d.rights)
+	return d.handleErr(ctx, err)
 }
 
 // Resync asks the loop for a full reconcile. It never blocks.
@@ -236,13 +272,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.capture.Observe(ev)
 		d.bridge.Submit(ev)
 	}
+	if !d.opts.RedactEnabled() {
+		d.log.Debug("redaction off", slog.String("option", domain.OptionRedact))
+	}
 	started := fmt.Sprintf("▶️ %s started: %s", d.title(), plural(len(d.registry.Live()), "agent"))
 	if !d.opts.SyncEnabled() {
 		started += " (sync off, see /options)"
 	}
 	d.general(ctx, started)
+	if err := d.runSweep(ctx); err != nil {
+		return err
+	}
 
 	health := d.clock.After(d.HealthInterval)
+	sweep := d.clock.After(sweepInterval)
 	for {
 		select {
 		case <-ctx.Done():
@@ -282,6 +325,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if err := d.replay(ctx, true); err != nil {
 				return err
 			}
+		case <-d.sweep:
+			if err := d.runSweep(ctx); err != nil {
+				return err
+			}
+		case <-sweep:
+			sweep = d.clock.After(sweepInterval)
+			d.log.Debug("daily sweep due")
+			if err := d.runSweep(ctx); err != nil {
+				return err
+			}
 		case <-health:
 			health = d.clock.After(d.HealthInterval)
 			d.reportDrops(d.clock.Now())
@@ -306,6 +359,7 @@ func (d *Daemon) checkRights(ctx context.Context) error {
 		d.log.Warn("rights check failed, assuming ok", slog.String("err", err.Error()))
 		return nil
 	}
+	d.rights = rights
 	d.log.Info("telegram rights", slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin),
 		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages))
 	switch {
@@ -323,6 +377,7 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 	switch ev := raw.(type) {
 	case domain.RightsChanged:
 		d.log.Info("telegram rights changed", slog.Bool("manage_topics", ev.CanManageTopics))
+		d.rights.CanManageTopics = ev.CanManageTopics
 		if !ev.CanManageTopics {
 			d.reconciler.SetReadOnly(true)
 			d.notify(ctx, fmt.Sprintf("the bot lost the \"Manage topics\" right in %q; topics are not updated until it is granted again", d.cfg.ChatTitle))

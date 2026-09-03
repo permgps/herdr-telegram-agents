@@ -264,14 +264,15 @@ func TestReconcileHealsDrift(t *testing.T) {
 	if e, _ := m.TopicFor(drifted.Key); e.ThreadID != driftedTopic.ThreadID || e.Name != "after" {
 		t.Fatalf("drifted entry = %+v", e)
 	}
-	if _, ok := m.TopicFor(stale.Key); ok {
-		t.Fatal("stale entry not pruned")
+	// Age alone no longer prunes: the stale entry waits for the sweep.
+	if _, ok := m.TopicFor(stale.Key); !ok {
+		t.Fatal("stale entry pruned by age")
 	}
 	if _, ok := m.TopicFor(dupOld.Key); ok {
 		t.Fatal("older duplicate kept")
 	}
-	if len(m.Topics) != 4 {
-		t.Fatalf("entries = %d, want 4 (%v)", len(m.Topics), m.Keys())
+	if len(m.Topics) != 5 {
+		t.Fatalf("entries = %d, want 5 (%v)", len(m.Topics), m.Keys())
 	}
 	// Second pass is a no-op.
 	f.tg.Reset()

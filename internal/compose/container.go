@@ -35,6 +35,8 @@ type (
 	Stats = app.Stats
 	// ControlHandlers are the daemon actions the control channel exposes.
 	ControlHandlers = system.ControlHandlers
+	// Doctor runs the diagnostic checks of the doctor pane.
+	Doctor = app.Doctor
 )
 
 // ErrSetupCancelled is returned by Setup.Run when the user declines to save.
@@ -48,6 +50,50 @@ func Summary(st DaemonStatus, now time.Time) string { return app.Summary(st, now
 
 // StatsLine renders a running daemon's Stats as one line.
 func StatsLine(s Stats, now time.Time) string { return app.StatsLine(s, now) }
+
+// RenderChecks renders a doctor report for the pane.
+func RenderChecks(version string, checks []domain.Check) string {
+	return app.RenderChecks(version, checks)
+}
+
+// SendTest posts the send-test message through the inspector and returns
+// the sentence the action reports.
+func SendTest(ctx context.Context, insp domain.TelegramInspector, version string, log *slog.Logger) (string, error) {
+	return app.SendTest(ctx, insp, version, time.Now(), log)
+}
+
+// BuildInspector builds the light Telegram client of the doctor and
+// send-test actions from a loaded config.
+func BuildInspector(cfg domain.Config, log *slog.Logger) (domain.TelegramInspector, error) {
+	return telegram.NewInspector(cfg.BotToken, cfg.ChatID, log)
+}
+
+// BuildDoctor wires the doctor checks against the real stores, the pid
+// file, the control channel, the Telegram inspector and the Herdr socket.
+func BuildDoctor(env PluginEnv, version string, log *slog.Logger) *Doctor {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	proc := system.NewProcess(env.StateDir, log)
+	mappings := state.NewMappingStore(env.StateDir, log)
+	return &app.Doctor{
+		Version:       version,
+		Config:        state.NewConfigStore(env.ConfigDir, log),
+		Options:       state.NewOptionsStore(env.ConfigDir, log),
+		Mapping:       mappings,
+		Broken:        mappings.BrokenFiles,
+		Pid:           state.NewPidFile(env.StateDir, proc.Alive, log),
+		Alive:         proc.Alive,
+		ControlStatus: proc.Status,
+		Inspector: func(cfg domain.Config) (domain.TelegramInspector, error) {
+			return BuildInspector(cfg, log)
+		},
+		Herdr:            herdr.NewGateway(env.SocketPath, log, herdr.DefaultBackoff),
+		ExpectedProtocol: herdr.ProtocolVersion,
+		Clock:            realClock{},
+		Log:              log,
+	}
+}
 
 // StartControl opens the daemon's control channel and serves it until ctx
 // is done. Listening and serving are one call so no net.Listener crosses

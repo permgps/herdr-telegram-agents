@@ -16,9 +16,9 @@ const (
 	snapshotCoalesce = 500 * time.Millisecond
 	// editDebounce is the trailing-edge delay before a topic edit.
 	editDebounce = 3 * time.Second
-	// mappingPruneAge is the age after which exited entries are dropped.
-	mappingPruneAge = 7 * 24 * time.Hour
-	// mappingMaxEntries caps the mapping file; oldest exited entries go first.
+	// mappingMaxEntries caps the mapping file; oldest exited entries go
+	// first. Age alone never drops an entry: the stale-topic sweep deletes
+	// the topic and forgets the entry instead.
 	mappingMaxEntries = 500
 	// screenSettle is how long the bridge waits after an agent turns blocked
 	// or done before reading its screen, so the dialog has fully rendered.
@@ -61,6 +61,14 @@ const (
 	// commandTailLines is the tail posted after a forwarded command that
 	// prints a short confirmation (/clear, /model <name>).
 	commandTailLines = 12
+	// sweepInterval is how often the daemon looks for stale topics to
+	// delete, on top of the pass at start and the one an option change
+	// requests.
+	sweepInterval = 24 * time.Hour
+	// sweepBatch caps the deletions of one sweep pass so a long backlog
+	// does not monopolise the Telegram queue; the rest wait for the next
+	// pass.
+	sweepBatch = 50
 	// choiceLabelRunes is the longest option label shown on an inline
 	// button; longer labels are cut with an ellipsis so a phone still shows
 	// the number and the start of the text.

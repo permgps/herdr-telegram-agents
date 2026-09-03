@@ -221,6 +221,17 @@ func (g *Gateway) CloseTopic(ctx context.Context, threadID int) error {
 	return g.finish("closeForumTopic", err, slog.Int("thread_id", threadID))
 }
 
+// DeleteTopic deletes the topic with every message in it; Telegram needs
+// the can_delete_messages right for it. A topic that is already gone
+// translates to domain.ErrTopicGone.
+func (g *Gateway) DeleteTopic(ctx context.Context, threadID int) error {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.DeleteForumTopic(ctx, &bot.DeleteForumTopicParams{ChatID: g.chatID, MessageThreadID: threadID})
+		return translate(err)
+	})
+	return g.finish("deleteForumTopic", err, slog.Int("thread_id", threadID))
+}
+
 // ReopenTopic reopens a closed topic.
 func (g *Gateway) ReopenTopic(ctx context.Context, threadID int) error {
 	err := g.queue.Do(ctx, func(ctx context.Context) error {

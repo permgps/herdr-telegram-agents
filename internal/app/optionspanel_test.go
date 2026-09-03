@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -51,7 +52,7 @@ func TestPanelOpenShowsGroupsAndRetiresPrevious(t *testing.T) {
 	if len(sent) != 1 || sent[0].ThreadID != 0 || !sent[0].HTML || sent[0].ReplyTo != 50 {
 		t.Fatalf("Sent = %+v", sent)
 	}
-	if got := texts(sent[0].Buttons); strings.Join(got, "|") != "Sync|Appearance|✖ Close" {
+	if got := texts(sent[0].Buttons); strings.Join(got, "|") != "Sync|Appearance|Privacy|Topics|✖ Close" {
 		t.Errorf("home buttons = %v", got)
 	}
 	if !strings.Contains(sent[0].Text, "<b>Sync</b>: What the mirror writes to Telegram.") {
@@ -215,5 +216,64 @@ func TestPanelStringsAreEnglish(t *testing.T) {
 				t.Errorf("panel string %q contains Cyrillic", s)
 			}
 		}
+	}
+}
+
+func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
+	f := newBridgeFixture(t)
+	pressPanel(f, t, 900, dataGroup(2))
+	if got := texts(f.tg.Buttons(900)); got[0] != "☑ Redact secrets" || len(got) != 4 {
+		t.Fatalf("privacy buttons = %v", got)
+	}
+	pressPanel(f, t, 900, dataToggle(domain.OptionRedact))
+	if got := texts(f.tg.Buttons(900)); got[0] != "☐ Redact secrets" || f.options.Saved() != 1 || f.opts.RedactEnabled() {
+		t.Fatalf("after toggle: buttons=%v saves=%d", got, f.options.Saved())
+	}
+
+	pressPanel(f, t, 900, dataGroup(3))
+	if got := texts(f.tg.Buttons(900)); got[0] != "30 days Delete closed topics after" || len(got) != 4 {
+		t.Fatalf("topics buttons = %v", got)
+	}
+	if text := f.tg.Text(900); !strings.Contains(text, "Current: 30 days") {
+		t.Fatalf("topics text = %s", text)
+	}
+	pressPanel(f, t, 900, dataGrid(domain.OptionDeleteAfterDays, 0))
+	buttons := f.tg.Buttons(900)
+	if got := texts(buttons); strings.Join(got, "|") != "Off|7d|14d|[30d]|60d|90d|‹ Back" {
+		t.Fatalf("days row = %v", got)
+	}
+	if buttons[0].Row != 1 || buttons[5].Row != 1 || buttons[6].Data != dataGroup(3) {
+		t.Fatalf("days rows = %+v", buttons)
+	}
+	if text := f.tg.Text(900); !strings.Contains(text, "<b>Delete closed topics after</b>") || strings.Contains(text, panelOnlyPackIcons) || !strings.Contains(text, "Current: 30 days") {
+		t.Fatalf("days text = %s", text)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionDeleteAfterDays, 0))
+	if v := f.opts.Get().String(domain.OptionDeleteAfterDays); v != "0" || f.opts.DeleteAfter() != 0 {
+		t.Fatalf("after Off: value %q", v)
+	}
+	if got := texts(f.tg.Buttons(900)); got[0] != "Off Delete closed topics after" {
+		t.Fatalf("group after Off = %v", got)
+	}
+	pressPanel(f, t, 900, dataGrid(domain.OptionDeleteAfterDays, 0))
+	if got := texts(f.tg.Buttons(900)); got[0] != "[Off]" {
+		t.Fatalf("days row after Off = %v", got)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionDeleteAfterDays, 1))
+	if f.opts.DeleteAfter() != 7*24*time.Hour {
+		t.Fatalf("after 7d: %v", f.opts.DeleteAfter())
+	}
+
+	// A hand-edited value outside the list shows without a bracket.
+	if err := f.opts.Set(f.ctx, domain.OptionDeleteAfterDays, "45", 1); err != nil {
+		t.Fatal(err)
+	}
+	pressPanel(f, t, 900, dataGrid(domain.OptionDeleteAfterDays, 0))
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Off|7d|14d|30d|60d|90d|‹ Back" || !strings.Contains(f.tg.Text(900), "Current: 45 days") {
+		t.Fatalf("days row with 45 = %v / %s", got, f.tg.Text(900))
+	}
+	pressPanel(f, t, 900, dataClose())
+	if text := f.tg.Text(900); !strings.Contains(text, "Delete closed topics after: 45 days") || !strings.Contains(text, "Redact secrets: off") {
+		t.Fatalf("summary = %s", text)
 	}
 }

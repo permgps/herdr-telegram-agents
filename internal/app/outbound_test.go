@@ -31,6 +31,9 @@ type bridgeFixture struct {
 	ctx     context.Context
 }
 
+// testBotToken is the exact secret the fixture's redactor knows.
+const testBotToken = "1234567890:" + "AAHf3kJd9sLq2mN8pR4tV6wX0yZ1bC3dE5f" // built from parts so secret scanners ignore it
+
 func newBridgeFixture(t *testing.T) *bridgeFixture {
 	t.Helper()
 	f := &bridgeFixture{
@@ -56,8 +59,10 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	f.capture = NewCapture(f.herdr, live, f.clock, nil)
 	f.options = testkit.NewMemOptionsStore()
 	f.opts = NewOptions(domain.DefaultOptions(), f.options, func(name string) []string { return f.tg.IconPack() }, nil)
-	f.out = newOutbound(f.herdr, f.tg, f.view, lookup, f.capture, f.opts, f.clock, nil)
-	f.in = newInbound(f.herdr, f.tg, f.view, lookup, live, f.out, f.opts, -1001234567890, "agents_bot", f.clock, nil)
+	// Same wrapping as NewBridge: the fake records what really leaves.
+	tg := newRedactingGateway(f.tg, domain.NewRedactor(testBotToken), f.opts.RedactEnabled, nil)
+	f.out = newOutbound(f.herdr, tg, f.view, lookup, f.capture, f.opts, f.clock, nil)
+	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, -1001234567890, "agents_bot", f.clock, nil)
 	return f
 }
 

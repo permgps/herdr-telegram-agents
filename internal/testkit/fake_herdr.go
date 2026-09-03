@@ -59,11 +59,15 @@ type FakeHerdr struct {
 	renames    []RenameCall
 	tabRenames []TabRenameCall
 	failNext   map[string]error
+	info       domain.HerdrInfo
 	events     chan domain.Event
 	log        *slog.Logger
 }
 
-var _ domain.HerdrGateway = (*FakeHerdr)(nil)
+var (
+	_ domain.HerdrGateway = (*FakeHerdr)(nil)
+	_ domain.HerdrProber  = (*FakeHerdr)(nil)
+)
 
 // NewFakeHerdr returns an empty fake with a buffered event channel.
 func NewFakeHerdr(log *slog.Logger) *FakeHerdr {
@@ -148,6 +152,27 @@ func (f *FakeHerdr) fail(method string) error {
 	delete(f.failNext, method)
 	f.log.Debug("fake herdr failing call", slog.String("method", method), slog.Any("err", err))
 	return err
+}
+
+// SetPing scripts the Ping answer (default: version "fake", protocol 17).
+func (f *FakeHerdr) SetPing(info domain.HerdrInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.info = info
+}
+
+// Ping answers the scripted HerdrInfo, or the error armed with
+// FailNext("ping", err).
+func (f *FakeHerdr) Ping(context.Context) (domain.HerdrInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("ping"); err != nil {
+		return domain.HerdrInfo{}, err
+	}
+	if f.info == (domain.HerdrInfo{}) {
+		return domain.HerdrInfo{Version: "fake", Protocol: 17}, nil
+	}
+	return f.info, nil
 }
 
 // SetAgents replaces the snapshot ListAgents returns.

@@ -24,9 +24,10 @@ var documentedCommands = []struct{ name, help string }{
 	{"version", "print the binary version and platform"},
 	{"startup", "[[startup]] hook: ensure the daemon is running"},
 	{"daemon", "run the long-lived sync daemon in the foreground"},
-	{"action <id>", "[[actions]] entrypoint: setup|start|stop|restart|status|resync|logs"},
+	{"action <id>", "[[actions]] entrypoint: setup|start|stop|restart|status|resync|logs|doctor|send-test"},
 	{"setup-pane", "[[panes]] popup: interactive setup wizard"},
 	{"logs-pane", "[[panes]] overlay: tail of daemon.log"},
+	{"doctor-pane", "[[panes]] overlay: one line per diagnostic check"},
 	{"event", "[[events]] hook (fallback notifications)"},
 }
 
@@ -81,14 +82,15 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 // initialization cycle.
 func commands() map[string]command {
 	return map[string]command{
-		"version":    runVersion,
-		"startup":    runStartup,
-		"daemon":     runDaemon,
-		"action":     runAction,
-		"setup-pane": runSetupPane,
-		"logs-pane":  runLogsPane,
-		"event":      notImplemented("event"),
-		"dev":        runDev,
+		"version":     runVersion,
+		"startup":     runStartup,
+		"daemon":      runDaemon,
+		"action":      runAction,
+		"setup-pane":  runSetupPane,
+		"logs-pane":   runLogsPane,
+		"doctor-pane": runDoctorPane,
+		"event":       notImplemented("event"),
+		"dev":         runDev,
 	}
 }
 

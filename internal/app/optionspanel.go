@@ -242,7 +242,9 @@ func (p *panel) Press(ctx context.Context, ev domain.ButtonPressed) error {
 			return p.answer(ctx, ev.CallbackID, panelToastUnknown)
 		}
 		p.answer0(ctx, ev.CallbackID)
-		return p.show(ctx, ev.MessageID, renderGrid(spec, a.page, p.opts.Get(), p.opts.Choices(spec.Choices)))
+		choices := p.opts.Choices(spec.Choices)
+		p.log.Debug("grid layout", slog.String("source", spec.Choices), slog.Int("entries", len(choices)), slog.Int("page", a.page))
+		return p.show(ctx, ev.MessageID, renderGrid(spec, a.page, p.opts.Get(), choices))
 	case 'v':
 		spec, ok := domain.LookupOption(a.key)
 		if !ok || spec.Kind != domain.KindChoice {
@@ -374,7 +376,7 @@ func renderGroup(gi int, opts domain.Options) view {
 			}
 			buttons = append(buttons, domain.Button{Text: box + " " + spec.Title, Data: dataToggle(spec.Key)})
 		case domain.KindChoice:
-			buttons = append(buttons, domain.Button{Text: value + " " + spec.Title, Data: dataGrid(spec.Key, 0)})
+			buttons = append(buttons, domain.Button{Text: domain.ChoiceLabel(spec, value) + " " + spec.Title, Data: dataGrid(spec.Key, 0)})
 		default:
 			buttons = append(buttons, domain.Button{Text: spec.Title + ": " + value, Data: dataText(spec.Key)})
 		}
@@ -386,9 +388,31 @@ func renderGroup(gi int, opts domain.Options) view {
 	return view{b.String(), buttons}
 }
 
-// renderGrid draws one page of the choice list for spec, the current value
-// bracketed, with a navigation row and Back.
+// renderGrid draws the choice list for spec with the current value
+// bracketed and a Back button: the paged emoji grid for the icon pack, one
+// row of short labels for every other source.
 func renderGrid(spec domain.OptionSpec, page int, opts domain.Options, pack []string) view {
+	if spec.Choices == domain.ChoiceSourceIcons {
+		return renderIconGrid(spec, page, opts, pack)
+	}
+	current := strings.TrimSpace(opts.String(spec.Key))
+	var b strings.Builder
+	fmt.Fprintf(&b, "<b>%s</b>\n%s\n%s: %s", html.EscapeString(spec.Title), html.EscapeString(spec.Description),
+		panelCurrent, html.EscapeString(domain.ChoiceLabel(spec, current)))
+	buttons := make([]domain.Button, 0, len(pack)+1)
+	for i, value := range pack {
+		label := domain.ChoiceButton(spec, value)
+		if strings.TrimSpace(value) == current {
+			label = "[" + label + "]"
+		}
+		buttons = append(buttons, domain.Button{Text: label, Data: dataPick(spec.Key, i), Row: 1 + i/iconGridCols})
+	}
+	return view{b.String(), append(buttons, domain.Button{Text: panelBack, Data: dataGroup(groupIndex(spec.Group))})}
+}
+
+// renderIconGrid draws one page of the topic-icon pack, the current value
+// bracketed, with a navigation row and Back.
+func renderIconGrid(spec domain.OptionSpec, page int, opts domain.Options, pack []string) view {
 	current := opts.String(spec.Key)
 	var b strings.Builder
 	fmt.Fprintf(&b, "<b>%s %s</b>\n%s\n%s\n%s: %s", panelIconFor, html.EscapeString(spec.Title),
@@ -445,6 +469,9 @@ func renderSummary(opts domain.Options) string {
 }
 
 func displayValue(spec domain.OptionSpec, value string) string {
+	if spec.Kind == domain.KindChoice {
+		return domain.ChoiceLabel(spec, value)
+	}
 	if spec.Kind != domain.KindBool {
 		return value
 	}

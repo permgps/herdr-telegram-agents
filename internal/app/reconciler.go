@@ -32,7 +32,10 @@ type Reconciler struct {
 	paused     func() bool
 	// pausedLogged keeps the "sync off" skip at one log line per pause.
 	pausedLogged bool
-	force        bool // set by Resync for the duration of one pass
+	// sweepRightsWarned keeps the "cannot delete messages" warning of the
+	// sweep at one line per daemon run.
+	sweepRightsWarned bool
+	force             bool // set by Resync for the duration of one pass
 	// view is the read-only copy of the mapping the bridge goroutine
 	// consults; it is republished after every save.
 	view *topicView
@@ -217,7 +220,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 			return err
 		}
 	}
-	if n := r.mapping.Prune(r.clock.Now(), mappingPruneAge, mappingMaxEntries); n > 0 {
+	if n := r.mapping.Prune(mappingMaxEntries); n > 0 {
 		r.log.Info("mapping pruned", slog.Int("removed", n))
 		r.save(ctx)
 	}

@@ -220,19 +220,13 @@ func (m *Mapping) Unclosed() []Key {
 	return out
 }
 
-// Prune removes exited entries older than maxAge and, when the mapping still
-// holds more than maxEntries, the oldest exited entries until it fits. Live
-// entries are never removed. It returns the number of removed entries.
-func (m *Mapping) Prune(now time.Time, maxAge time.Duration, maxEntries int) int {
-	removed := 0
-	for key, e := range m.Topics {
-		if !e.Status.Live() && now.Sub(e.UpdatedAt) > maxAge {
-			delete(m.Topics, key)
-			removed++
-		}
-	}
+// Prune keeps the mapping under maxEntries by dropping the oldest exited
+// entries; live entries are never removed and nothing is removed by age
+// (the stale-topic sweep deletes a topic and forgets its entry instead).
+// It returns the number of removed entries.
+func (m *Mapping) Prune(maxEntries int) int {
 	if maxEntries <= 0 || len(m.Topics) <= maxEntries {
-		return removed
+		return 0
 	}
 	type aged struct {
 		key string
@@ -250,6 +244,7 @@ func (m *Mapping) Prune(now time.Time, maxAge time.Duration, maxEntries int) int
 		}
 		return exited[i].at.Before(exited[j].at)
 	})
+	removed := 0
 	for _, a := range exited {
 		if len(m.Topics) <= maxEntries {
 			break
@@ -258,6 +253,44 @@ func (m *Mapping) Prune(now time.Time, maxAge time.Duration, maxEntries int) int
 		removed++
 	}
 	return removed
+}
+
+// Stale lists the candidates of the stale-topic sweep: exited entries whose
+// topic is closed and has not changed for longer than maxAge, oldest
+// first (ties by key). Muted entries count: an operator closed that topic
+// and its agent is gone. Live agents and open topics are never listed.
+func (m *Mapping) Stale(now time.Time, maxAge time.Duration) []Key {
+	var out []Key
+	for _, k := range m.Keys() {
+		e := m.Topics[k.String()]
+		if e.Status.Live() || !e.Closed || now.Sub(e.UpdatedAt) <= maxAge {
+			continue
+		}
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := m.Topics[out[i].String()], m.Topics[out[j].String()]
+		if a.UpdatedAt.Equal(b.UpdatedAt) {
+			return out[i].String() < out[j].String()
+		}
+		return a.UpdatedAt.Before(b.UpdatedAt)
+	})
+	return out
+}
+
+// Counts returns how many entries are live, exited and muted.
+func (m *Mapping) Counts() (live, exited, muted int) {
+	for _, e := range m.Topics {
+		if e.Status.Live() {
+			live++
+		} else {
+			exited++
+		}
+		if e.Muted {
+			muted++
+		}
+	}
+	return live, exited, muted
 }
 
 // DedupeThreads keeps one entry per thread id: the newest by UpdatedAt, with

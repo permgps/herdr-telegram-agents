@@ -13,6 +13,10 @@ import (
 // protocolVersion is the socket protocol this adapter was written against.
 const protocolVersion = 17
 
+// ProtocolVersion is protocolVersion for the doctor, which reports a
+// mismatch as a warning.
+const ProtocolVersion = protocolVersion
+
 type request struct {
 	ID     string `json:"id"`
 	Method string `json:"method"`

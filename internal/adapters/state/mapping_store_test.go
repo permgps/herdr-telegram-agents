@@ -69,4 +69,16 @@ func TestMappingStoreMovesMalformedAside(t *testing.T) {
 	if _, err := os.Stat(s.Path()); !os.IsNotExist(err) {
 		t.Fatalf("malformed file still present: %v", err)
 	}
+	broken, err := s.BrokenFiles()
+	if err != nil || len(broken) != 1 || !strings.HasPrefix(broken[0], "mapping.json.broken-") {
+		t.Fatalf("BrokenFiles = %v, %v", broken, err)
+	}
+}
+
+func TestMappingStoreBrokenFilesEmpty(t *testing.T) {
+	s := state.NewMappingStore(t.TempDir(), nil)
+	broken, err := s.BrokenFiles()
+	if err != nil || len(broken) != 0 {
+		t.Fatalf("BrokenFiles = %v, %v", broken, err)
+	}
 }
