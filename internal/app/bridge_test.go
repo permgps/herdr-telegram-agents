@@ -181,3 +181,34 @@ func TestBridgeOverflowCountsDrops(t *testing.T) {
 		t.Fatal("Run did not stop")
 	}
 }
+
+func TestBridgeServesButtonPress(t *testing.T) {
+	r := newRunningBridge(t)
+	a := r.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	r.herdr.SetScreen("p1", dialogScreen)
+	r.bridge.Submit(AgentEvent{Kind: AgentChanged, Agent: r.setStatus(a, domain.StatusBlocked)})
+	waitUntil(t, "timer armed", func() bool { return r.bridge.out.deb.Pending() == 1 })
+	r.clock.Advance(screenSettle)
+	waitUntil(t, "question posted", func() bool { return len(r.tg.Sent()) == 1 })
+	r.bridge.Submit(press(101, 1000, "3"))
+	waitUntil(t, "press served", func() bool { return len(r.herdr.Keys()) == 1 })
+	waitUntil(t, "answer sent", func() bool { return len(r.tg.Calls()) == 3 })
+	assertCallsEqual(t, r.tg, r.tg.Calls()[0], "buttons:1000:✅ 3 · Синий", "answer:cb1:sent: 3")
+}
+
+func TestBridgeForgetsOnAgentGone(t *testing.T) {
+	r := newRunningBridge(t)
+	a := r.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	r.herdr.SetScreen("p1", dialogScreen)
+	r.bridge.Submit(AgentEvent{Kind: AgentChanged, Agent: r.setStatus(a, domain.StatusBlocked)})
+	waitUntil(t, "timer armed", func() bool { return r.bridge.out.deb.Pending() == 1 })
+	r.clock.Advance(screenSettle)
+	waitUntil(t, "question posted", func() bool { return len(r.tg.Sent()) == 1 })
+	gone := a
+	gone.Status = domain.StatusExited
+	r.bridge.Submit(AgentEvent{Kind: AgentGone, Agent: gone})
+	waitUntil(t, "keyboard retired", func() bool { return len(r.tg.Calls()) == 2 })
+	if calls := r.tg.Calls(); calls[1] != "buttons:1000:" {
+		t.Fatalf("Calls = %q", calls)
+	}
+}

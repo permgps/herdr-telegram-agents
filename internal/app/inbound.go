@@ -23,6 +23,7 @@ const helpText = `Commands
 /help: this list
 
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.
+A question with up to 5 numbered options also arrives with buttons; pressing one sends its number and the button turns into ✅.
 Any other text is typed into the agent as a prompt.`
 
 // inbound turns operator messages into Herdr calls and answers commands.

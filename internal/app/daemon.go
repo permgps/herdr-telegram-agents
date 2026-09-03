@@ -294,7 +294,7 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 			return d.replay(ctx, false)
 		}
 		return nil
-	case domain.TopicMessage, domain.GeneralCommand:
+	case domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand:
 		d.bridge.Submit(raw)
 		return nil
 	case domain.TopicClosed:

@@ -57,13 +57,13 @@ func (b *Bridge) SetSettle(d time.Duration) {
 // Fatal delivers the first fatal Telegram error met by a job.
 func (b *Bridge) Fatal() <-chan error { return b.fatal }
 
-// Submit queues a job without blocking: an AgentEvent, a TopicMessage or a
-// GeneralCommand. When the buffer is full the job is dropped and counted;
+// Submit queues a job without blocking: an AgentEvent, a TopicMessage, a
+// ButtonPressed or a GeneralCommand. When the buffer is full the job is dropped and counted;
 // the daemon reports the count at most once per dropReportInterval and the
 // next event or a resync brings the state back.
 func (b *Bridge) Submit(job any) {
 	switch job.(type) {
-	case AgentEvent, domain.TopicMessage, domain.GeneralCommand:
+	case AgentEvent, domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand:
 	default:
 		b.log.Warn("bridge job of unknown type dropped", slog.String("type", fmt.Sprintf("%T", job)))
 		return
@@ -104,6 +104,12 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 	case AgentEvent:
 		b.log.Debug("bridge job", slog.String("kind", "agent_event"), slog.String("event", string(j.Kind)), slog.String("key", j.Agent.Key.String()))
 		b.out.Observe(j)
+		if j.Kind == AgentGone {
+			b.run(ctx, "forget", func(ctx context.Context) error { return b.out.Forget(ctx, j.Agent.Key) })
+		}
+	case domain.ButtonPressed:
+		b.log.Debug("bridge job", slog.String("kind", "button"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID))
+		b.run(ctx, "button", func(ctx context.Context) error { return b.out.Press(ctx, j) })
 	case domain.TopicMessage:
 		b.log.Debug("bridge job", slog.String("kind", "topic_message"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID))
 		b.run(ctx, "topic_message", func(ctx context.Context) error { return b.in.HandleTopic(ctx, j) })

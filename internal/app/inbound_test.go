@@ -91,7 +91,7 @@ func TestInboundStatusHelpUnknown(t *testing.T) {
 	if sent[0].Text != "❓ blocked · ws · reviewer · pane p1" || sent[0].ReplyTo != 3 || sent[0].Notify {
 		t.Errorf("status reply = %+v", sent[0])
 	}
-	if !strings.HasPrefix(sent[1].Text, "Commands\n/screen") || !strings.Contains(sent[1].Text, "/clear, /compact [instructions], /usage, /model [name]") {
+	if !strings.HasPrefix(sent[1].Text, "Commands\n/screen") || !strings.Contains(sent[1].Text, "/clear, /compact [instructions], /usage, /model [name]") || !strings.Contains(sent[1].Text, "buttons") {
 		t.Errorf("help reply = %q", sent[1].Text)
 	}
 	if sent[2].Text != "unknown command, see /help" {

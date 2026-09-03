@@ -61,4 +61,8 @@ const (
 	// commandTailLines is the tail posted after a forwarded command that
 	// prints a short confirmation (/clear, /model <name>).
 	commandTailLines = 12
+	// choiceLabelRunes is the longest option label shown on an inline
+	// button; longer labels are cut with an ellipsis so a phone still shows
+	// the number and the start of the text.
+	choiceLabelRunes = 60
 )
