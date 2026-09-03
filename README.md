@@ -39,7 +39,7 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **A daemon that looks after itself**: starts with Herdr, exits when Herdr
   is gone, heals topic drift on start and on `resync`.
 
-Version `0.1.0`. macOS and Linux are verified end to end; Windows is built and
+Version `0.1.1`. macOS and Linux are verified end to end; Windows is built and
 unit-tested on every change but has not been run against a real Herdr yet.
 
 ## Requirements
@@ -59,7 +59,9 @@ Herdr clones the repository and runs the plugin's build step, which downloads
 the release binary for your OS and architecture into `bin/`, verifies its
 SHA-256 against the release checksums and makes it executable. Supported
 targets: `darwin/amd64`, `darwin/arm64`, `linux/amd64`, `linux/arm64`,
-`windows/amd64`.
+`windows/amd64`. The plugin is listed on the
+[Herdr marketplace](https://herdr.dev/plugins/); the command above is the one
+the card shows.
 
 Then run the setup below. Herdr shows the **Telegram Agents** actions listed
 further down and runs `bin/herdr-tg startup` after every session restore.

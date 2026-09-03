@@ -13,9 +13,9 @@
 
 id = "permgps.telegram-agents"
 name = "Telegram Agents"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.7.5"
-description = "One Telegram forum topic per live Herdr agent: status in the topic name and icon, messages both ways."
+description = "One Telegram forum topic per live Herdr agent: status in the topic icon, questions and answers both ways."
 platforms = ["linux", "macos", "windows"]
 
 # herdr plugin install runs these after cloning and before registering the
