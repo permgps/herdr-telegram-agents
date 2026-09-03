@@ -58,11 +58,12 @@ jobs:
       - name: go test
         shell: pwsh
         run: |
-          $out = go test ./... 2>&1 | Out-String
+          go test ./... *> test-output.txt
           $code = $LASTEXITCODE
-          Write-Host $out
+          Get-Content test-output.txt | Write-Host
           if ($code -ne 0) {
-            $tail = (($out -split "`n" | Select-Object -Last 60) -join "%0A")
+            $lines = Get-Content test-output.txt | Where-Object { $_ -notmatch '^go: downloading' }
+            $tail = (($lines | Select-Object -Last 80) -join "%0A")
             Write-Host "::error title=windows tests::$tail"
           }
           exit $code
