@@ -506,3 +506,45 @@ func TestInboundForwardTopicGoneStillDismisses(t *testing.T) {
 		t.Fatalf("Keys = %+v", k)
 	}
 }
+
+func TestInboundStatusUsesConfiguredIconsAndSyncHeader(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "alpha", domain.StatusWorking)
+	if err := f.opts.Set(f.ctx, domain.IconKey(domain.StatusWorking), "🔥", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/status")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: 6, FromID: 1, Text: "/status"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 2 || !strings.HasPrefix(sent[0].Text, "🔥 working") || !strings.Contains(sent[1].Text, "\n🔥 <a") {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if strings.Contains(sent[1].Text, "🔇") {
+		t.Fatalf("sync header shown while sync is on: %s", sent[1].Text)
+	}
+
+	_ = f.opts.Set(f.ctx, domain.OptionSyncEnabled, "false", 1)
+	f.tg.Reset()
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: 7, FromID: 1, Text: "/status"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.tg.Sent()[0].Text; !strings.HasPrefix(got, "🔇 Herdr → Telegram sync is off (/options)\n1 agent\n🔥 ") {
+		t.Fatalf("status with sync off =\n%s", got)
+	}
+}
+
+func TestInboundOptionsInTopicPointsToGeneral(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "alpha", domain.StatusIdle)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/options")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:options live in General:reply=5")
+	if !strings.Contains(helpText, "/options") {
+		t.Error("help text lacks /options")
+	}
+}

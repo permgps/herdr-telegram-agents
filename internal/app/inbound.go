@@ -20,6 +20,7 @@ const helpText = `Commands
 /focus: bring the agent's pane to the front in Herdr
 /clear, /compact [instructions], /usage, /model [name]: typed into the agent as Claude Code commands while it is idle; the screen after the command is posted as a reply, /usage and a bare /model are closed with esc for you
 /status: this agent's status; in General, every agent with a link to its topic
+/options: settings panel (General only): sync on/off, status icons
 /help: this list
 
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.
@@ -35,6 +36,8 @@ type inbound struct {
 	agents      agentLookup
 	live        func() []domain.Agent
 	out         *outbound
+	opts        *Options
+	panel       *panel
 	chatID      int64
 	botUsername string
 	log         *slog.Logger
@@ -55,12 +58,16 @@ type followUp struct {
 }
 
 func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	live func() []domain.Agent, out *outbound, chatID int64, botUsername string, clock domain.Clock, log *slog.Logger) *inbound {
+	live func() []domain.Agent, out *outbound, opts *Options, chatID int64, botUsername string, clock domain.Clock, log *slog.Logger) *inbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	if opts == nil {
+		opts = NewOptions(domain.DefaultOptions(), nil, nil, log)
+	}
 	return &inbound{
 		herdr: herdr, tg: tg, topics: topics, agents: agents, live: live, out: out,
+		opts: opts, panel: newPanel(opts, tg, log),
 		chatID: chatID, botUsername: botUsername, log: log,
 		deb:     newDebouncer(clock, commandSettle, log),
 		pending: map[domain.Key]followUp{},
@@ -120,10 +127,12 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		}
 		return nil
 	case domain.CmdStatus:
-		line := fmt.Sprintf("%s %s · %s · pane %s", agent.Status.Emoji(), agent.Status, agent.Label(), key.PaneID)
+		line := fmt.Sprintf("%s %s · %s · pane %s", i.opts.StatusIcons().For(agent.Status), agent.Status, agent.Label(), key.PaneID)
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, line)
 	case domain.CmdHelp:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, helpText)
+	case domain.CmdOptions:
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, panelInGeneral)
 	case domain.CmdForward:
 		return i.forward(ctx, msg, key, agent, cmd)
 	default:
@@ -251,9 +260,17 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 		return i.absorb(i.send(ctx, domain.Outgoing{ThreadID: 0, Text: text, HTML: true, ReplyTo: cmd.MessageID}))
 	case domain.CmdHelp:
 		return i.reply(ctx, 0, cmd.MessageID, helpText)
+	case domain.CmdOptions:
+		return i.panel.Open(ctx, cmd)
 	default:
 		return i.reply(ctx, 0, cmd.MessageID, "unknown command, see /help")
 	}
+}
+
+// PressPanel serves a button of the options panel (callback data with the
+// panel prefix); the bridge routes such presses here.
+func (i *inbound) PressPanel(ctx context.Context, ev domain.ButtonPressed) error {
+	return i.panel.Press(ctx, ev)
 }
 
 // statusSummary lists the live agents sorted by label, each linked to its
@@ -266,8 +283,12 @@ func (i *inbound) statusSummary() string {
 			live = append(live, a)
 		}
 	}
+	header := ""
+	if !i.opts.SyncEnabled() {
+		header = "🔇 Herdr → Telegram sync is off (/options)\n"
+	}
 	if len(live) == 0 {
-		return "no agents"
+		return header + "no agents"
 	}
 	sort.Slice(live, func(a, b int) bool {
 		if live[a].Label() != live[b].Label() {
@@ -275,14 +296,15 @@ func (i *inbound) statusSummary() string {
 		}
 		return live[a].Key.String() < live[b].Key.String()
 	})
+	icons := i.opts.StatusIcons()
 	lines := make([]string, 0, len(live)+1)
-	lines = append(lines, plural(len(live), "agent"))
+	lines = append(lines, header+plural(len(live), "agent"))
 	for _, a := range live {
 		label := html.EscapeString(a.Label())
 		if entry, ok := i.topics.Entry(a.Key); ok && entry.Status.Live() {
 			label = fmt.Sprintf(`<a href="%s">%s</a>`, topicLink(i.chatID, entry.ThreadID), label)
 		}
-		lines = append(lines, a.Status.Emoji()+" "+label)
+		lines = append(lines, icons.For(a.Status)+" "+label)
 	}
 	return strings.Join(lines, "\n")
 }

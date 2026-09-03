@@ -204,11 +204,32 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 		mapping.ChatID = cfg.ChatID
 	}
 
+	optionsStore := state.NewOptionsStore(env.ConfigDir, log)
+	options, err := optionsStore.Load(ctx)
+	if err != nil {
+		log.Error("options unreadable, using defaults", slog.String("path", optionsStore.Path()), slog.String("err", err.Error()))
+		options = domain.DefaultOptions()
+	}
+	choices := func(name string) []string {
+		if name == domain.ChoiceSourceIcons {
+			return tg.IconPack()
+		}
+		return nil
+	}
+	if clean, dropped := domain.SanitizeOptions(options, choices); len(dropped) > 0 {
+		log.Warn("options ignored, defaults used for them", slog.String("path", optionsStore.Path()), slog.Any("keys", dropped))
+		options = clean
+	}
+	opts := app.NewOptions(options, optionsStore, choices, log)
+	log.Info("options loaded", slog.Bool("sync", options.SyncEnabled()), slog.String("icons",
+		options.StatusIcons().Working+options.StatusIcons().Idle+options.StatusIcons().Blocked+
+			options.StatusIcons().Done+options.StatusIcons().Unknown+options.StatusIcons().Exited))
+
 	clock := realClock{}
 	registry := app.NewRegistry(hg, clock, log)
-	reconciler := app.NewReconciler(tg, hg, mappings, mapping, clock, log)
+	reconciler := app.NewReconciler(tg, hg, mappings, mapping, opts, clock, log)
 	capture := app.NewCapture(hg, registry.Live, clock, log)
-	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, capture, clock, log)
-	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, capture, state.NewConfigStore(env.ConfigDir, log), clock, log)
+	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, capture, opts, clock, log)
+	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, capture, state.NewConfigStore(env.ConfigDir, log), opts, clock, log)
 	return d, run, closeAll, nil
 }

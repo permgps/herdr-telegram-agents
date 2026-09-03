@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -31,13 +32,13 @@ type Bridge struct {
 // NewBridge wires the outbound and inbound use cases around the registry,
 // the reconciler's read model of the mapping and the screen capture.
 func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
-	registry *Registry, reconciler *Reconciler, capture *Capture, clock domain.Clock, log *slog.Logger) *Bridge {
+	registry *Registry, reconciler *Reconciler, capture *Capture, opts *Options, clock domain.Clock, log *slog.Logger) *Bridge {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	topics := reconciler.topics()
-	out := newOutbound(herdr, tg, topics, registry.Agent, capture, clock, log)
-	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, cfg.ChatID, cfg.BotUsername, clock, log)
+	out := newOutbound(herdr, tg, topics, registry.Agent, capture, opts, clock, log)
+	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, cfg.ChatID, cfg.BotUsername, clock, log)
 	return &Bridge{
 		out:         out,
 		in:          in,
@@ -109,6 +110,10 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 		}
 	case domain.ButtonPressed:
 		b.log.Debug("bridge job", slog.String("kind", "button"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID))
+		if strings.HasPrefix(j.Data, panelPrefix) {
+			b.run(ctx, "options_button", func(ctx context.Context) error { return b.in.PressPanel(ctx, j) })
+			return
+		}
 		b.run(ctx, "button", func(ctx context.Context) error { return b.out.Press(ctx, j) })
 	case domain.TopicMessage:
 		b.log.Debug("bridge job", slog.String("kind", "topic_message"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID))

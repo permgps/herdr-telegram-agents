@@ -39,6 +39,7 @@ type Daemon struct {
 	bridge     *Bridge
 	capture    *Capture
 	configs    domain.ConfigStore
+	opts       *Options
 	clock      domain.Clock
 	log        *slog.Logger
 
@@ -66,6 +67,8 @@ type Stats struct {
 	Dropped           int64
 	HerdrOK           bool
 	HerdrFailingSince time.Time
+	// SyncOff is set while the operator's sync switch is off.
+	SyncOff bool
 }
 
 // Stats snapshots the running daemon. It is safe to call from another
@@ -78,6 +81,7 @@ func (d *Daemon) Stats() Stats {
 		Agents:  len(d.registry.Live()),
 		Dropped: d.bridge.Dropped(),
 		HerdrOK: h.LastErr == nil,
+		SyncOff: !d.opts.SyncEnabled(),
 	}
 	if h.LastErr != nil {
 		s.HerdrFailingSince = h.LastOK
@@ -90,7 +94,7 @@ func (d *Daemon) Stats() Stats {
 }
 
 // StatsLine renders Stats as the one-line status reply:
-// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s>.
+// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off.
 func StatsLine(s Stats, now time.Time) string {
 	version := s.Version
 	if version == "" {
@@ -104,8 +108,12 @@ func StatsLine(s Stats, now time.Time) string {
 	if !s.HerdrOK {
 		herdr = fmt.Sprintf("failing since %s", now.Sub(s.HerdrFailingSince).Round(time.Second))
 	}
-	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s",
-		version, s.PID, uptime, s.Agents, s.Dropped, herdr)
+	sync := "on"
+	if s.SyncOff {
+		sync = "off"
+	}
+	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s",
+		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync)
 }
 
 // reportDrops warns about bridge jobs lost since the last report, at most
@@ -129,16 +137,41 @@ func (d *Daemon) reportDrops(now time.Time) {
 // are built by the caller so the composition root can share the clock and
 // logger.
 func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
-	registry *Registry, reconciler *Reconciler, bridge *Bridge, capture *Capture, configs domain.ConfigStore, clock domain.Clock, log *slog.Logger) *Daemon {
+	registry *Registry, reconciler *Reconciler, bridge *Bridge, capture *Capture, configs domain.ConfigStore,
+	opts *Options, clock domain.Clock, log *slog.Logger) *Daemon {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Daemon{
+	if opts == nil {
+		opts = NewOptions(domain.DefaultOptions(), nil, nil, log)
+	}
+	d := &Daemon{
 		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge, capture: capture,
-		configs: configs, clock: clock, log: log,
+		configs: configs, opts: opts, clock: clock, log: log,
 		SocketGrace: socketGrace, HealthInterval: healthInterval,
 		resync: make(chan struct{}, 1),
 	}
+	// Option hooks run on the bridge goroutine (the panel calls Set) and
+	// only signal: a resync request for the loop, an icon table for the
+	// gateway, which has its own lock.
+	opts.OnChange(domain.OptionSyncEnabled, func(_ string, cur domain.Options) {
+		if cur.SyncEnabled() {
+			d.log.Info("sync resumed, resync requested")
+			d.Resync()
+			return
+		}
+		d.log.Info("sync paused by operator")
+	})
+	opts.OnChange("icons.", func(key string, cur domain.Options) {
+		icons := cur.StatusIcons()
+		d.tg.SetStatusIcons(icons)
+		d.log.Info("status icons applied", slog.String("key", key), slog.String("working", icons.Working), slog.String("idle", icons.Idle),
+			slog.String("blocked", icons.Blocked), slog.String("done", icons.Done), slog.String("unknown", icons.Unknown), slog.String("exited", icons.Exited))
+		if cur.SyncEnabled() {
+			d.Resync()
+		}
+	})
+	return d
 }
 
 // Resync asks the loop for a full reconcile. It never blocks.
@@ -156,7 +189,11 @@ func (d *Daemon) Resync() {
 func (d *Daemon) Run(ctx context.Context) error {
 	start := d.clock.Now()
 	d.started = start
-	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle))
+	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle), slog.Bool("sync", d.opts.SyncEnabled()))
+	d.tg.SetStatusIcons(d.opts.StatusIcons())
+	if !d.opts.SyncEnabled() {
+		d.log.Warn("sync is off, mirror paused until it is switched on in /options")
+	}
 
 	if err := d.checkRights(ctx); err != nil {
 		return err
@@ -199,7 +236,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.capture.Observe(ev)
 		d.bridge.Submit(ev)
 	}
-	d.general(ctx, fmt.Sprintf("▶️ %s started: %s", d.title(), plural(len(d.registry.Live()), "agent")))
+	started := fmt.Sprintf("▶️ %s started: %s", d.title(), plural(len(d.registry.Live()), "agent"))
+	if !d.opts.SyncEnabled() {
+		started += " (sync off, see /options)"
+	}
+	d.general(ctx, started)
 
 	health := d.clock.After(d.HealthInterval)
 	for {

@@ -20,6 +20,8 @@ type daemonFixture struct {
 	store   *testkit.MemMappingStore
 	clock   *testkit.FakeClock
 	capture *app.Capture
+	options *testkit.MemOptionsStore
+	opts    *app.Options
 	daemon  *app.Daemon
 	done    chan error
 	cancel  context.CancelCauseFunc
@@ -37,10 +39,12 @@ func newDaemon(t *testing.T) *daemonFixture {
 	cfg := domain.Config{Version: 1, BotToken: "t", ChatID: -1, ChatTitle: "Agents", OperatorIDs: []int64{1}}
 	f.configs.Set(cfg)
 	registry := app.NewRegistry(f.herdr, f.clock, nil)
-	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.clock, nil)
+	f.options = testkit.NewMemOptionsStore()
+	f.opts = app.NewOptions(f.options.Stored(), f.options, func(string) []string { return f.tg.IconPack() }, nil)
+	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.opts, f.clock, nil)
 	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
-	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.clock, nil)
-	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.clock, nil)
+	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, f.clock, nil)
+	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.opts, f.clock, nil)
 	f.daemon.Version = "1.2.3"
 	return f
 }
@@ -433,7 +437,7 @@ func TestDaemonStatsWhileRunning(t *testing.T) {
 	if st.Agents != 1 || st.Dropped != 0 || !st.HerdrOK || st.Version != "1.2.3" || !st.Since.Equal(t0) {
 		t.Fatalf("Stats = %+v", st)
 	}
-	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok" {
+	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on" {
 		t.Fatalf("StatsLine = %q", line)
 	}
 	if err := f.stop(t); err != nil {
@@ -558,6 +562,65 @@ func TestDaemonManyAgentsSnapshotChurn(t *testing.T) {
 	}
 	if dropped := f.daemon.Stats().Dropped; dropped != 0 {
 		t.Fatalf("dropped %d jobs during churn", dropped)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonSyncOffStartAndResume(t *testing.T) {
+	f := newDaemon(t)
+	ctx := context.Background()
+	if err := f.opts.Set(ctx, domain.OptionSyncEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.start(t)
+	f.waitCalls(t, 2)
+	assertCalls(t, f.tg, "rights", started1+" (sync off, see /options)")
+	if st := f.daemon.Stats(); !st.SyncOff || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "sync=off") {
+		t.Fatalf("Stats = %+v", st)
+	}
+	if f.tg.Icons() != domain.DefaultStatusIcons() {
+		t.Errorf("icons not applied at start: %+v", f.tg.Icons())
+	}
+
+	// Switching sync on requests a resync, which creates the topic.
+	if err := f.opts.Set(ctx, domain.OptionSyncEnabled, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.waitCalls(t, 3)
+	assertCalls(t, f.tg, "rights", started1+" (sync off, see /options)", "create:reviewer:working")
+	if st := f.daemon.Stats(); st.SyncOff {
+		t.Fatalf("Stats after resume = %+v", st)
+	}
+
+	// An icon change reaches the gateway and repaints through a resync.
+	lists := f.herdr.ListCalls()
+	if err := f.opts.Set(ctx, domain.IconKey(domain.StatusWorking), "🔥", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "icons applied", func() bool { return f.tg.Icons().Working == "🔥" })
+	waitFor(t, "resync after icon change", func() bool { return f.herdr.ListCalls() > lists })
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonIconChangeWhilePausedSkipsResync(t *testing.T) {
+	f := newDaemon(t)
+	ctx := context.Background()
+	_ = f.opts.Set(ctx, domain.OptionSyncEnabled, "false", 1)
+	f.start(t)
+	f.waitCalls(t, 2)
+	lists := f.herdr.ListCalls()
+	if err := f.opts.Set(ctx, domain.IconKey(domain.StatusIdle), "🧠", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "icons applied", func() bool { return f.tg.Icons().Idle == "🧠" })
+	time.Sleep(20 * time.Millisecond)
+	if f.herdr.ListCalls() != lists {
+		t.Errorf("resync ran while sync is off: %d -> %d", lists, f.herdr.ListCalls())
 	}
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)

@@ -24,10 +24,15 @@ type Reconciler struct {
 	clock   domain.Clock
 	log     *slog.Logger
 
-	deb      *debouncer
-	agents   map[domain.Key]domain.Agent // last known agent per key, for fire-time diffs
-	readOnly bool
-	force    bool // set by Resync for the duration of one pass
+	deb    *debouncer
+	agents map[domain.Key]domain.Agent // last known agent per key, for fire-time diffs
+	// rightsLost pauses writes while the bot cannot manage topics; paused
+	// reads the operator's sync switch. Either blocks every Telegram write.
+	rightsLost bool
+	paused     func() bool
+	// pausedLogged keeps the "sync off" skip at one log line per pause.
+	pausedLogged bool
+	force        bool // set by Resync for the duration of one pass
 	// view is the read-only copy of the mapping the bridge goroutine
 	// consults; it is republished after every save.
 	view *topicView
@@ -35,9 +40,13 @@ type Reconciler struct {
 
 // NewReconciler wires the reconciler around a loaded mapping. herdr is
 // used only to mirror operator renames back to the agent.
-func NewReconciler(tg domain.TelegramGateway, herdr domain.HerdrGateway, store domain.MappingStore, mapping *domain.Mapping, clock domain.Clock, log *slog.Logger) *Reconciler {
+func NewReconciler(tg domain.TelegramGateway, herdr domain.HerdrGateway, store domain.MappingStore, mapping *domain.Mapping, opts *Options, clock domain.Clock, log *slog.Logger) *Reconciler {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
+	}
+	paused := func() bool { return false }
+	if opts != nil {
+		paused = func() bool { return !opts.SyncEnabled() }
 	}
 	r := &Reconciler{
 		tg:      tg,
@@ -48,6 +57,7 @@ func NewReconciler(tg domain.TelegramGateway, herdr domain.HerdrGateway, store d
 		log:     log,
 		deb:     newDebouncer(clock, editDebounce, log),
 		agents:  map[domain.Key]domain.Agent{},
+		paused:  paused,
 		view:    newTopicView(),
 	}
 	r.view.publish(mapping)
@@ -66,16 +76,37 @@ func (r *Reconciler) Due() <-chan domain.Key { return r.deb.Due() }
 // Mapping exposes the aggregate for status output and tests.
 func (r *Reconciler) Mapping() *domain.Mapping { return r.mapping }
 
-// ReadOnly reports whether writes are paused.
-func (r *Reconciler) ReadOnly() bool { return r.readOnly }
+// ReadOnly reports whether writes are paused because the bot lost the
+// "Manage topics" right (the operator's sync switch is a separate reason,
+// see blocked).
+func (r *Reconciler) ReadOnly() bool { return r.rightsLost }
 
-// SetReadOnly pauses or resumes Telegram writes. Resuming does not replay
-// anything by itself; the caller runs Reconcile with the live agents.
+// blocked reports whether Telegram writes are off for any reason: lost
+// rights or the operator's sync switch. The sync-off case is logged once
+// per pause.
+func (r *Reconciler) blocked() bool {
+	if r.rightsLost {
+		return true
+	}
+	if !r.paused() {
+		r.pausedLogged = false
+		return false
+	}
+	if !r.pausedLogged {
+		r.pausedLogged = true
+		r.log.Info("reconcile paused: sync is off (/options)")
+	}
+	return true
+}
+
+// SetReadOnly pauses or resumes Telegram writes for the rights path.
+// Resuming does not replay anything by itself; the caller runs Reconcile
+// with the live agents.
 func (r *Reconciler) SetReadOnly(ro bool) {
-	if r.readOnly == ro {
+	if r.rightsLost == ro {
 		return
 	}
-	r.readOnly = ro
+	r.rightsLost = ro
 	if ro {
 		r.log.Info("reconcile paused: bot cannot manage topics")
 	} else {
@@ -140,8 +171,14 @@ func (r *Reconciler) Resync(ctx context.Context, live []domain.Agent) error {
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
-	if r.readOnly {
-		r.log.Info("reconcile skipped, writes paused", slog.Int("agents", len(live)))
+	if r.blocked() {
+		// Lost rights are worth a line per pass; the operator's own switch
+		// was logged once when it took effect.
+		level := slog.LevelDebug
+		if r.rightsLost {
+			level = slog.LevelInfo
+		}
+		r.log.Log(ctx, level, "reconcile skipped, writes paused", slog.Int("agents", len(live)), slog.Bool("rights_lost", r.rightsLost))
 		return nil
 	}
 	r.log.Info("reconcile pass", slog.Int("agents", len(live)), slog.Int("entries", len(r.mapping.Topics)))
@@ -188,7 +225,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 }
 
 func (r *Reconciler) create(ctx context.Context, a domain.Agent) error {
-	if r.readOnly {
+	if r.blocked() {
 		r.log.Info("topic create skipped, writes paused", slog.String("key", a.Key.String()))
 		return nil
 	}
@@ -270,7 +307,7 @@ func (r *Reconciler) edit(ctx context.Context, key domain.Key) error {
 	if !changed {
 		return nil
 	}
-	if r.readOnly {
+	if r.blocked() {
 		r.log.Info("topic edit skipped, writes paused", slog.String("key", key.String()))
 		return nil
 	}
@@ -291,7 +328,7 @@ func (r *Reconciler) exit(ctx context.Context, key domain.Key) error {
 	if !ok {
 		return nil
 	}
-	if r.readOnly {
+	if r.blocked() {
 		r.log.Info("topic exit skipped, writes paused", slog.String("key", key.String()))
 		return nil
 	}
@@ -321,7 +358,7 @@ func (r *Reconciler) close(ctx context.Context, key domain.Key) error {
 	if !ok || entry.Closed {
 		return nil
 	}
-	if r.readOnly {
+	if r.blocked() {
 		return nil
 	}
 	if err := r.tg.CloseTopic(ctx, entry.ThreadID); err != nil {
@@ -379,7 +416,7 @@ func (r *Reconciler) OnTopicReopened(ctx context.Context, threadID int) error {
 // (a muted exit never reached Telegram) and closes the topic.
 func (r *Reconciler) finish(ctx context.Context, key domain.Key) error {
 	entry, ok := r.mapping.TopicFor(key)
-	if !ok || r.readOnly {
+	if !ok || r.blocked() {
 		return nil
 	}
 	status := domain.StatusExited

@@ -80,10 +80,10 @@ func TestStatsLine(t *testing.T) {
 		want string
 	}{
 		{"fresh", Stats{Version: "v0.1.0", PID: 42, Since: now.Add(-90 * time.Second), Agents: 3, HerdrOK: true},
-			"version=v0.1.0 pid=42 uptime=1m30s agents=3 dropped=0 herdr=ok"},
+			"version=v0.1.0 pid=42 uptime=1m30s agents=3 dropped=0 herdr=ok sync=on"},
 		{"failing", Stats{PID: 7, Since: now.Add(-time.Hour), Agents: 0, Dropped: 12, HerdrFailingSince: now.Add(-25 * time.Second)},
-			"version=dev pid=7 uptime=1h0m0s agents=0 dropped=12 herdr=failing since 25s"},
-		{"zero since", Stats{Version: "x", HerdrOK: true}, "version=x pid=0 uptime=0s agents=0 dropped=0 herdr=ok"},
+			"version=dev pid=7 uptime=1h0m0s agents=0 dropped=12 herdr=failing since 25s sync=on"},
+		{"zero since", Stats{Version: "x", HerdrOK: true}, "version=x pid=0 uptime=0s agents=0 dropped=0 herdr=ok sync=on"},
 	}
 	for _, c := range cases {
 		if got := StatsLine(c.s, now); got != c.want {

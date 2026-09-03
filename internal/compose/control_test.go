@@ -30,7 +30,7 @@ func TestStartControlRoundTrip(t *testing.T) {
 			resyncs++
 			mu.Unlock()
 		},
-		Status: func() string { return "version=test pid=1 uptime=0s agents=0 dropped=0 herdr=ok" },
+		Status: func() string { return "version=test pid=1 uptime=0s agents=0 dropped=0 herdr=ok sync=on" },
 	}, nil)
 	if err != nil {
 		t.Fatalf("StartControl: %v", err)
@@ -44,7 +44,7 @@ func TestStartControlRoundTrip(t *testing.T) {
 		t.Fatalf("resync: %v", err)
 	}
 	line, err := system.SendControl(ctx, env.StateDir, system.ControlStatus)
-	if err != nil || line != "version=test pid=1 uptime=0s agents=0 dropped=0 herdr=ok" {
+	if err != nil || line != "version=test pid=1 uptime=0s agents=0 dropped=0 herdr=ok sync=on" {
 		t.Fatalf("status: line = %q, err = %v", line, err)
 	}
 	mu.Lock()
@@ -72,7 +72,7 @@ func TestStartControlRoundTrip(t *testing.T) {
 func TestStatsLinePassesThrough(t *testing.T) {
 	now := time.Now()
 	s := Stats{Version: "v0.1.0", PID: 7, Since: now.Add(-time.Minute), Agents: 2, HerdrOK: true}
-	if got, want := StatsLine(s, now), "version=v0.1.0 pid=7 uptime=1m0s agents=2 dropped=0 herdr=ok"; got != want {
+	if got, want := StatsLine(s, now), "version=v0.1.0 pid=7 uptime=1m0s agents=2 dropped=0 herdr=ok sync=on"; got != want {
 		t.Fatalf("StatsLine = %q, want %q", got, want)
 	}
 }

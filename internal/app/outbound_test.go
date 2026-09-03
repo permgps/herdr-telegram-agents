@@ -24,6 +24,8 @@ type bridgeFixture struct {
 	view    *topicView
 	agents  map[domain.Key]domain.Agent
 	capture *Capture
+	options *testkit.MemOptionsStore
+	opts    *Options
 	out     *outbound
 	in      *inbound
 	ctx     context.Context
@@ -52,8 +54,10 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 		return out
 	}
 	f.capture = NewCapture(f.herdr, live, f.clock, nil)
-	f.out = newOutbound(f.herdr, f.tg, f.view, lookup, f.capture, f.clock, nil)
-	f.in = newInbound(f.herdr, f.tg, f.view, lookup, live, f.out, -1001234567890, "agents_bot", f.clock, nil)
+	f.options = testkit.NewMemOptionsStore()
+	f.opts = NewOptions(domain.DefaultOptions(), f.options, func(name string) []string { return f.tg.IconPack() }, nil)
+	f.out = newOutbound(f.herdr, f.tg, f.view, lookup, f.capture, f.opts, f.clock, nil)
+	f.in = newInbound(f.herdr, f.tg, f.view, lookup, live, f.out, f.opts, -1001234567890, "agents_bot", f.clock, nil)
 	return f
 }
 
@@ -415,5 +419,28 @@ func TestOutboundScreenAllEmptyAndErrors(t *testing.T) {
 	}
 	if err := f.out.ScreenAll(f.ctx, domain.Key{PaneID: "nope", TerminalID: "t"}); err == nil {
 		t.Fatal("unknown key must fail")
+	}
+}
+
+func TestOutboundSyncOffSkipsPostsUntilOn(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	if err := f.opts.Set(f.ctx, domain.OptionSyncEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	if len(f.tg.Sent()) != 0 || len(f.herdr.Reads()) != 0 {
+		t.Fatalf("posted while sync off: %+v", f.tg.Sent())
+	}
+
+	if err := f.opts.Set(f.ctx, domain.OptionSyncEnabled, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "  Allow edit?\n  1. Yes\n  2. No" {
+		t.Fatalf("Sent after sync on = %+v", sent)
 	}
 }

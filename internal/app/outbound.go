@@ -31,6 +31,8 @@ type outbound struct {
 
 	capture *Capture
 	clock   domain.Clock
+	// paused reads the operator's sync switch: no screen posts while off.
+	paused func() bool
 
 	deb        *debouncer
 	lastPosted map[domain.Key]string // SHA-256 of the last screen posted per key
@@ -47,9 +49,13 @@ type keyboard struct {
 }
 
 func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	capture *Capture, clock domain.Clock, log *slog.Logger) *outbound {
+	capture *Capture, opts *Options, clock domain.Clock, log *slog.Logger) *outbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
+	}
+	paused := func() bool { return false }
+	if opts != nil {
+		paused = func() bool { return !opts.SyncEnabled() }
 	}
 	return &outbound{
 		herdr:      herdr,
@@ -58,6 +64,7 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 		agents:     agents,
 		capture:    capture,
 		clock:      clock,
+		paused:     paused,
 		log:        log,
 		deb:        newDebouncer(clock, screenSettle, log),
 		lastPosted: map[domain.Key]string{},
@@ -103,6 +110,9 @@ func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
 	agent, ok := o.agents(key)
 	if !ok {
 		return o.skip(key, "exited")
+	}
+	if o.paused() {
+		return o.skip(key, "sync_off")
 	}
 	var lines int
 	switch agent.Status {

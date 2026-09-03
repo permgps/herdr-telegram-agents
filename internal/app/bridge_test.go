@@ -25,8 +25,8 @@ func newRunningBridge(t *testing.T) *runningBridge {
 	f := newBridgeFixture(t)
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
-	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, f.clock, nil)
-	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.clock, nil)
+	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, nil, f.clock, nil)
+	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, f.clock, nil)
 	// The fixture's agent map stands in for the registry so tests control
 	// statuses directly.
 	b.out.agents = f.out.agents
@@ -152,8 +152,8 @@ func TestBridgeOverflowCountsDrops(t *testing.T) {
 	f := newBridgeFixture(t)
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
-	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, f.clock, nil)
-	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.clock, nil)
+	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, nil, f.clock, nil)
+	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, f.clock, nil)
 
 	for i := range bridgeBuffer + 10 {
 		b.Submit(topicMsg(101, i+1, "hello"))
@@ -210,5 +210,36 @@ func TestBridgeForgetsOnAgentGone(t *testing.T) {
 	waitUntil(t, "keyboard retired", func() bool { return len(r.tg.Calls()) == 2 })
 	if calls := r.tg.Calls(); calls[1] != "buttons:1000:" {
 		t.Fatalf("Calls = %q", calls)
+	}
+}
+
+func TestBridgeRoutesPanelPressesToInbound(t *testing.T) {
+	r := newRunningBridge(t)
+	a := r.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
+	_ = a
+	r.bridge.Submit(domain.ButtonPressed{CallbackID: "cb1", ThreadID: 0, MessageID: 900, FromID: 1, Data: dataHome()})
+	waitUntil(t, "panel edit", func() bool {
+		for _, c := range r.tg.Calls() {
+			if strings.HasPrefix(c, "edittext:900:") {
+				return true
+			}
+		}
+		return false
+	})
+	// A digit press in a topic still goes to outbound: no keyboard is known
+	// for the agent, so it is retired as stale.
+	r.bridge.Submit(domain.ButtonPressed{CallbackID: "cb2", ThreadID: 101, MessageID: 55, FromID: 1, Data: "2"})
+	waitUntil(t, "stale answer", func() bool {
+		for _, c := range r.tg.Calls() {
+			if strings.HasPrefix(c, "answer:cb2:") {
+				return true
+			}
+		}
+		return false
+	})
+	for _, c := range r.tg.Calls() {
+		if strings.HasPrefix(c, "edittext:55") {
+			t.Fatalf("digit press reached the panel: %q", r.tg.Calls())
+		}
 	}
 }

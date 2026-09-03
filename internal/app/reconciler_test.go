@@ -30,7 +30,7 @@ func newRec(t *testing.T) *recFixture {
 		clock: testkit.NewFakeClock(t0),
 		ctx:   context.Background(),
 	}
-	f.rec = app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.clock, nil)
+	f.rec = app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), nil, f.clock, nil)
 	return f
 }
 
@@ -617,4 +617,44 @@ func TestReconcilerReusesTopicWhenKeyReturns(t *testing.T) {
 	if entry, _ := f.rec.Mapping().TopicFor(a.Key); entry.ThreadID != 102 {
 		t.Fatalf("entry after lost topic = %+v", *entry)
 	}
+}
+
+func TestReconcilerSyncOffPausesWritesUntilResync(t *testing.T) {
+	f := newRec(t)
+	opts := app.NewOptions(domain.DefaultOptions(), nil, nil, nil)
+	f.rec = app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), opts, f.clock, nil)
+	ctx := context.Background()
+	if err := opts.Set(ctx, domain.OptionSyncEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusIdle))
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{a}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg)
+	if f.rec.ReadOnly() {
+		t.Error("sync off must not report lost rights")
+	}
+
+	if err := opts.Set(ctx, domain.OptionSyncEnabled, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rec.Resync(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:idle")
+
+	// Rights and the switch are independent: regaining rights while sync
+	// is off still writes nothing.
+	f.tg.Reset()
+	_ = opts.Set(ctx, domain.OptionSyncEnabled, "false", 1)
+	f.rec.SetReadOnly(true)
+	f.rec.SetReadOnly(false)
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{agent("p2", "t2", "other", domain.StatusWorking)}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg)
 }
