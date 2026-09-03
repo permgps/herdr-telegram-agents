@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/permgps/herdr-telegram-agents/internal/compose"
 )
 
 // errTelegramFatal is the cancellation cause set when the Telegram poller
@@ -67,7 +69,11 @@ func runDaemon(rc *runContext, _ []string) int {
 
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runCtx, cancel := context.WithCancelCause(sigCtx)
+	// The control channel's stop command cancels the same context a
+	// SIGTERM would, so both paths run the same graceful shutdown.
+	ctlCtx, requestStop := context.WithCancel(sigCtx)
+	defer requestStop()
+	runCtx, cancel := context.WithCancelCause(ctlCtx)
 	defer cancel(nil)
 	fatal := func() { cancel(errTelegramFatal) }
 
@@ -86,6 +92,20 @@ func runDaemon(rc *runContext, _ []string) int {
 	stopResync := watchResync(d.Resync, log)
 	defer stopResync()
 
+	// The control channel serves stop, resync and status on every
+	// platform; on Unix the signal handlers above stay as the fallback for
+	// an action from an older build.
+	stopControl, err := wire.startControl(ctlCtx, env, compose.ControlHandlers{
+		Stop:   requestStop,
+		Resync: d.Resync,
+		Status: func() string { return compose.StatsLine(statsWithPID(d.Stats(), os.Getpid()), time.Now()) },
+	}, log)
+	if err != nil {
+		log.Warn("control channel unavailable, signals only", slog.String("err", err.Error()))
+	} else {
+		defer stopControl()
+	}
+
 	runErr := runWithTelegram(ctx, runCtx, d.Run, runTelegram, telegramStopTimeout, log)
 	cancel(nil)
 
@@ -96,6 +116,12 @@ func runDaemon(rc *runContext, _ []string) int {
 	}
 	log.Info("daemon exit", slog.Int("code", code), slog.String("reason", reason))
 	return code
+}
+
+// statsWithPID fills in the pid, which the app layer does not read itself.
+func statsWithPID(s compose.Stats, pid int) compose.Stats {
+	s.PID = pid
+	return s
 }
 
 // runWithTelegram runs the daemon loop with the Telegram poller and queue

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/compose"
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -37,6 +38,7 @@ type fakeSupervisor struct {
 	startPID int
 	already  bool
 	err      error
+	describe string
 	calls    []string
 }
 
@@ -63,6 +65,15 @@ func (f *fakeSupervisor) Restart(context.Context) (int, error) {
 func (f *fakeSupervisor) Resync() error {
 	f.calls = append(f.calls, "resync")
 	return f.err
+}
+
+func (f *fakeSupervisor) Describe(context.Context) string {
+	f.calls = append(f.calls, "describe")
+	line := compose.Summary(f.status, time.Now())
+	if f.describe != "" {
+		return line + " · " + f.describe
+	}
+	return line
 }
 
 // testEnv points the wiring at temporary config and state directories and

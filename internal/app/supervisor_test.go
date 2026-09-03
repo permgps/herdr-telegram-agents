@@ -163,3 +163,49 @@ func TestSummaryStale(t *testing.T) {
 		t.Fatalf("Summary = %q", got)
 	}
 }
+
+// TestSupervisorStopKillsWhenControlUnavailable covers a daemon that
+// answers neither the control channel nor a signal: it cannot shut down
+// gracefully, so it is killed at once instead of after StopTimeout.
+func TestSupervisorStopKillsWhenControlUnavailable(t *testing.T) {
+	f := newSup(t)
+	ctx := context.Background()
+	pid, _, _ := f.sup.Start(ctx)
+	f.proc.SetControlUnavailable(true)
+
+	if err := f.sup.Stop(ctx); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if f.proc.Alive(pid) || f.sup.Status().Running {
+		t.Fatalf("still running after Stop: %s", f.proc)
+	}
+	sig := f.proc.Signals()
+	if len(sig) != 2 || sig[0] != "stop:1001" || sig[1] != "kill:1001" {
+		t.Fatalf("Signals = %v, want a stop attempt then a kill", sig)
+	}
+	if elapsed := f.clock.Now().Sub(t0); elapsed != 0 {
+		t.Fatalf("waited %s before killing, want none", elapsed)
+	}
+}
+
+func TestSupervisorDescribe(t *testing.T) {
+	f := newSup(t)
+	ctx := context.Background()
+	if got := f.sup.Describe(ctx); got != "not running" {
+		t.Fatalf("Describe when idle = %q", got)
+	}
+
+	f.proc.SetStatusLine("version=v0.1.0 pid=1001 uptime=1m0s agents=2 dropped=0 herdr=ok")
+	pid, _, _ := f.sup.Start(ctx)
+	got := f.sup.Describe(ctx)
+	if !strings.Contains(got, "running (pid 1001") || !strings.Contains(got, "agents=2 dropped=0 herdr=ok") {
+		t.Fatalf("Describe = %q", got)
+	}
+
+	// A daemon from an older build answers nothing on the channel.
+	f.proc.SetControlUnavailable(true)
+	if got := f.sup.Describe(ctx); !strings.HasSuffix(got, "· no control channel") {
+		t.Fatalf("Describe without a channel = %q", got)
+	}
+	_ = pid
+}

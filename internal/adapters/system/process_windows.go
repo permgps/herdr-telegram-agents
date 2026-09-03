@@ -33,17 +33,24 @@ func (p *Process) Alive(pid int) bool {
 	return code == stillActive
 }
 
-// Stop has no signal to send on Windows; the Windows milestone adds a
-// control channel.
+// Stop asks the daemon through its control pipe. Windows has no signal to
+// fall back to, so a daemon that is not listening is reported as such and
+// the supervisor escalates to Kill.
 func (p *Process) Stop(pid int) error {
-	p.log.Debug("stop unsupported", slog.Int("pid", pid))
-	return fmt.Errorf("stop: %w", domain.ErrUnsupportedPlatform)
+	_, err := p.control(ControlStop)
+	if err != nil {
+		p.log.Debug("control stop failed", slog.Int("pid", pid), slog.String("err", err.Error()))
+	}
+	return err
 }
 
-// Resync has no signal to send on Windows; see Stop.
+// Resync asks the daemon through its control pipe; see Stop.
 func (p *Process) Resync(pid int) error {
-	p.log.Debug("resync unsupported", slog.Int("pid", pid))
-	return fmt.Errorf("resync: %w", domain.ErrUnsupportedPlatform)
+	_, err := p.control(ControlResync)
+	if err != nil {
+		p.log.Debug("control resync failed", slog.Int("pid", pid), slog.String("err", err.Error()))
+	}
+	return err
 }
 
 // Kill terminates the process immediately.

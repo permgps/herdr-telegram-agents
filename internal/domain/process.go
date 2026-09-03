@@ -20,8 +20,9 @@ type PidFile interface {
 	Release() error
 }
 
-// ProcessControl starts and signals the daemon process. Stop and Resync
-// return ErrUnsupportedPlatform where signals are unavailable.
+// ProcessControl starts and controls the daemon process. Stop, Resync and
+// Status reach a running daemon through its control channel and return
+// ErrControlUnavailable when it is not listening.
 type ProcessControl interface {
 	// Spawn starts the plugin binary detached with the given arguments and
 	// returns its pid without waiting for it.
@@ -32,6 +33,8 @@ type ProcessControl interface {
 	Stop(pid int) error
 	// Resync asks the daemon to run a full reconcile.
 	Resync(pid int) error
+	// Status asks the daemon for its one-line status.
+	Status(ctx context.Context) (string, error)
 	// Kill terminates the daemon immediately.
 	Kill(pid int) error
 }

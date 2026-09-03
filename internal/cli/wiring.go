@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/compose"
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -18,6 +17,7 @@ type supervisor interface {
 	Stop(ctx context.Context) error
 	Restart(ctx context.Context) (int, error)
 	Resync() error
+	Describe(ctx context.Context) string
 }
 
 // wiring holds the composition-root entry points the subcommands call.
@@ -31,6 +31,7 @@ type wiring struct {
 	pidFile         func(env compose.PluginEnv, log *slog.Logger) domain.PidFile
 	buildDaemon     func(ctx context.Context, env compose.PluginEnv, cfg domain.Config, log *slog.Logger, fatal context.CancelFunc) (*compose.Daemon, func(context.Context), func(), error)
 	buildSupervisor func(env compose.PluginEnv, log *slog.Logger) supervisor
+	startControl    func(ctx context.Context, env compose.PluginEnv, h compose.ControlHandlers, log *slog.Logger) (func(), error)
 	buildSetup      func(env compose.PluginEnv, ui domain.SetupUI, log *slog.Logger) setupRunner
 	paneOpener      func(env compose.PluginEnv, log *slog.Logger) domain.PaneOpener
 	openURL         func(ctx context.Context, url string) error
@@ -50,6 +51,7 @@ func defaultWiring() wiring {
 		buildSupervisor: func(env compose.PluginEnv, log *slog.Logger) supervisor {
 			return compose.BuildSupervisor(env, log)
 		},
+		startControl: compose.StartControl,
 		buildSetup: func(env compose.PluginEnv, ui domain.SetupUI, log *slog.Logger) setupRunner {
 			return compose.BuildSetup(env, ui, log)
 		},
@@ -61,9 +63,6 @@ func defaultWiring() wiring {
 
 // ErrSetupCancelled is the wizard's "user declined" outcome.
 var ErrSetupCancelled = compose.ErrSetupCancelled
-
-// summary renders a daemon status for humans.
-func summary(st compose.DaemonStatus, now time.Time) string { return compose.Summary(st, now) }
 
 // notify sends a Herdr notification and logs failures at warn; every
 // subcommand treats notifications as best effort.

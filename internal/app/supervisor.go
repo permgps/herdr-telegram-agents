@@ -92,7 +92,9 @@ func (s *Supervisor) Start(ctx context.Context) (pid int, alreadyRunning bool, e
 	}
 }
 
-// Stop asks the daemon to exit and escalates to Kill after StopTimeout.
+// Stop asks the daemon to exit and escalates to Kill after StopTimeout. A
+// daemon that answers neither the control channel nor a signal is killed
+// right away: it cannot shut down gracefully anyway.
 func (s *Supervisor) Stop(ctx context.Context) error {
 	st := s.Status()
 	if !st.Running {
@@ -102,7 +104,16 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		if errors.Is(err, domain.ErrNotRunning) {
 			return domain.ErrNotRunning
 		}
-		return err
+		if !errors.Is(err, domain.ErrControlUnavailable) {
+			return err
+		}
+		s.log.Warn("daemon has no control channel, killing", slog.Int("pid", st.PID), slog.String("err", err.Error()))
+		if err := s.proc.Kill(st.PID); err != nil && !errors.Is(err, domain.ErrNotRunning) {
+			return fmt.Errorf("kill daemon: %w", err)
+		}
+		_ = s.pid.Release()
+		s.log.Info("daemon killed", slog.Int("pid", st.PID))
+		return nil
 	}
 	s.log.Info("daemon stop requested", slog.Int("pid", st.PID))
 	deadline := s.clock.Now().Add(s.StopTimeout)
@@ -143,6 +154,28 @@ func (s *Supervisor) Resync() error {
 	}
 	s.log.Info("daemon resync requested", slog.Int("pid", st.PID))
 	return nil
+}
+
+// Describe renders the status line for the status action: the supervisor's
+// own view plus, when the daemon answers, its self-reported stats.
+func (s *Supervisor) Describe(ctx context.Context) string {
+	st := s.Status()
+	line := Summary(st, s.clock.Now())
+	if !st.Running {
+		return line
+	}
+	stats, err := s.proc.Status(ctx)
+	switch {
+	case errors.Is(err, domain.ErrControlUnavailable):
+		s.log.Debug("daemon has no control channel", slog.Int("pid", st.PID))
+		return line + " · no control channel"
+	case err != nil:
+		s.log.Warn("daemon status failed", slog.Int("pid", st.PID), slog.String("err", err.Error()))
+		return line + " · status unavailable: " + err.Error()
+	case stats == "":
+		return line
+	}
+	return line + " · " + stats
 }
 
 func (s *Supervisor) sleep(ctx context.Context) error {

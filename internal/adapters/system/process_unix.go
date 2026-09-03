@@ -21,11 +21,29 @@ func (p *Process) Alive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// Stop sends SIGTERM.
-func (p *Process) Stop(pid int) error { return p.signal(pid, syscall.SIGTERM, "stop") }
+// Stop asks the daemon through its control channel and falls back to
+// SIGTERM, which is all a daemon from an older build understands.
+func (p *Process) Stop(pid int) error {
+	if _, err := p.control(ControlStop); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrControlUnavailable) {
+		return err
+	}
+	p.log.Debug("control unavailable, sending SIGTERM", slog.Int("pid", pid))
+	return p.signal(pid, syscall.SIGTERM, "stop")
+}
 
-// Resync sends SIGHUP.
-func (p *Process) Resync(pid int) error { return p.signal(pid, syscall.SIGHUP, "resync") }
+// Resync asks the daemon through its control channel and falls back to
+// SIGHUP; see Stop.
+func (p *Process) Resync(pid int) error {
+	if _, err := p.control(ControlResync); err == nil {
+		return nil
+	} else if !errors.Is(err, domain.ErrControlUnavailable) {
+		return err
+	}
+	p.log.Debug("control unavailable, sending SIGHUP", slog.Int("pid", pid))
+	return p.signal(pid, syscall.SIGHUP, "resync")
+}
 
 // Kill sends SIGKILL.
 func (p *Process) Kill(pid int) error { return p.signal(pid, syscall.SIGKILL, "kill") }

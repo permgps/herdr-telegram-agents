@@ -38,7 +38,9 @@ func runAction(rc *runContext, args []string) int {
 	msg, err := doAction(ctx, rc, env.PluginID, id, wire.buildSupervisor(env, rc.log), wire.paneOpener(env, rc.log))
 	if err != nil {
 		if errors.Is(err, domain.ErrUnsupportedPlatform) {
-			msg = fmt.Sprintf("%s is not available on this platform yet (planned for the Windows milestone)", id)
+			msg = fmt.Sprintf("%s is not available on this platform", id)
+		} else if errors.Is(err, domain.ErrControlUnavailable) {
+			msg = fmt.Sprintf("%s failed: the daemon is not listening on its control channel; restart it", id)
 		} else {
 			msg = fmt.Sprintf("%s failed: %v", id, err)
 		}
@@ -85,7 +87,7 @@ func doAction(ctx context.Context, rc *runContext, pluginID, id string, sup supe
 		}
 		return fmt.Sprintf("daemon restarted (pid %d)", pid), nil
 	case "status":
-		return "daemon " + summary(sup.Status(), time.Now()), nil
+		return "daemon " + sup.Describe(ctx), nil
 	case "resync":
 		if err := sup.Resync(); err != nil {
 			if errors.Is(err, domain.ErrNotRunning) {

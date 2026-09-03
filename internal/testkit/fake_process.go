@@ -20,6 +20,8 @@ type FakeProcess struct {
 	spawned     [][]string
 	signals     []string
 	unsupported bool
+	noControl   bool
+	statusLine  string
 	ignoreStop  bool
 	spawnFails  error
 	held        int
@@ -48,6 +50,21 @@ func (p *FakeProcess) SetUnsupported(v bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.unsupported = v
+}
+
+// SetControlUnavailable makes Stop, Resync and Status behave like a daemon
+// that is not listening on its control channel.
+func (p *FakeProcess) SetControlUnavailable(v bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.noControl = v
+}
+
+// SetStatusLine scripts what Status returns.
+func (p *FakeProcess) SetStatusLine(line string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.statusLine = line
 }
 
 // IgnoreStop makes Stop deliver the signal without ending the process, so
@@ -123,6 +140,17 @@ func (p *FakeProcess) Resync(pid int) error {
 	return p.signal("resync", pid, false)
 }
 
+// Status answers like the daemon's control channel.
+func (p *FakeProcess) Status(context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.signals = append(p.signals, "status")
+	if p.noControl {
+		return "", fmt.Errorf("control status: %w", domain.ErrControlUnavailable)
+	}
+	return p.statusLine, nil
+}
+
 func (p *FakeProcess) Kill(pid int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -147,6 +175,9 @@ func (p *FakeProcess) signal(kind string, pid int, ends bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.signals = append(p.signals, fmt.Sprintf("%s:%d", kind, pid))
+	if p.noControl {
+		return fmt.Errorf("%s: %w", kind, domain.ErrControlUnavailable)
+	}
 	if p.unsupported {
 		return fmt.Errorf("%s: %w", kind, domain.ErrUnsupportedPlatform)
 	}

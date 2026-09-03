@@ -30,6 +30,10 @@ type (
 	Supervisor = app.Supervisor
 	// DaemonStatus is what the status action reports.
 	DaemonStatus = app.DaemonStatus
+	// Stats is the running daemon's self-description.
+	Stats = app.Stats
+	// ControlHandlers are the daemon actions the control channel exposes.
+	ControlHandlers = system.ControlHandlers
 )
 
 // ErrSetupCancelled is returned by Setup.Run when the user declines to save.
@@ -40,6 +44,30 @@ const NotifyTitle = "Telegram Agents"
 
 // Summary renders a DaemonStatus for humans.
 func Summary(st DaemonStatus, now time.Time) string { return app.Summary(st, now) }
+
+// StatsLine renders a running daemon's Stats as one line.
+func StatsLine(s Stats, now time.Time) string { return app.StatsLine(s, now) }
+
+// StartControl opens the daemon's control channel and serves it until ctx
+// is done. Listening and serving are one call so no net.Listener crosses
+// into internal/cli, which may not import net. The returned stop function
+// closes the channel and waits for the loop.
+func StartControl(ctx context.Context, env PluginEnv, h ControlHandlers, log *slog.Logger) (func(), error) {
+	ln, err := system.ListenControl(env.StateDir, log)
+	if err != nil {
+		return nil, fmt.Errorf("control channel: %w", err)
+	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		system.ServeControl(serveCtx, ln, h, log)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}, nil
+}
 
 // realClock is the production domain.Clock.
 type realClock struct{}

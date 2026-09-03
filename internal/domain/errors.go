@@ -36,8 +36,12 @@ var (
 	// ErrNotRunning means no daemon is running.
 	ErrNotRunning = errors.New("daemon is not running")
 	// ErrUnsupportedPlatform means the operation has no implementation on
-	// this OS yet (Windows stop/resync arrive with the Windows milestone).
-	ErrUnsupportedPlatform = errors.New("not supported on this platform yet")
+	// this OS.
+	ErrUnsupportedPlatform = errors.New("not supported on this platform")
+	// ErrControlUnavailable means the daemon is not listening on its
+	// control channel: it is not running, or it is an older build that
+	// only understands signals.
+	ErrControlUnavailable = errors.New("daemon control channel unavailable")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

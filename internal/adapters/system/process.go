@@ -25,6 +25,21 @@ type Process struct {
 
 var _ domain.ProcessControl = (*Process)(nil)
 
+// control sends one command to the daemon listening for this state
+// directory.
+func (p *Process) control(cmd string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	reply, err := SendControl(ctx, p.stateDir, cmd)
+	p.log.Debug("control command sent", slog.String("cmd", cmd), slog.String("reply", reply), slog.Any("err", err))
+	return reply, err
+}
+
+// Status asks the running daemon for its status line.
+func (p *Process) Status(ctx context.Context) (string, error) {
+	return SendControl(ctx, p.stateDir, ControlStatus)
+}
+
 // NewProcess returns process control writing the error log under stateDir.
 func NewProcess(stateDir string, log *slog.Logger) *Process {
 	if log == nil {
