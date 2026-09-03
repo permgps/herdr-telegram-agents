@@ -70,8 +70,8 @@ keyboard, `✖ Close` leaves a one-line-per-option summary behind. The buttons
 carry everything they need, so a panel still works after the daemon was
 restarted.
 
-- **Level 1** lists the groups (Sync, Appearance, Privacy, Topics) with a
-  description each.
+- **Level 1** lists the groups (Sync, Quiet, Appearance, Privacy, Topics)
+  with a description each.
 - **Level 2** lists the options of a group: a checkbox toggles on the spot
   (`☑` / `☐`), a choice shows its current value and opens the picker,
   `↺ Reset to defaults` restores the whole group, `‹ Back` and `✖ Close`
@@ -80,23 +80,70 @@ restarted.
   Telegram's topic-icon pack in the pack's order, eight per row, two pages,
   the current value in brackets (only those emoji can be topic icons, which
   is why there is no free-text field); for the cleanup age, one row of
-  `Off 7d 14d 30d 60d 90d`.
+  `Off 7d 14d 30d 60d 90d`; for the quiet threshold `1m 2m 3m 5m 10m 15m`;
+  for the posts mode `Silent Held Normal`.
 
 The options today:
 
 | Option | Group | What it does |
 |--------|-------|--------------|
 | `Herdr → Telegram sync` | Sync | Default on. Off: the daemon creates, edits and closes no topic and posts no screen until it is on again. Messages, keys, `/screen`, `/status` and presses on existing question buttons keep working, the screen capture keeps running, daemon notices keep posting. Back on: a full resync, like the `resync` action. A daemon that starts with sync off says so in its started notice, in the `/status` header (`🔇 …`), in the `status` action line (`sync=off`) and in the log. |
+| `Quiet while at the desk` | Quiet | Default on. While you are at the desk, topic edits wait and screen posts are silent; everything catches up when you leave. Off means today's behaviour with no presence check at all; `/away` and `/here` then answer that quiet mode is off. See [Quiet while at the desk](#quiet-while-at-the-desk). |
+| `Away after` | Quiet | Default 3 min. Minutes without keyboard or mouse input on this machine before you count as away. A value outside the picker's list (say `45`) can be typed into `options.json` by hand. |
+| `Hold topic edits` | Quiet | Default on. While at the desk no topic is created, renamed, closed, reopened or given a new icon; each of those is a Telegram service message that rings the phone. Off keeps topic edits live while at the desk. |
+| `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
+| `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
 | `working` … `exited` | Appearance | The topic icon of each status and the emoji `/status` prints. Picking an emoji another status already uses answers `used by <status>` and changes nothing. A pick repaints every live topic at once (a `resync`), or when sync comes back on. |
 | `Redact secrets` | Privacy | Default on. Every text the daemon posts passes the redaction step described under [Secrets in posts](#secrets-in-posts). Off: raw text. A change applies to the next post. |
 | `Delete closed topics after` | Topics | Default 30 days. The topic of an exited agent is deleted once it has been closed for that long, see [Topic cleanup](#topic-cleanup). `Off` keeps every topic. A number outside the picker's list (say `45`) can be typed into `options.json` by hand; the panel shows it without a bracketed button. |
 
 Values are saved in `options.json` next to `config.json` (mode 0600) as
-`{"version": 1, "values": {"sync.enabled": true, "icons.working": "⚡",
+`{"version": 1, "values": {"sync.enabled": true, "quiet.enabled": true,
+"quiet.idle_minutes": "3", "quiet.posts": "silent", "icons.working": "⚡",
 "privacy.redact": true, "topics.delete_after_days": "30", …}}`.
 Missing keys take their defaults and unknown keys survive a save. The file
 is read once at daemon start: edit it by hand and restart the daemon, or use
 the panel, which applies a change immediately.
+
+## Quiet while at the desk
+
+Every topic edit is a Telegram service message ("X changed the topic icon")
+that rings the phone in a group with sound on, and the Bot API has no silent
+form of it; the daemon deletes its own notices after ten seconds, but the
+push has fired by then. Quiet mode therefore holds those writes while you
+are at the machine, where you see Herdr anyway, and lets Telegram catch up
+when you leave.
+
+- **Presence** is the machine's input idle time, sampled every 10 seconds:
+  `ioreg` (`HIDIdleTime`) on macOS, `GetLastInputInfo` on Windows. Idle
+  shorter than `Away after` means at the desk. Linux has no source yet: the
+  automatic verdict there is always "away", so quiet mode never engages and
+  the daemon logs one warning at start. Herdr's own pane focus is not used:
+  another pane's agent would ring while you sit in front of it.
+- **While at the desk** (quiet on): the reconciler defers every topic write
+  (create, icon, name, close, reopen) and logs `reconcile deferred: operator
+  at the desk (quiet)` once per period; blocked and done screens follow
+  `Screen posts` (silent by default). Everything you send to agents, `/screen`,
+  `/status` and the buttons keep working. `/status` starts with `🔕 quiet: you
+  are at the desk (/away to override)`.
+- **When you leave** (idle passes the threshold, `/away`, or quiet mode is
+  switched off in the panel): one reconcile pass creates, renames, closes and
+  repaints only the topics that drifted, then every agent still blocked whose
+  question never rang is posted again with a sound. A question rings once:
+  the flag is set by any blocked post with sound and cleared when the agent
+  leaves blocked, so touching the mouse for a moment and leaving again rings
+  nothing new. With `Re-announce on leaving` off only agents without any post
+  (a new agent, `Held` mode) are posted. The log says `quiet off: operator
+  away, catching up` and `catch-up done` with the counts.
+- **`/away [2h]` and `/here`** in General: `/away` forces "away" until
+  `/here`, `/away 2h` (any Go duration from `1m` to `168h`) for that long,
+  then the automatic verdict rules again. `/status` shows `🏃 away (manual)
+  until 14:30`. Nothing is persisted: a daemon restart returns to automatic.
+  In a topic both commands answer `presence commands live in General`.
+- **At start** presence is sampled before the first reconcile, so a daemon
+  started while you are typing edits no icon; the catch-up follows when you
+  leave. The `status` action line ends with `quiet=on|away|away-manual|off`
+  (`off` when the option is off or the platform has no idle source).
 
 ## Secrets in posts
 

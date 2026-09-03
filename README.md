@@ -36,9 +36,15 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **Rename or close** a topic in Telegram to rename or mute the agent in Herdr.
 - **A control panel** in the General topic: `/status` with links to every
   agent, `/help`, daemon notices.
+- **Quiet while you are at the machine**: while your keyboard or mouse has
+  moved in the last few minutes, topic icons and other topic edits wait (each
+  of them rings the phone) and screen posts arrive without a sound; when you
+  leave, everything catches up and a question still waiting rings once.
+  `/away` and `/here` override it. macOS and Windows; Linux has no idle
+  source yet.
 - **Settings from the phone**: `/options` in General opens a panel with
-  buttons: pause the Herdr → Telegram mirror, pick the status icons from
-  Telegram's topic-icon pack. Everything is in English.
+  buttons: pause the Herdr → Telegram mirror, tune quiet mode, pick the
+  status icons from Telegram's topic-icon pack. Everything is in English.
 - **A daemon that looks after itself**: starts with Herdr, exits when Herdr
   is gone, heals topic drift on start and on `resync`.
 
@@ -137,6 +143,7 @@ Anything you write in a topic reaches the agent:
 | `/clear`, `/compact [instructions]`, `/usage`, `/model [name]` | typed into the agent as its own Claude Code command; two seconds later the screen is posted as a quoted reply (`/usage` and a bare `/model` are closed with `esc` for you); only while the agent is idle |
 | `/status` | `<emoji> <status> · <label> · pane <id>` |
 | `/options` | a hint: the settings panel lives in General |
+| `/away`, `/here` | a hint: presence commands live in General |
 | `/help` | the command list |
 
 The four Claude Code commands are typed verbatim through `agent.prompt`, so
@@ -172,8 +179,10 @@ exited agent get `agent has exited`. Only the configured group and the operator
 ids from setup are accepted; everything else is dropped and logged.
 
 The **General** topic is the control panel: `/status` lists every live agent
-with its status emoji and a link to its topic, `/options` opens the settings
-panel, `/help` shows the commands, and the daemon posts silent notices there
+with its status emoji and a link to its topic (and says when quiet mode is
+holding edits), `/options` opens the settings panel, `/away [2h]` and `/here`
+override the presence check (see below), `/help` shows the commands, and the
+daemon posts silent notices there
 when it starts, stops, loses or regains the **Manage topics** right, or gives
 up on the Herdr socket. Other messages in General are ignored. The commands
 appear in Telegram's `/` menu for the group.
@@ -183,6 +192,13 @@ groups first, then the options of a group. **Sync** holds the `Herdr →
 Telegram sync` checkbox: untick it and the daemon stops creating, editing and
 closing topics and stops posting screens until you tick it again, while
 everything you send to agents keeps working; ticking it runs a full resync.
+**Quiet** holds quiet mode: while your keyboard or mouse has moved within
+`Away after` (3 minutes by default) you count as at the desk, topic edits
+wait (`Hold topic edits`), screen posts go out without a sound (`Screen
+posts`: Silent, Held until you leave, or Normal), and when you leave the
+topics catch up in one pass and every agent still waiting is posted again
+with a sound, once per question (`Re-announce on leaving`); `/away` or
+`/away 2h` in General forces "away", `/here` returns to automatic.
 **Appearance** holds one icon per status, chosen from a grid of the emoji
 Telegram allows as topic icons (no two statuses may share one); a pick
 repaints the live topics at once. **Privacy** holds `Redact secrets` (on by
