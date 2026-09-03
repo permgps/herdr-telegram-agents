@@ -59,6 +59,11 @@ Telegram group on a phone.
 - [ ] **Rename both ways**: renaming the tab in Herdr renames the topic; renaming the topic in Telegram renames the tab (or the custom agent name)
 - [ ] **Close and reopen**: closing a topic by hand mutes edits and posts for that agent; reopening refreshes the name and icon
 - [ ] **Blocked**: an agent waiting for an answer posts its screen with a notification, once, and answering with `y`, `1`, `esc` reaches the agent
+- [ ] **Buttons**: a Claude Code question with three options arrives with buttons `1️⃣` to `3️⃣`; pressing one shows `sent: <n>`, the keyboard becomes `✅ <n> · …`, the transcript shows the answer; pressing the ✅ button says `already answered`
+- [ ] **Approval dialog buttons**: a tool-approval prompt (session without auto mode) arrives with `Yes` / `Yes, and don't ask again …` / `No, and tell Claude …` buttons and `1️⃣` lets the tool run
+- [ ] **Follow-up question**: after answering the first of two questions in one AskUserQuestion call the second arrives with its own buttons within a couple of seconds; note how a multi-select dialog renders and whether a press toggles
+- [ ] **Stale buttons**: answer in Herdr and press the old button: `agent is not waiting anymore` and the keyboard disappears; an agent exiting with buttons pending loses them on exit
+- [ ] **Button access control**: a press from a non-operator account answers `not allowed` and sends nothing
 - [ ] **Done**: a finished agent posts its tail silently
 - [ ] **`/screen`, `/screen 40`, `/screen all`**: the visible screen, a tail, and everything since your last message (a `.txt` document when long)
 - [ ] **Prompts**: plain text in a topic is typed into the agent and the icon turns ⚡

@@ -38,6 +38,27 @@ logs and state live.
   edits, no screen posts, until you reopen it. Reopening refreshes name and
   icon; if the agent exited meanwhile the topic gets 🏁 and is closed again.
 
+## Questions and buttons
+
+- A blocked agent's screen is posted as a code block. When it ends in a
+  numbered dialog with two to five real options, the post also carries one
+  inline button per option, labelled with the option's number and text.
+  Claude Code's `Type something.` and `Chat about this` entries are not
+  offered as buttons and do not count towards the five; the other options
+  keep their numbers, so replying with a digit still works as before.
+- A press sends the option's digit as a key (`agent.send_keys`), answers
+  with a short toast, and replaces the keyboard with a single `✅ <n> · <text>`
+  button; pressing that one says `already answered`. The daemon then reads
+  the screen again after the usual settle delay, so the next question of a
+  multi-step dialog is posted with its own buttons.
+- Buttons are removed lazily: before a newer screen is posted for the same
+  agent, when the agent exits, or when a press arrives for an agent that is
+  no longer blocked, has exited, or for a message that is not the latest
+  question. Such a press does nothing but show a notice.
+- Known limit: in a multi-select dialog a press toggles the option; the
+  operator submits with `enter`. Only operators can press; anyone else gets
+  `not allowed`.
+
 ## Logs and state
 
 `LOG_LEVEL=debug|info|warn|error` in Herdr's environment overrides the level

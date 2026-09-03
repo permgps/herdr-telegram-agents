@@ -109,12 +109,23 @@ notification. When it turns **done** the last 12 lines are posted silently. A
 screen identical to the previous post for that agent is skipped. Agents that
 are already blocked when the daemon starts are posted too.
 
+When the blocked screen ends in a numbered dialog with two to five real
+options (a Claude Code question, an approval prompt, a picker), the post
+carries one button per option, `1️⃣ Yes`, `2️⃣ No, and tell Claude …`.
+Pressing a button sends that number to the agent, exactly like replying `2`;
+the button turns into `✅ 2 · …` and, if the agent asks a follow-up question,
+it arrives with its own buttons. Buttons that no longer apply (you answered in
+Herdr, the agent moved on, an older question) show a short notice instead of
+acting. Claude Code's `Type something.` and `Chat about this` entries get no
+button: reply with text, or with their digit, instead. In a multi-select
+dialog a press toggles the option; send `enter` to submit.
+
 Anything you write in a topic reaches the agent:
 
 | You write | The agent gets |
 |-----------|----------------|
 | plain text | typed as a prompt and submitted (`agent.prompt`) |
-| `y`, `n`, `yes`, `no`, `1`..`9`, `enter`, `ok`, `esc` while the agent is blocked | the matching key (`agent.send_keys`); in any other status these are prompts |
+| `y`, `n`, `yes`, `no`, `1`..`9`, `enter`, `ok`, `esc` while the agent is blocked | the matching key (`agent.send_keys`); in any other status these are prompts. Pressing a button under the question sends its number the same way |
 | `/keys esc enter` | raw key names |
 | `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200) |
 | `/screen all` | everything the agent printed since your last message (typed in Herdr or sent here); long output arrives as a `.txt` file |
