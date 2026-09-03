@@ -154,7 +154,7 @@ func TestPollWarnsOnTransientErrors(t *testing.T) {
 		t.Errorf("stop not logged: %s", buf.String())
 	}
 	au := api.callsOf("getUpdates")[0].form.Get("allowed_updates")
-	if !strings.Contains(au, "message") || !strings.Contains(au, "edited_message") || !strings.Contains(au, "my_chat_member") {
+	if !strings.Contains(au, "message") || !strings.Contains(au, "edited_message") || !strings.Contains(au, "callback_query") || !strings.Contains(au, "my_chat_member") {
 		t.Errorf("allowed_updates = %q", au)
 	}
 	assertNoSecret(t, buf)

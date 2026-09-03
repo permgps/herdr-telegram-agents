@@ -353,3 +353,70 @@ func TestInboundServiceDeleteWithoutRight(t *testing.T) {
 		t.Fatalf("warned %d times, want 1: %s", n, h.buf.String())
 	}
 }
+
+// callbackUpdate builds a button press under message msgID in a topic.
+func callbackUpdate(chatID, fromID int64, thread, msgID int, data string) *models.Update {
+	m := topicMessage(chatID, testBotID, thread, "question").Message
+	m.ID = msgID
+	return &models.Update{ID: 3, CallbackQuery: &models.CallbackQuery{
+		ID:   "cb-" + strconv.Itoa(msgID),
+		From: models.User{ID: fromID},
+		Message: models.MaybeInaccessibleMessage{
+			Type:    models.MaybeInaccessibleMessageTypeMessage,
+			Message: m,
+		},
+		Data: data,
+	}}
+}
+
+func TestInboundCallbackFromOperatorEmitsButtonPressed(t *testing.T) {
+	h := newHarness(t)
+	h.bot.ProcessUpdate(context.Background(), callbackUpdate(testChatID, testOperator, 7, 1000, "2"))
+	ev, ok := expectEvent(t, h.gw.Events()).(domain.ButtonPressed)
+	if !ok {
+		t.Fatalf("event type %T", ev)
+	}
+	want := domain.ButtonPressed{CallbackID: "cb-1000", ThreadID: 7, MessageID: 1000, FromID: testOperator, Data: "2"}
+	if ev != want {
+		t.Errorf("event = %+v, want %+v", ev, want)
+	}
+	if len(h.api.callsOf("answerCallbackQuery")) != 0 {
+		t.Errorf("the gateway must leave the answer to the application")
+	}
+}
+
+func TestInboundCallbackFromStrangerIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.bot.ProcessUpdate(context.Background(), callbackUpdate(testChatID, 777, 7, 1000, "2"))
+	expectNoEvent(t, h.gw.Events())
+	calls := h.api.callsOf("answerCallbackQuery")
+	if len(calls) != 1 || calls[0].form.Get("text") != "not allowed" || calls[0].form.Get("callback_query_id") != "cb-1000" {
+		t.Fatalf("answerCallbackQuery calls = %+v", calls)
+	}
+	if !strings.Contains(h.buf.String(), "reason=not_operator") {
+		t.Errorf("drop not logged: %s", h.buf.String())
+	}
+}
+
+func TestInboundCallbackFromForeignChatDropped(t *testing.T) {
+	h := newHarness(t)
+	h.bot.ProcessUpdate(context.Background(), callbackUpdate(-100999, testOperator, 7, 1000, "2"))
+	expectNoEvent(t, h.gw.Events())
+	if len(h.api.callsOf("answerCallbackQuery")) != 0 {
+		t.Errorf("foreign presses are not answered")
+	}
+	if !strings.Contains(h.buf.String(), "reason=foreign_chat") {
+		t.Errorf("drop not logged: %s", h.buf.String())
+	}
+}
+
+func TestInboundCallbackWithoutMessageDropped(t *testing.T) {
+	h := newHarness(t)
+	u := callbackUpdate(testChatID, testOperator, 7, 1000, "2")
+	u.CallbackQuery.Message = models.MaybeInaccessibleMessage{Type: models.MaybeInaccessibleMessageTypeInaccessibleMessage}
+	h.bot.ProcessUpdate(context.Background(), u)
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "reason=callback_without_message") {
+		t.Errorf("drop not logged: %s", h.buf.String())
+	}
+}

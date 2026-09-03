@@ -210,10 +210,13 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 // each as its own queued call. ThreadID 0 addresses the General topic, so
 // message_thread_id is omitted. Code wraps every part in <pre>; HTML passes
 // the part through as caller-escaped markup. ReplyTo quotes the operator's
-// message on the first part only. Messages are silent unless Notify is
-// set. The first failure stops the remaining parts.
-func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) error {
+// message on the first part only; Buttons ride on the last part as an
+// inline keyboard. Messages are silent unless Notify is set. The first
+// failure stops the remaining parts. The id of the last part is returned
+// so the caller can edit its keyboard later.
+func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 	parts := chunk(out.Text, textMax)
+	lastID := 0
 	for i, part := range parts {
 		body := renderPlain(part)
 		switch {
@@ -232,21 +235,68 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) error {
 		if i == 0 && out.ReplyTo != 0 {
 			params.ReplyParameters = &models.ReplyParameters{MessageID: out.ReplyTo, AllowSendingWithoutReply: true}
 		}
+		buttons := 0
+		if i == len(parts)-1 && len(out.Buttons) > 0 {
+			params.ReplyMarkup = inlineKeyboard(out.Buttons)
+			buttons = len(out.Buttons)
+		}
 		err := g.queue.Do(ctx, func(ctx context.Context) error {
-			_, err := g.api.SendMessage(ctx, params)
+			msg, err := g.api.SendMessage(ctx, params)
+			if err == nil && msg != nil {
+				lastID = msg.ID
+			}
 			return translate(err)
 		})
 		if err != nil {
 			g.log.Warn("sendMessage failed",
 				slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)), slog.Any("err", err))
-			return fmt.Errorf("sendMessage thread %d part %d/%d: %w", out.ThreadID, i+1, len(parts), err)
+			return 0, fmt.Errorf("sendMessage thread %d part %d/%d: %w", out.ThreadID, i+1, len(parts), err)
 		}
 		g.log.Debug("sendMessage",
 			slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
 			slog.Int("reply_to", out.ReplyTo), slog.Bool("notify", out.Notify),
-			slog.Int("runes", utf8.RuneCountInString(part)))
+			slog.Int("runes", utf8.RuneCountInString(part)), slog.Int("buttons", buttons), slog.Int("message_id", lastID))
 	}
-	return nil
+	return lastID, nil
+}
+
+// inlineKeyboard renders buttons as an inline keyboard with one button per
+// row, which keeps long option labels readable on a phone.
+func inlineKeyboard(buttons []domain.Button) *models.InlineKeyboardMarkup {
+	rows := make([][]models.InlineKeyboardButton, 0, len(buttons))
+	for _, b := range buttons {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: b.Text, CallbackData: b.Data}})
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// EditButtons replaces the inline keyboard of one of the bot's messages;
+// an empty slice removes it. Telegram answers "message is not modified"
+// when the keyboard already matches, which is the state the caller wants.
+func (g *Gateway) EditButtons(ctx context.Context, messageID int, buttons []domain.Button) error {
+	markup := inlineKeyboard(buttons)
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.EditMessageReplyMarkup(ctx, &bot.EditMessageReplyMarkupParams{
+			ChatID:      g.chatID,
+			MessageID:   messageID,
+			ReplyMarkup: markup,
+		})
+		return translate(err)
+	})
+	if errors.Is(err, ErrMessageNotModified) {
+		g.log.Debug("editMessageReplyMarkup already in place", slog.Int("message_id", messageID))
+		err = nil
+	}
+	return g.finish("editMessageReplyMarkup", err, slog.Int("message_id", messageID), slog.Int("buttons", len(buttons)))
+}
+
+// AnswerButton acknowledges a button press with a short toast. The call
+// bypasses the serial queue on purpose: Telegram expects the answer within
+// seconds or the client keeps its spinner, and answerCallbackQuery does not
+// count against the per-group message limit the queue protects.
+func (g *Gateway) AnswerButton(ctx context.Context, callbackID, text string) error {
+	_, err := g.api.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: callbackID, Text: text})
+	return g.finish("answerCallbackQuery", translate(err), slog.Int("text_len", len(text)))
 }
 
 // React puts one emoji reaction on a message. Telegram addresses reactions

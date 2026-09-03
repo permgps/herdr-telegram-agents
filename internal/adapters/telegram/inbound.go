@@ -20,6 +20,7 @@ import (
 // operator check; General-topic commands come after topic traffic.
 func (g *Gateway) registerHandlers() {
 	g.api.RegisterHandlerMatchFunc(g.matchOwnService, g.onOwnService)
+	g.api.RegisterHandlerMatchFunc(g.matchCallback, g.onCallback)
 	g.api.RegisterHandlerMatchFunc(g.matchOurTopic, g.onTopicUpdate)
 	g.api.RegisterHandlerMatchFunc(g.matchGeneral, g.onGeneral)
 	g.api.RegisterHandlerMatchFunc(g.matchMyChatMember, g.onMyChatMember)
@@ -36,6 +37,36 @@ func (g *Gateway) matchOwnService(u *models.Update) bool {
 		return false
 	}
 	return m.ForumTopicEdited != nil || m.ForumTopicClosed != nil || m.ForumTopicReopened != nil
+}
+
+// matchCallback accepts button presses under the bot's messages in the
+// configured chat. The operator check happens in onCallback, which has the
+// context needed to answer a stranger's press so their client stops
+// spinning.
+func (g *Gateway) matchCallback(u *models.Update) bool {
+	q := u.CallbackQuery
+	if q == nil {
+		return false
+	}
+	m := callbackMessage(q)
+	if m == nil {
+		g.drop("callback_without_message", 0, q.From.ID)
+		return false
+	}
+	if m.Chat.ID != g.chatID {
+		g.drop("foreign_chat", m.Chat.ID, q.From.ID)
+		return false
+	}
+	return true
+}
+
+// callbackMessage returns the accessible message a callback was pressed
+// under, or nil when Telegram withheld it.
+func callbackMessage(q *models.CallbackQuery) *models.Message {
+	if q.Message.Type != models.MaybeInaccessibleMessageTypeMessage {
+		return nil
+	}
+	return q.Message.Message
 }
 
 // matchOurTopic accepts new messages posted by an operator inside a topic
@@ -132,6 +163,27 @@ func (g *Gateway) onTopicUpdate(ctx context.Context, _ *bot.Bot, u *models.Updat
 	default:
 		g.drop("unsupported_message", m.Chat.ID, m.From.ID)
 	}
+}
+
+// onCallback translates an operator's button press into a domain event. A
+// press by anyone else is answered with a refusal and dropped.
+func (g *Gateway) onCallback(ctx context.Context, _ *bot.Bot, u *models.Update) {
+	q := u.CallbackQuery
+	m := callbackMessage(q)
+	if !g.operators[q.From.ID] {
+		g.drop("not_operator", m.Chat.ID, q.From.ID)
+		if _, err := g.api.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "not allowed"}); err != nil {
+			g.log.Debug("callback refusal not delivered", slog.Int64("from_id", q.From.ID), slog.Any("err", translate(err)))
+			return
+		}
+		g.log.Debug("callback refused", slog.Int64("from_id", q.From.ID), slog.Int("message_id", m.ID))
+		return
+	}
+	g.log.Debug("telegram button pressed", slog.Int("thread_id", m.MessageThreadID), slog.Int("message_id", m.ID),
+		slog.Int64("from_id", q.From.ID), slog.String("data", q.Data))
+	g.emit(ctx, "button_pressed", m.MessageThreadID, domain.ButtonPressed{
+		CallbackID: q.ID, ThreadID: m.MessageThreadID, MessageID: m.ID, FromID: q.From.ID, Data: q.Data,
+	})
 }
 
 // onGeneral translates a General-topic command into a domain event.

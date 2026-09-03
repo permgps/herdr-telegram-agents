@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/permgps/herdr-telegram-agents/internal/adapters/telegram"
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
@@ -13,7 +14,7 @@ func TestSendSinglePart(t *testing.T) {
 	h := newHarness(t)
 	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
 
-	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: `a < b & "c"`}); err != nil {
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: `a < b & "c"`}); err != nil {
 		t.Fatal(err)
 	}
 	calls := h.api.callsOf("sendMessage")
@@ -37,7 +38,7 @@ func TestSendToGeneralOmitsThread(t *testing.T) {
 	h := newHarness(t)
 	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
 
-	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 0, Text: "started"}); err != nil {
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 0, Text: "started"}); err != nil {
 		t.Fatal(err)
 	}
 	f := h.api.callsOf("sendMessage")[0].form
@@ -51,7 +52,7 @@ func TestSendNotifyAndReply(t *testing.T) {
 	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
 
 	text := strings.Repeat("a", 4032) + "\n" + strings.Repeat("b", 10)
-	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, ReplyTo: 77, Notify: true}); err != nil {
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, ReplyTo: 77, Notify: true}); err != nil {
 		t.Fatal(err)
 	}
 	calls := h.api.callsOf("sendMessage")
@@ -74,7 +75,7 @@ func TestSendNotifyAndReply(t *testing.T) {
 func TestSendHTMLPassesThrough(t *testing.T) {
 	h := newHarness(t)
 	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
-	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 0, Text: `<a href="https://t.me/c/1/2">a &amp; b</a>`, HTML: true}); err != nil {
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 0, Text: `<a href="https://t.me/c/1/2">a &amp; b</a>`, HTML: true}); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.api.callsOf("sendMessage")[0].form.Get("text"); got != `<a href="https://t.me/c/1/2">a &amp; b</a>` {
@@ -91,7 +92,7 @@ func TestSendCodeAndChunks(t *testing.T) {
 		lines = append(lines, strings.Repeat("x", 30)+" <"+itoa(i)+">")
 	}
 	text := strings.Join(lines, "\n") // ~10.8k runes -> 3 parts
-	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, Code: true}); err != nil {
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, Code: true}); err != nil {
 		t.Fatal(err)
 	}
 	calls := h.api.callsOf("sendMessage")
@@ -125,7 +126,7 @@ func TestSendStopsAtFirstFailure(t *testing.T) {
 		return okReply(map[string]any{"message_id": n})
 	})
 	text := strings.Repeat("a", 4032) + "\n" + strings.Repeat("b", 4032) + "\n" + strings.Repeat("c", 10)
-	err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text})
+	_, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text})
 	if !errors.Is(err, domain.ErrTopicGone) {
 		t.Fatalf("err = %v, want ErrTopicGone", err)
 	}
@@ -140,7 +141,7 @@ func TestSendStopsAtFirstFailure(t *testing.T) {
 func TestSendClosedTopic(t *testing.T) {
 	h := newHarness(t)
 	h.api.on("sendMessage", func(url.Values) apiReply { return errReply(400, "Bad Request: TOPIC_CLOSED") })
-	err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "hi"})
+	_, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "hi"})
 	if !errors.Is(err, domain.ErrTopicClosed) {
 		t.Fatalf("err = %v, want ErrTopicClosed", err)
 	}
@@ -148,7 +149,7 @@ func TestSendClosedTopic(t *testing.T) {
 
 func TestSendEmptyIsNoop(t *testing.T) {
 	h := newHarness(t)
-	if err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42}); err != nil {
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(h.api.methods()); n != 0 {
@@ -246,5 +247,113 @@ func TestSendDocumentToGeneralAndErrors(t *testing.T) {
 	err := h.gw.SendDocument(h.ctx, domain.Document{ThreadID: 9, Name: "x.txt", Data: []byte("x"), Caption: "fail"})
 	if !errors.Is(err, domain.ErrTopicGone) {
 		t.Fatalf("err = %v, want ErrTopicGone", err)
+	}
+}
+
+func TestSendAttachesKeyboardToLastPart(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		n++
+		return okReply(map[string]any{"message_id": 500 + n})
+	})
+
+	text := strings.Repeat("a", 4032) + "\n" + strings.Repeat("b", 4032) + "\n" + strings.Repeat("c", 10)
+	buttons := []domain.Button{{Text: "1️⃣ Red", Data: "1"}, {Text: "2️⃣ Green", Data: "2"}}
+	id, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, Code: true, Buttons: buttons})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(calls))
+	}
+	if id != 503 {
+		t.Errorf("returned id = %d, want the last part's 503", id)
+	}
+	for i, c := range calls[:2] {
+		if c.form.Has("reply_markup") {
+			t.Errorf("part %d carries reply_markup: %v", i+1, c.form.Get("reply_markup"))
+		}
+	}
+	markup := calls[2].form.Get("reply_markup")
+	for _, want := range []string{`"inline_keyboard":[[{"text":"1️⃣ Red","callback_data":"1"}],[{"text":"2️⃣ Green","callback_data":"2"}]]`} {
+		if !strings.Contains(markup, want) {
+			t.Errorf("reply_markup = %s, want %s", markup, want)
+		}
+	}
+}
+
+func TestSendReturnsMessageID(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 321}) })
+
+	id, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 321 {
+		t.Errorf("id = %d, want 321", id)
+	}
+	if h.api.callsOf("sendMessage")[0].form.Has("reply_markup") {
+		t.Errorf("reply_markup sent without Buttons")
+	}
+}
+
+func TestEditButtonsReplacesAndRemoves(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editMessageReplyMarkup", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 7}) })
+
+	if err := h.gw.EditButtons(h.ctx, 7, []domain.Button{{Text: "✅ 2 · Green", Data: "done"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.gw.EditButtons(h.ctx, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("editMessageReplyMarkup")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	f := calls[0].form
+	if f.Get("chat_id") != "-1001234567890" || f.Get("message_id") != "7" || !strings.Contains(f.Get("reply_markup"), `"callback_data":"done"`) {
+		t.Errorf("first edit form = %v", f)
+	}
+	if got := calls[1].form.Get("reply_markup"); !strings.Contains(got, `"inline_keyboard":[]`) {
+		t.Errorf("removal reply_markup = %s, want an empty inline_keyboard", got)
+	}
+}
+
+func TestEditButtonsNotModifiedIsNil(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editMessageReplyMarkup", func(url.Values) apiReply {
+		return errReply(400, "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message")
+	})
+	if err := h.gw.EditButtons(h.ctx, 7, nil); err != nil {
+		t.Fatalf("not-modified must be success, got %v", err)
+	}
+}
+
+func TestEditButtonsOtherErrorIsReturned(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editMessageReplyMarkup", func(url.Values) apiReply { return errReply(400, "Bad Request: message to edit not found") })
+	err := h.gw.EditButtons(h.ctx, 7, nil)
+	var api *telegram.APIError
+	if !errors.As(err, &api) || api.Code != 400 {
+		t.Fatalf("err = %v, want *APIError 400", err)
+	}
+}
+
+func TestAnswerButton(t *testing.T) {
+	h := newHarness(t)
+	if err := h.gw.AnswerButton(h.ctx, "cb-1", "sent: 2"); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("answerCallbackQuery")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	f := calls[0].form
+	if f.Get("callback_query_id") != "cb-1" || f.Get("text") != "sent: 2" {
+		t.Errorf("form = %v", f)
 	}
 }

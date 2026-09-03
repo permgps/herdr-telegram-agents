@@ -73,6 +73,12 @@ var badRequestPrefix = bot.ErrorBadRequest.Error() + ", "
 // for tests only.
 var ErrTopicNotModified = errors.New("topic not modified")
 
+// ErrMessageNotModified is Telegram's answer to a message edit that changes
+// nothing (400 "message is not modified"), for example removing a keyboard
+// that is already gone. The gateway treats it as success; exported for
+// tests only.
+var ErrMessageNotModified = errors.New("message not modified")
+
 // description400 extracts Telegram's description from a wrapped 400.
 func description400(err error) string {
 	return strings.TrimPrefix(err.Error(), badRequestPrefix)
@@ -99,6 +105,8 @@ func classify400(err error) error {
 		return fmt.Errorf("%w: %w", domain.ErrTopicClosed, err)
 	case strings.Contains(lower, "topic_not_modified"):
 		return fmt.Errorf("%w: %w", ErrTopicNotModified, err)
+	case strings.Contains(lower, "message is not modified"):
+		return fmt.Errorf("%w: %w", ErrMessageNotModified, err)
 	}
 	return &APIError{Code: 400, Description: desc, Err: err}
 }

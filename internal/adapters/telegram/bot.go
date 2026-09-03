@@ -35,6 +35,7 @@ func NewBot(token string, log *slog.Logger, fatal context.CancelFunc, opts ...bo
 		bot.WithAllowedUpdates(bot.AllowedUpdates{
 			models.AllowedUpdateMessage,
 			models.AllowedUpdateEditedMessage,
+			models.AllowedUpdateCallbackQuery,
 			models.AllowedUpdateMyChatMember,
 		}),
 		bot.WithDefaultHandler(func(context.Context, *bot.Bot, *models.Update) {}),
