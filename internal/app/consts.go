@@ -69,6 +69,9 @@ const (
 	// does not monopolise the Telegram queue; the rest wait for the next
 	// pass.
 	sweepBatch = 50
+	// presenceInterval is how often the daemon samples the machine's input
+	// idle time to decide whether the operator is at the desk.
+	presenceInterval = 10 * time.Second
 	// choiceLabelRunes is the longest option label shown on an inline
 	// button; longer labels are cut with an ellipsis so a phone still shows
 	// the number and the start of the text.

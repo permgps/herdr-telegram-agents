@@ -61,7 +61,7 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	f.opts = NewOptions(domain.DefaultOptions(), f.options, func(name string) []string { return f.tg.IconPack() }, nil)
 	// Same wrapping as NewBridge: the fake records what really leaves.
 	tg := newRedactingGateway(f.tg, domain.NewRedactor(testBotToken), f.opts.RedactEnabled, nil)
-	f.out = newOutbound(f.herdr, tg, f.view, lookup, f.capture, f.opts, f.clock, nil)
+	f.out = newOutbound(f.herdr, tg, f.view, lookup, live, f.capture, f.opts, f.clock, nil)
 	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, -1001234567890, "agents_bot", f.clock, nil)
 	return f
 }
@@ -447,5 +447,209 @@ func TestOutboundSyncOffSkipsPostsUntilOn(t *testing.T) {
 	f.fire(t, 1)
 	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "  Allow edit?\n  1. Yes\n  2. No" {
 		t.Fatalf("Sent after sync on = %+v", sent)
+	}
+}
+
+// quietOutbound wires quiet mode into the fixture's outbound with a
+// switchable predicate.
+func quietOutbound(f *bridgeFixture) *bool {
+	quiet := false
+	f.out.SetPresence(func() bool { return quiet }, f.opts)
+	return &quiet
+}
+
+func TestOutboundQuietPostsModes(t *testing.T) {
+	for _, tc := range []struct {
+		mode        domain.PostsMode
+		sent        int
+		notify      bool
+		afterSilent bool // a Fire after quiet ends posts nothing new (duplicate)
+	}{
+		{domain.PostsSilent, 1, false, true},
+		{domain.PostsNormal, 1, true, true},
+		{domain.PostsHeld, 0, false, false},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			f := newBridgeFixture(t)
+			quiet := quietOutbound(f)
+			if err := f.opts.Set(f.ctx, domain.OptionQuietPosts, string(tc.mode), 1); err != nil {
+				t.Fatal(err)
+			}
+			a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+			f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+			*quiet = true
+			a = f.setStatus(a, domain.StatusBlocked)
+			f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+			f.fire(t, 1)
+			sent := f.tg.Sent()
+			if len(sent) != tc.sent {
+				t.Fatalf("sent while quiet = %+v", sent)
+			}
+			if tc.sent == 1 && sent[0].Notify != tc.notify {
+				t.Fatalf("notify = %v, want %v", sent[0].Notify, tc.notify)
+			}
+			if got := f.out.announced[a.Key]; got != (tc.sent == 1 && tc.notify) {
+				t.Errorf("announced = %v", got)
+			}
+			// Quiet ends and the agent is still blocked: a plain Fire posts
+			// only what was held (a silent or normal post is a duplicate).
+			*quiet = false
+			f.tg.Reset()
+			f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+			f.fire(t, 1)
+			if got := len(f.tg.Sent()); got != map[bool]int{true: 0, false: 1}[tc.afterSilent] {
+				t.Fatalf("sent after quiet = %+v", f.tg.Sent())
+			}
+			if tc.mode == domain.PostsHeld && !f.tg.Sent()[0].Notify {
+				t.Error("held post released without sound")
+			}
+		})
+	}
+}
+
+func TestOutboundQuietDoneScreens(t *testing.T) {
+	f := newBridgeFixture(t)
+	quiet := quietOutbound(f)
+	*quiet = true
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  ✓ tests pass  \n\n")
+	a = f.setStatus(a, domain.StatusDone)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Notify {
+		t.Fatalf("done while quiet (silent mode) = %+v", sent)
+	}
+	if err := f.opts.Set(f.ctx, domain.OptionQuietPosts, string(domain.PostsHeld), 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	f.herdr.SetScreen("p1", "\n  ✓ lint pass  \n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.fire(t, 1)
+	if len(f.tg.Sent()) != 0 {
+		t.Fatalf("done while quiet (held) = %+v", f.tg.Sent())
+	}
+}
+
+func TestOutboundCatchUpOneSoundPerQuestion(t *testing.T) {
+	f := newBridgeFixture(t)
+	quiet := quietOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	*quiet = true
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1) // silent post
+	f.tg.Reset()
+
+	*quiet = false
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 1 || !sent[0].Notify || len(sent[0].Buttons) != 2 {
+		t.Fatalf("catch-up post = %+v", sent)
+	}
+	if !f.out.announced[a.Key] {
+		t.Error("catch-up did not mark the question announced")
+	}
+	// Back at the desk and away again: the same question stays silent.
+	f.tg.Reset()
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.tg.Sent()) != 0 {
+		t.Fatalf("second catch-up posted %+v", f.tg.Sent())
+	}
+	// The agent answers, works, asks again: a new question, announced anew.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	if f.out.announced[a.Key] {
+		t.Fatal("leaving blocked did not clear the announced flag")
+	}
+	*quiet = true
+	f.herdr.SetScreen("p1", "\n  Run tests?  \n  1. Yes  \n  2. No  \n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	*quiet = false
+	f.tg.Reset()
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || !sent[0].Notify || !strings.Contains(sent[0].Text, "Run tests?") {
+		t.Fatalf("catch-up for the new question = %+v", sent)
+	}
+}
+
+func TestOutboundCatchUpRules(t *testing.T) {
+	f := newBridgeFixture(t)
+	quiet := quietOutbound(f)
+	// a: silently posted while quiet; b: new agent, never posted (no topic
+	// yet at the time); c: muted; d: done, not blocked; e: errors on send.
+	a := f.add(t, "p1", "t1", "a", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Q a?  \n\n")
+	*quiet = true
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	b := f.add(t, "p2", "t2", "b", domain.StatusBlocked)
+	f.herdr.SetScreen("p2", "\n  Q b?  \n\n")
+	c := f.add(t, "p3", "t3", "c", domain.StatusBlocked)
+	f.herdr.SetScreen("p3", "\n  Q c?  \n\n")
+	f.mapping.Mute(c.Key, tb0)
+	f.view.publish(f.mapping)
+	d := f.add(t, "p4", "t4", "d", domain.StatusDone)
+	f.herdr.SetScreen("p4", "\n  done d  \n\n")
+	e := f.add(t, "p5", "t5", "e", domain.StatusBlocked)
+	f.herdr.SetScreen("p5", "\n  Q e?  \n\n")
+	_, _ = b, d
+	f.tg.Reset()
+
+	// Re-announce off: a (already has a post) is skipped, b (no post) still goes out.
+	if err := f.opts.Set(f.ctx, domain.OptionQuietReannounce, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	*quiet = false
+	f.tg.FailNext("send", errors.New("boom"))
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Sent()
+	texts := make([]string, 0, len(sent))
+	for _, s := range sent {
+		texts = append(texts, strings.TrimSpace(s.Text))
+		if !s.Notify {
+			t.Errorf("catch-up post without sound: %+v", s)
+		}
+	}
+	// The failing send hit whichever of b and e came first; the other one posted.
+	if len(sent) != 1 || (texts[0] != "Q b?" && texts[0] != "Q e?") {
+		t.Fatalf("catch-up with reannounce off = %v", texts)
+	}
+	if f.out.announced[a.Key] || f.out.announced[c.Key] {
+		t.Error("skipped agents were marked announced")
+	}
+	_ = e
+
+	// Re-announce on: a is posted again with sound; the previously failed one too.
+	if err := f.opts.Set(f.ctx, domain.OptionQuietReannounce, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent = f.tg.Sent()
+	if len(sent) != 2 {
+		t.Fatalf("catch-up with reannounce on = %+v", sent)
+	}
+	for _, s := range sent {
+		if !s.Notify || strings.Contains(s.Text, "Q c?") || strings.Contains(s.Text, "done d") {
+			t.Errorf("unexpected catch-up post %+v", s)
+		}
+	}
+	// Fatal Telegram errors stop the catch-up and surface.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.tg.FailNext("send", domain.ErrBotUnauthorized)
+	if err := f.out.CatchUp(f.ctx); !errors.Is(err, domain.ErrBotUnauthorized) {
+		t.Fatalf("fatal error not returned: %v", err)
 	}
 }

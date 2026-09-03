@@ -43,7 +43,7 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	// Every post of the bridge passes the redactor; the reconciler keeps
 	// the raw gateway because topic names are agent labels.
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
-	out := newOutbound(herdr, tg, topics, registry.Agent, capture, opts, clock, log)
+	out := newOutbound(herdr, tg, topics, registry.Agent, registry.Live, capture, opts, clock, log)
 	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, cfg.ChatID, cfg.BotUsername, clock, log)
 	return &Bridge{
 		out:         out,
@@ -53,6 +53,20 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		log:         log,
 		CallTimeout: bridgeCallTimeout,
 	}
+}
+
+// presenceAway is the job the daemon submits when quiet mode ends: the
+// outbound posts the questions that are still waiting.
+type presenceAway struct{}
+
+// SetPresence wires quiet mode into the outbound (posts mode, catch-up)
+// and the inbound (/away, /here, the /status header).
+func (b *Bridge) SetPresence(p *Presence, opts *Options) {
+	if p == nil {
+		return
+	}
+	b.out.SetPresence(p.Quiet, opts)
+	b.in.SetPresence(p)
 }
 
 // SetSettle overrides the screen and command settle delays (tests).
@@ -70,7 +84,7 @@ func (b *Bridge) Fatal() <-chan error { return b.fatal }
 // next event or a resync brings the state back.
 func (b *Bridge) Submit(job any) {
 	switch job.(type) {
-	case AgentEvent, domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand:
+	case AgentEvent, domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand, presenceAway:
 	default:
 		b.log.Warn("bridge job of unknown type dropped", slog.String("type", fmt.Sprintf("%T", job)))
 		return
@@ -127,6 +141,9 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 	case domain.GeneralCommand:
 		b.log.Debug("bridge job", slog.String("kind", "general_command"), slog.Int("message_id", j.MessageID))
 		b.run(ctx, "general_command", func(ctx context.Context) error { return b.in.HandleGeneral(ctx, j) })
+	case presenceAway:
+		b.log.Debug("bridge job", slog.String("kind", "catch_up"))
+		b.run(ctx, "catch_up", b.out.CatchUp)
 	}
 }
 

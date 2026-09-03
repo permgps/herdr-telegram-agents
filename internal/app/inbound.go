@@ -30,13 +30,16 @@ Any other text is typed into the agent as a prompt.`
 // inbound turns operator messages into Herdr calls and answers commands.
 // It runs on the bridge goroutine.
 type inbound struct {
-	herdr       domain.HerdrGateway
-	tg          domain.TelegramGateway
-	topics      *topicView
-	agents      agentLookup
-	live        func() []domain.Agent
-	out         *outbound
-	opts        *Options
+	herdr  domain.HerdrGateway
+	tg     domain.TelegramGateway
+	topics *topicView
+	agents agentLookup
+	live   func() []domain.Agent
+	out    *outbound
+	opts   *Options
+	// presence answers /away, /here and the /status header; nil until
+	// SetPresence, when the commands say quiet mode is unavailable.
+	presence    *Presence
 	panel       *panel
 	chatID      int64
 	botUsername string
@@ -266,6 +269,9 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 		return i.reply(ctx, 0, cmd.MessageID, "unknown command, see /help")
 	}
 }
+
+// SetPresence wires the presence tracker for /away, /here and /status.
+func (i *inbound) SetPresence(p *Presence) { i.presence = p }
 
 // PressPanel serves a button of the options panel (callback data with the
 // panel prefix); the bridge routes such presses here.

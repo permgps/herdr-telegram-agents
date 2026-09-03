@@ -60,6 +60,21 @@ func (o *Options) RedactEnabled() bool { return o.Get().RedactEnabled() }
 // DeleteAfter is the stale-topic age in force; zero means the sweep is off.
 func (o *Options) DeleteAfter() time.Duration { return o.Get().DeleteAfter() }
 
+// QuietEnabled is the quiet-mode master switch.
+func (o *Options) QuietEnabled() bool { return o.Get().QuietEnabled() }
+
+// QuietIdle is the idle threshold after which the operator counts as away.
+func (o *Options) QuietIdle() time.Duration { return o.Get().QuietIdle() }
+
+// QuietTopics reports whether topic writes wait while at the desk.
+func (o *Options) QuietTopics() bool { return o.Get().QuietTopics() }
+
+// QuietPosts is what quiet mode does with screen posts.
+func (o *Options) QuietPosts() domain.PostsMode { return o.Get().QuietPosts() }
+
+// QuietReannounce reports whether leaving re-posts still-blocked agents.
+func (o *Options) QuietReannounce() bool { return o.Get().QuietReannounce() }
+
 // Choices lists the allowed values of a choice source; nil when unknown.
 // Lists the domain owns (the day counts) are answered without asking the
 // external source.

@@ -659,3 +659,66 @@ func TestReconcilerSyncOffPausesWritesUntilResync(t *testing.T) {
 	}
 	assertCalls(t, f.tg)
 }
+
+func TestReconcilerQuietDefersWritesUntilCatchUp(t *testing.T) {
+	f := newRec(t)
+	quiet := true
+	f.rec.SetQuiet(func() bool { return quiet })
+
+	// A topic that exists from before quiet began.
+	quiet = false
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.handle(t, app.AgentAppeared, a)
+	assertCalls(t, f.tg, "create:reviewer:working")
+	f.tg.Reset()
+	quiet = true
+
+	// A status change while quiet fires but writes nothing and leaves the drift in the mapping.
+	f.handle(t, app.AgentChanged, agent("p1", "t1", "reviewer", domain.StatusBlocked))
+	f.fireDue(t, 1)
+	assertCalls(t, f.tg)
+	if _, changed := f.rec.Mapping().Diff(a.Key, agent("p1", "t1", "reviewer", domain.StatusBlocked)); !changed {
+		t.Fatal("mapping was updated despite the deferred edit")
+	}
+	// A new agent while quiet gets no topic; a repeated change does not create one either.
+	b := agent("p2", "t2", "newcomer", domain.StatusBlocked)
+	f.handle(t, app.AgentAppeared, b)
+	f.handle(t, app.AgentChanged, b)
+	// An agent leaving while quiet is neither marked exited nor closed.
+	c := agent("p3", "t3", "leaver", domain.StatusIdle)
+	quiet = false
+	f.handle(t, app.AgentAppeared, c)
+	f.tg.Reset()
+	quiet = true
+	f.handle(t, app.AgentGone, c)
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusBlocked), b}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg)
+	if f.rec.ReadOnly() {
+		t.Error("quiet must not report lost rights")
+	}
+
+	// Quiet ends: one Reconcile heals exactly what drifted.
+	quiet = false
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusBlocked), b}); err != nil {
+		t.Fatal(err)
+	}
+	got := f.tg.Calls()
+	want := map[string]bool{"edit:102:status=exited": true, "close:102": true, "edit:101:status=blocked": true, "create:newcomer:blocked": true}
+	if len(got) != len(want) {
+		t.Fatalf("catch-up calls = %v, want one of each %v", got, want)
+	}
+	for _, c := range got {
+		if !want[c] {
+			t.Errorf("unexpected catch-up call %q in %v", c, got)
+		}
+	}
+	// Nothing left to heal.
+	f.tg.Reset()
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{agent("p1", "t1", "reviewer", domain.StatusBlocked), b}); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, f.tg)
+	f.rec.SetQuiet(nil)
+}

@@ -30,6 +30,7 @@ func newRunningBridge(t *testing.T) *runningBridge {
 	// The fixture's agent map stands in for the registry so tests control
 	// statuses directly.
 	b.out.agents = f.out.agents
+	b.out.live = f.out.live
 	b.in.agents = f.in.agents
 	b.in.live = f.in.live
 	b.out.topics, b.in.topics = f.view, f.view
@@ -241,5 +242,23 @@ func TestBridgeRoutesPanelPressesToInbound(t *testing.T) {
 		if strings.HasPrefix(c, "edittext:55") {
 			t.Fatalf("digit press reached the panel: %q", r.tg.Calls())
 		}
+	}
+}
+
+func TestBridgeRunsCatchUpOnPresenceAway(t *testing.T) {
+	r := newRunningBridge(t)
+	quiet := true
+	r.bridge.out.SetPresence(func() bool { return quiet }, r.opts)
+	r.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
+	r.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	quiet = false
+	r.bridge.Submit(presenceAway{})
+	waitUntil(t, "catch-up post", func() bool { return len(r.tg.Sent()) == 1 })
+	if sent := r.tg.Sent(); !sent[0].Notify || sent[0].ThreadID != 101 {
+		t.Fatalf("catch-up post = %+v", sent)
+	}
+	r.bridge.Submit(struct{}{}) // unknown job types are still dropped
+	if r.bridge.Dropped() != 0 {
+		t.Error("unknown job counted as overflow")
 	}
 }

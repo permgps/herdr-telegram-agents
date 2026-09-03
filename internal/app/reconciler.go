@@ -27,11 +27,16 @@ type Reconciler struct {
 	deb    *debouncer
 	agents map[domain.Key]domain.Agent // last known agent per key, for fire-time diffs
 	// rightsLost pauses writes while the bot cannot manage topics; paused
-	// reads the operator's sync switch. Either blocks every Telegram write.
+	// reads the operator's sync switch; quiet reads the presence tracker
+	// (operator at the desk with topic edits held). Any of them blocks
+	// every Telegram write.
 	rightsLost bool
 	paused     func() bool
-	// pausedLogged keeps the "sync off" skip at one log line per pause.
-	pausedLogged bool
+	quiet      func() bool
+	// syncLogged and quietLogged keep the "sync off" and "quiet" skips at
+	// one log line per pause each.
+	syncLogged  bool
+	quietLogged bool
 	// sweepRightsWarned keeps the "cannot delete messages" warning of the
 	// sweep at one line per daemon run.
 	sweepRightsWarned bool
@@ -61,10 +66,21 @@ func NewReconciler(tg domain.TelegramGateway, herdr domain.HerdrGateway, store d
 		deb:     newDebouncer(clock, editDebounce, log),
 		agents:  map[domain.Key]domain.Agent{},
 		paused:  paused,
+		quiet:   func() bool { return false },
 		view:    newTopicView(),
 	}
 	r.view.publish(mapping)
 	return r
+}
+
+// SetQuiet installs the quiet predicate: while it answers true, every
+// topic write is deferred and the next Reconcile heals what drifted. nil
+// means never quiet.
+func (r *Reconciler) SetQuiet(fn func() bool) {
+	if fn == nil {
+		fn = func() bool { return false }
+	}
+	r.quiet = fn
 }
 
 // topics returns the goroutine-safe read model of the mapping.
@@ -84,23 +100,41 @@ func (r *Reconciler) Mapping() *domain.Mapping { return r.mapping }
 // see blocked).
 func (r *Reconciler) ReadOnly() bool { return r.rightsLost }
 
-// blocked reports whether Telegram writes are off for any reason: lost
-// rights or the operator's sync switch. The sync-off case is logged once
-// per pause.
-func (r *Reconciler) blocked() bool {
+// Reasons a Telegram write is skipped, for the log.
+const (
+	skipRights  = "rights"
+	skipSyncOff = "sync_off"
+	skipQuiet   = "quiet"
+)
+
+// blockedReason reports why Telegram writes are off, or "" when they are
+// on: lost rights, the operator's sync switch, or quiet mode (the operator
+// is at the desk). The sync-off and quiet cases are logged once per pause.
+func (r *Reconciler) blockedReason() string {
 	if r.rightsLost {
-		return true
+		return skipRights
 	}
-	if !r.paused() {
-		r.pausedLogged = false
-		return false
+	if r.paused() {
+		if !r.syncLogged {
+			r.syncLogged = true
+			r.log.Info("reconcile paused: sync is off (/options)")
+		}
+		return skipSyncOff
 	}
-	if !r.pausedLogged {
-		r.pausedLogged = true
-		r.log.Info("reconcile paused: sync is off (/options)")
+	r.syncLogged = false
+	if r.quiet() {
+		if !r.quietLogged {
+			r.quietLogged = true
+			r.log.Info("reconcile deferred: operator at the desk (quiet)")
+		}
+		return skipQuiet
 	}
-	return true
+	r.quietLogged = false
+	return ""
 }
+
+// blocked reports whether Telegram writes are off for any reason.
+func (r *Reconciler) blocked() bool { return r.blockedReason() != "" }
 
 // SetReadOnly pauses or resumes Telegram writes for the rights path.
 // Resuming does not replay anything by itself; the caller runs Reconcile
@@ -181,7 +215,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 		if r.rightsLost {
 			level = slog.LevelInfo
 		}
-		r.log.Log(ctx, level, "reconcile skipped, writes paused", slog.Int("agents", len(live)), slog.Bool("rights_lost", r.rightsLost))
+		r.log.Log(ctx, level, "reconcile skipped, writes paused", slog.Int("agents", len(live)), slog.String("reason", r.blockedReason()))
 		return nil
 	}
 	r.log.Info("reconcile pass", slog.Int("agents", len(live)), slog.Int("entries", len(r.mapping.Topics)))
@@ -228,8 +262,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 }
 
 func (r *Reconciler) create(ctx context.Context, a domain.Agent) error {
-	if r.blocked() {
-		r.log.Info("topic create skipped, writes paused", slog.String("key", a.Key.String()))
+	if reason := r.blockedReason(); reason != "" {
+		// An unmapped agent re-enters here on every status change, so the
+		// quiet case (expected, frequent) stays at debug.
+		level := slog.LevelInfo
+		if reason == skipQuiet {
+			level = slog.LevelDebug
+		}
+		r.log.Log(ctx, level, "topic create skipped, writes paused", slog.String("key", a.Key.String()), slog.String("reason", reason))
 		return nil
 	}
 	if entry, ok := r.mapping.TopicFor(a.Key); ok && !entry.Status.Live() {
@@ -310,8 +350,8 @@ func (r *Reconciler) edit(ctx context.Context, key domain.Key) error {
 	if !changed {
 		return nil
 	}
-	if r.blocked() {
-		r.log.Info("topic edit skipped, writes paused", slog.String("key", key.String()))
+	if reason := r.blockedReason(); reason != "" {
+		r.log.Info("topic edit skipped, writes paused", slog.String("key", key.String()), slog.String("reason", reason))
 		return nil
 	}
 	r.log.Debug("topic edit", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID),
@@ -331,8 +371,8 @@ func (r *Reconciler) exit(ctx context.Context, key domain.Key) error {
 	if !ok {
 		return nil
 	}
-	if r.blocked() {
-		r.log.Info("topic exit skipped, writes paused", slog.String("key", key.String()))
+	if reason := r.blockedReason(); reason != "" {
+		r.log.Info("topic exit skipped, writes paused", slog.String("key", key.String()), slog.String("reason", reason))
 		return nil
 	}
 	if entry.Muted {

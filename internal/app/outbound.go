@@ -33,6 +33,13 @@ type outbound struct {
 	clock   domain.Clock
 	// paused reads the operator's sync switch: no screen posts while off.
 	paused func() bool
+	// quiet reads the presence tracker (operator at the desk); posts says
+	// what quiet does to screen posts and reannounce whether leaving
+	// re-posts still-blocked agents. live lists the agents for the catch-up.
+	quiet      func() bool
+	posts      func() domain.PostsMode
+	reannounce func() bool
+	live       func() []domain.Agent
 
 	deb        *debouncer
 	lastPosted map[domain.Key]string // SHA-256 of the last screen posted per key
@@ -40,6 +47,9 @@ type outbound struct {
 	// carries it and which options it offers. Only the latest keyboard
 	// acts; older ones are retired when pressed.
 	keyboards map[domain.Key]keyboard
+	// announced marks agents whose current question was posted with a
+	// sound; cleared when the agent leaves blocked. One sound per question.
+	announced map[domain.Key]bool
 }
 
 // keyboard is the inline keyboard under one blocked post.
@@ -49,7 +59,7 @@ type keyboard struct {
 }
 
 func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	capture *Capture, opts *Options, clock domain.Clock, log *slog.Logger) *outbound {
+	live func() []domain.Agent, capture *Capture, opts *Options, clock domain.Clock, log *slog.Logger) *outbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -57,18 +67,39 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 	if opts != nil {
 		paused = func() bool { return !opts.SyncEnabled() }
 	}
+	if live == nil {
+		live = func() []domain.Agent { return nil }
+	}
 	return &outbound{
 		herdr:      herdr,
 		tg:         tg,
 		topics:     topics,
 		agents:     agents,
+		live:       live,
 		capture:    capture,
 		clock:      clock,
 		paused:     paused,
+		quiet:      func() bool { return false },
+		posts:      func() domain.PostsMode { return domain.PostsNormal },
+		reannounce: func() bool { return false },
 		log:        log,
 		deb:        newDebouncer(clock, screenSettle, log),
 		lastPosted: map[domain.Key]string{},
 		keyboards:  map[domain.Key]keyboard{},
+		announced:  map[domain.Key]bool{},
+	}
+}
+
+// SetPresence wires quiet mode: quiet says whether the operator is at the
+// desk, opts supplies the posts mode and the re-announce switch.
+func (o *outbound) SetPresence(quiet func() bool, opts *Options) {
+	if quiet == nil {
+		quiet = func() bool { return false }
+	}
+	o.quiet = quiet
+	if opts != nil {
+		o.posts = opts.QuietPosts
+		o.reannounce = opts.QuietReannounce
 	}
 }
 
@@ -82,6 +113,9 @@ func (o *outbound) Due() <-chan domain.Key { return o.deb.Due() }
 // cleaned up by Forget, which the bridge calls with a context.
 func (o *outbound) Observe(ev AgentEvent) {
 	key := ev.Agent.Key
+	if ev.Agent.Status != domain.StatusBlocked || ev.Kind == AgentGone {
+		delete(o.announced, key)
+	}
 	switch {
 	case ev.Kind == AgentGone:
 		o.deb.Cancel(key)
@@ -99,6 +133,7 @@ func (o *outbound) Observe(ev AgentEvent) {
 func (o *outbound) Forget(ctx context.Context, key domain.Key) error {
 	o.deb.Cancel(key)
 	delete(o.lastPosted, key)
+	delete(o.announced, key)
 	return o.retire(ctx, key, "exited")
 }
 
@@ -106,7 +141,15 @@ func (o *outbound) Forget(ctx context.Context, key domain.Key) error {
 // the text differs from the last post. A blocked screen that ends in a
 // numbered dialog gets one button per option. Read failures are logged and
 // left to the next transition; only fatal Telegram errors are returned.
+// While quiet mode is on the post follows the posts mode: held (not sent),
+// silent (no sound) or normal.
 func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
+	return o.fire(ctx, key, false)
+}
+
+// fire is Fire with a force flag for the catch-up: force bypasses the
+// duplicate check and the quiet rules and always rings.
+func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	agent, ok := o.agents(key)
 	if !ok {
 		return o.skip(key, "exited")
@@ -132,6 +175,17 @@ func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
 	case entry.Muted:
 		return o.skip(key, "muted")
 	}
+	notify := agent.Status == domain.StatusBlocked
+	if force {
+		notify = true
+	} else if o.quiet() {
+		switch o.posts() {
+		case domain.PostsHeld:
+			return o.skip(key, "quiet_held")
+		case domain.PostsSilent:
+			notify = false
+		}
+	}
 	screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, lines)
 	if err != nil {
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
@@ -142,13 +196,13 @@ func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
 		return o.skip(key, "empty")
 	}
 	hash := hashText(text)
-	if o.lastPosted[key] == hash {
+	if o.lastPosted[key] == hash && !force {
 		return o.skip(key, "duplicate")
 	}
 	if err := o.retire(ctx, key, "superseded"); err != nil {
 		return err
 	}
-	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, Notify: agent.Status == domain.StatusBlocked}
+	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: true, Notify: notify}
 	var choices []domain.Choice
 	if agent.Status == domain.StatusBlocked {
 		choices = domain.ParseChoices(text)
@@ -163,9 +217,48 @@ func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
 	if len(out.Buttons) > 0 {
 		o.keyboards[key] = keyboard{messageID: id, choices: choices}
 	}
+	if notify && agent.Status == domain.StatusBlocked {
+		o.announced[key] = true
+	}
 	o.log.Info("screen posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 		slog.String("status", string(agent.Status)), slog.Int("lines", strings.Count(text, "\n")+1), slog.Int("bytes", len(text)),
-		slog.Int("buttons", len(out.Buttons)), slog.Int("message_id", id))
+		slog.Int("buttons", len(out.Buttons)), slog.Int("message_id", id), slog.Bool("notify", notify), slog.Bool("forced", force))
+	return nil
+}
+
+// CatchUp runs when quiet mode ends: every agent still blocked whose
+// question never rang is posted again with a sound (forced past the
+// duplicate check); an agent that already has a post is skipped when
+// re-announcing is off. Non-fatal errors are logged and the loop goes on.
+func (o *outbound) CatchUp(ctx context.Context) error {
+	var blocked, posted, skipped int
+	for _, a := range o.live() {
+		if a.Status != domain.StatusBlocked {
+			continue
+		}
+		blocked++
+		key := a.Key
+		switch {
+		case o.announced[key]:
+			skipped++
+			_ = o.skip(key, "announced")
+			continue
+		case o.lastPosted[key] != "" && !o.reannounce():
+			skipped++
+			_ = o.skip(key, "reannounce_off")
+			continue
+		}
+		before := len(o.lastPosted)
+		if err := o.fire(ctx, key, true); err != nil {
+			return err
+		}
+		if o.announced[key] || len(o.lastPosted) > before {
+			posted++
+		} else {
+			skipped++
+		}
+	}
+	o.log.Info("catch-up done", slog.Int("blocked", blocked), slog.Int("posted", posted), slog.Int("skipped", skipped))
 	return nil
 }
 
