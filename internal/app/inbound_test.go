@@ -548,3 +548,128 @@ func TestInboundOptionsInTopicPointsToGeneral(t *testing.T) {
 		t.Error("help text lacks /options")
 	}
 }
+
+// withPresence wires a presence tracker over a fake idle source into the
+// fixture's inbound and samples it once.
+func withPresence(f *bridgeFixture, idle time.Duration) (*Presence, *testkit.FakeIdle) {
+	src := testkit.NewFakeIdle(idle)
+	p := NewPresence(src, f.opts, f.clock, nil)
+	f.in.SetPresence(p)
+	p.Poll(f.ctx)
+	return p, src
+}
+
+func general(f *bridgeFixture, t *testing.T, id int, text string) string {
+	t.Helper()
+	before := len(f.tg.Sent())
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: id, FromID: 1, Text: text}); err != nil {
+		t.Fatalf("%s: %v", text, err)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != before+1 || sent[before].ThreadID != 0 || sent[before].ReplyTo != id || sent[before].Notify {
+		t.Fatalf("%s: Sent = %+v", text, sent)
+	}
+	return sent[before].Text
+}
+
+func TestInboundAwayAndHere(t *testing.T) {
+	f := newBridgeFixture(t)
+	p, _ := withPresence(f, time.Second)
+	if !p.Quiet() {
+		t.Fatal("fixture should start quiet")
+	}
+	if got := general(f, t, 1, "/away"); got != presenceAwayOpen {
+		t.Fatalf("/away = %q", got)
+	}
+	if st := p.State(); !st.ManualAway || !st.Until.IsZero() || st.Quiet {
+		t.Fatalf("state after /away = %+v", st)
+	}
+	if got := general(f, t, 2, "/away 2h"); got != "🏃 away until 14:00, Telegram gets everything; /here returns to automatic" {
+		t.Fatalf("/away 2h = %q", got)
+	}
+	if got := general(f, t, 3, "/here"); got != "🖥 presence is automatic again: at the desk, quiet on" {
+		t.Fatalf("/here = %q", got)
+	}
+	if !p.Quiet() {
+		t.Fatal("not quiet after /here")
+	}
+	if got := general(f, t, 4, "/away 3d"); got != "unknown command, see /help" {
+		t.Fatalf("/away 3d = %q", got)
+	}
+	// Away by the automatic verdict: /here says so.
+	_, src := withPresence(f, time.Hour)
+	_ = src
+	if got := general(f, t, 5, "/here"); got != "🖥 presence is automatic again: away" {
+		t.Fatalf("/here while away = %q", got)
+	}
+	// With quiet mode off both commands point at the option.
+	if err := f.opts.Set(f.ctx, domain.OptionQuietEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := general(f, t, 6, "/away"); got != presenceOff {
+		t.Fatalf("/away with quiet off = %q", got)
+	}
+	if got := general(f, t, 7, "/here"); got != presenceOff {
+		t.Fatalf("/here with quiet off = %q", got)
+	}
+	if !strings.Contains(helpText, "/away [2h]") || !strings.Contains(helpText, "/here") {
+		t.Error("help text lacks the presence commands")
+	}
+}
+
+func TestInboundPresenceUnavailableAndTopicHint(t *testing.T) {
+	f := newBridgeFixture(t)
+	if got := general(f, t, 1, "/away"); got != presenceUnavailable {
+		t.Fatalf("/away without tracker = %q", got)
+	}
+	idle := testkit.NewFakeIdle(0)
+	idle.Unsupported()
+	p := NewPresence(idle, f.opts, f.clock, nil)
+	f.in.SetPresence(p)
+	p.Poll(f.ctx)
+	if got := general(f, t, 2, "/here"); got != "🖥 presence is automatic again: not available on this platform" {
+		t.Fatalf("/here on unsupported platform = %q", got)
+	}
+	f.add(t, "p1", "t1", "alpha", domain.StatusIdle)
+	for id, text := range map[int]string{5: "/away", 6: "/here"} {
+		if err := f.in.HandleTopic(f.ctx, topicMsg(101, id, text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sent := f.tg.Sent() // add() reset the earlier replies
+	if len(sent) != 2 || sent[0].Text != presenceInGeneral || sent[1].Text != presenceInGeneral || sent[0].ThreadID != 101 {
+		t.Fatalf("topic replies = %+v", sent)
+	}
+}
+
+func TestInboundStatusPresenceHeader(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "alpha", domain.StatusIdle)
+	p, src := withPresence(f, time.Second)
+	if got := general(f, t, 1, "/status"); !strings.HasPrefix(got, "🔕 quiet: you are at the desk (/away to override)\n1 agent\n") {
+		t.Fatalf("status while quiet = %q", got)
+	}
+	p.Away(30*time.Minute, 1)
+	if got := general(f, t, 2, "/status"); !strings.HasPrefix(got, "🏃 away (manual) until 12:30\n1 agent") {
+		t.Fatalf("status while manually away = %q", got)
+	}
+	p.Away(0, 1)
+	if got := general(f, t, 3, "/status"); !strings.HasPrefix(got, "🏃 away (manual) until /here\n1 agent") {
+		t.Fatalf("status while away until /here = %q", got)
+	}
+	p.Here(1)
+	src.Set(time.Hour)
+	p.Poll(f.ctx)
+	if got := general(f, t, 4, "/status"); got != "1 agent\n✅ <a href=\"https://t.me/c/1234567890/101\">ws · alpha</a>" {
+		t.Fatalf("status while away automatically = %q", got)
+	}
+	// Sync off and quiet on: both headers, sync first.
+	src.Set(time.Second)
+	p.Poll(f.ctx)
+	if err := f.opts.Set(f.ctx, domain.OptionSyncEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := general(f, t, 5, "/status"); !strings.HasPrefix(got, "🔇 Herdr → Telegram sync is off (/options)\n🔕 quiet: you are at the desk (/away to override)\n1 agent") {
+		t.Fatalf("status with both headers = %q", got)
+	}
+}

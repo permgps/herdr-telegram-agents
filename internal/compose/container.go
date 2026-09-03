@@ -267,15 +267,17 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 		options = clean
 	}
 	opts := app.NewOptions(options, optionsStore, choices, log)
-	log.Info("options loaded", slog.Bool("sync", options.SyncEnabled()), slog.String("icons",
-		options.StatusIcons().Working+options.StatusIcons().Idle+options.StatusIcons().Blocked+
-			options.StatusIcons().Done+options.StatusIcons().Unknown+options.StatusIcons().Exited))
+	log.Info("options loaded", slog.Bool("sync", options.SyncEnabled()), slog.Bool("quiet", options.QuietEnabled()),
+		slog.Int64("quiet_idle_min", int64(options.QuietIdle()/time.Minute)), slog.String("quiet_posts", string(options.QuietPosts())), slog.String("icons",
+			options.StatusIcons().Working+options.StatusIcons().Idle+options.StatusIcons().Blocked+
+				options.StatusIcons().Done+options.StatusIcons().Unknown+options.StatusIcons().Exited))
 
 	clock := realClock{}
 	registry := app.NewRegistry(hg, clock, log)
 	reconciler := app.NewReconciler(tg, hg, mappings, mapping, opts, clock, log)
 	capture := app.NewCapture(hg, registry.Live, clock, log)
 	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, capture, opts, clock, log)
-	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, capture, state.NewConfigStore(env.ConfigDir, log), opts, clock, log)
+	presence := app.NewPresence(system.NewIdleSource(log), opts, clock, log)
+	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, capture, state.NewConfigStore(env.ConfigDir, log), opts, presence, clock, log)
 	return d, run, closeAll, nil
 }

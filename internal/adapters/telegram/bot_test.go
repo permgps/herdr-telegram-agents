@@ -171,7 +171,7 @@ func TestRegisterCommands(t *testing.T) {
 	}
 	f := calls[0].form
 	cmds := f.Get("commands")
-	for _, name := range []string{`"command":"screen"`, `"command":"keys"`, `"command":"focus"`, `"command":"clear"`, `"command":"compact"`, `"command":"usage"`, `"command":"model"`, `"command":"status"`, `"command":"options"`, `"command":"help"`} {
+	for _, name := range []string{`"command":"screen"`, `"command":"keys"`, `"command":"focus"`, `"command":"clear"`, `"command":"compact"`, `"command":"usage"`, `"command":"model"`, `"command":"status"`, `"command":"away"`, `"command":"here"`, `"command":"options"`, `"command":"help"`} {
 		if !strings.Contains(cmds, name) {
 			t.Errorf("commands lack %s: %s", name, cmds)
 		}

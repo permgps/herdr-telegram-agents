@@ -14,18 +14,20 @@ import (
 )
 
 type daemonFixture struct {
-	herdr   *testkit.FakeHerdr
-	tg      *testkit.FakeTelegram
-	configs *testkit.MemConfigStore
-	store   *testkit.MemMappingStore
-	clock   *testkit.FakeClock
-	capture *app.Capture
-	options *testkit.MemOptionsStore
-	opts    *app.Options
-	rec     *app.Reconciler
-	daemon  *app.Daemon
-	done    chan error
-	cancel  context.CancelCauseFunc
+	herdr    *testkit.FakeHerdr
+	tg       *testkit.FakeTelegram
+	configs  *testkit.MemConfigStore
+	store    *testkit.MemMappingStore
+	clock    *testkit.FakeClock
+	capture  *app.Capture
+	options  *testkit.MemOptionsStore
+	opts     *app.Options
+	rec      *app.Reconciler
+	idle     *testkit.FakeIdle
+	presence *app.Presence
+	daemon   *app.Daemon
+	done     chan error
+	cancel   context.CancelCauseFunc
 }
 
 func newDaemon(t *testing.T) *daemonFixture {
@@ -46,7 +48,10 @@ func newDaemon(t *testing.T) *daemonFixture {
 	f.rec = reconciler
 	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
 	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, f.clock, nil)
-	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.opts, f.clock, nil)
+	f.idle = testkit.NewFakeIdle(0)
+	f.idle.Unsupported() // quiet mode stays off unless a test sets an idle time
+	f.presence = app.NewPresence(f.idle, f.opts, f.clock, nil)
+	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.opts, f.presence, f.clock, nil)
 	f.daemon.Version = "1.2.3"
 	return f
 }
@@ -113,7 +118,7 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 	// A status event flows through registry -> reconciler -> debounce -> edit.
 	idle := agent("p1", "", "", domain.StatusIdle)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
-	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 5 }) // registry tick, health, sweep, capture, debounce
+	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 6 }) // registry tick, health, sweep, capture, debounce
 	f.clock.Advance(3 * time.Second)
 	f.waitCalls(t, 4)
 	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1, "edit:101:status=idle")
@@ -306,7 +311,7 @@ func TestDaemonBlockedScreenIsPosted(t *testing.T) {
 	blocked := agent("p1", "", "", domain.StatusBlocked)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
 	// registry tick, health, capture, edit debounce, screen settle
-	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 6 })
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 7 })
 	f.clock.Advance(1500 * time.Millisecond)
 	f.waitCalls(t, 4)
 	sent := f.tg.Sent()
@@ -439,7 +444,7 @@ func TestDaemonStatsWhileRunning(t *testing.T) {
 	if st.Agents != 1 || st.Dropped != 0 || !st.HerdrOK || st.Version != "1.2.3" || !st.Since.Equal(t0) {
 		t.Fatalf("Stats = %+v", st)
 	}
-	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on cleanup=30d" {
+	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on cleanup=30d quiet=off" {
 		t.Fatalf("StatsLine = %q", line)
 	}
 	if err := f.stop(t); err != nil {
@@ -653,7 +658,7 @@ func TestDaemonSweepsAtStartDailyAndOnOptionChange(t *testing.T) {
 	f.waitCalls(t, 3)
 	assertCalls(t, f.tg, "rights", started0, "delete:101")
 
-	waitFor(t, "timers", func() bool { return f.clock.Pending() >= 4 }) // registry tick, health, sweep, capture
+	waitFor(t, "timers", func() bool { return f.clock.Pending() >= 5 }) // registry tick, health, sweep, capture
 	f.clock.Advance(app.SweepIntervalForTest)
 	f.waitCalls(t, 4)
 	if calls := f.tg.Calls(); calls[len(calls)-1] != "delete:102" {
@@ -667,7 +672,7 @@ func TestDaemonSweepsAtStartDailyAndOnOptionChange(t *testing.T) {
 	if calls := f.tg.Calls(); calls[len(calls)-1] != "delete:103" {
 		t.Fatalf("calls after the option change = %v", calls)
 	}
-	if st := f.daemon.Stats(); st.DeleteAfterDays != 7 || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "cleanup=7d") {
+	if st := f.daemon.Stats(); st.DeleteAfterDays != 7 || !strings.Contains(app.StatsLine(st, f.clock.Now()), "cleanup=7d") {
 		t.Fatalf("Stats = %+v", st)
 	}
 	if err := f.stop(t); err != nil {
@@ -695,5 +700,167 @@ func TestDaemonSweepOffAndWithoutDeleteRight(t *testing.T) {
 	assertCalls(t, f.tg, "rights", started0, stopping)
 	if len(f.rec.Mapping().Topics) != 1 {
 		t.Fatal("entry dropped without the delete right")
+	}
+}
+
+// hasCall reports whether the fake Telegram recorded a call with the prefix.
+func (f *daemonFixture) hasCall(prefix string) bool {
+	for _, c := range f.tg.Calls() {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// tick advances the fake clock by one presence interval on every poll of
+// waitFor until cond holds, so timers armed by the daemon goroutine fire.
+func (f *daemonFixture) tick(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	waitFor(t, what, func() bool {
+		if cond() {
+			return true
+		}
+		f.clock.Advance(10 * time.Second)
+		return false
+	})
+}
+
+func TestDaemonQuietDefersUntilOperatorLeaves(t *testing.T) {
+	f := newDaemon(t)
+	f.idle.Set(time.Second) // at the desk from the start
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
+	f.start(t)
+	f.waitCalls(t, 2)
+	// No topic is created while quiet; the started notice still posts.
+	assertCalls(t, f.tg, "rights", started1)
+	if st := f.daemon.Stats(); st.Quiet != "on" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "quiet=on") {
+		t.Fatalf("Stats = %+v", st)
+	}
+
+	// The agent asks a question: no topic, so nothing is posted yet.
+	blocked := agent("p1", "", "", domain.StatusBlocked)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusBlocked)})
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 6 }) // registry tick, health, sweep, capture, presence, settle (no topic, so no edit debounce)
+	f.clock.Advance(1500 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	assertCalls(t, f.tg, "rights", started1)
+
+	// The operator leaves: the topic is created with the current status and
+	// the waiting question is posted once, with sound.
+	f.idle.Set(time.Hour)
+	f.tick(t, "catch-up", func() bool { return f.hasCall("create:reviewer:blocked") && len(f.tg.Sent()) == 2 })
+	sent := f.tg.Sent()
+	if sent[1].ThreadID != 101 || !sent[1].Notify || sent[1].Text != "Allow Bash?\n1. Yes\n2. No" {
+		t.Fatalf("catch-up post = %+v", sent[1])
+	}
+	if st := f.daemon.Stats(); st.Quiet != "away" {
+		t.Fatalf("Stats after leaving = %+v", st)
+	}
+
+	// Back for a moment, away again: same question, no second sound.
+	f.idle.Set(time.Second)
+	f.tick(t, "quiet on again", func() bool { return f.daemon.Stats().Quiet == "on" })
+	f.idle.Set(time.Hour)
+	f.tick(t, "quiet off again", func() bool { return f.daemon.Stats().Quiet == "away" })
+	time.Sleep(30 * time.Millisecond)
+	if got := len(f.tg.Sent()); got != 2 {
+		t.Fatalf("flapping produced %d posts: %+v", got, f.tg.Sent())
+	}
+	if f.hasCall("edit:") {
+		t.Fatalf("flapping edited topics: %v", f.tg.Calls())
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonQuietSilentPostAndIconDrift(t *testing.T) {
+	f := newDaemon(t)
+	f.idle.Set(time.Hour) // supported source, operator away at start
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
+	f.start(t)
+	f.waitCalls(t, 3) // rights, create, started: away at start
+	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1)
+
+	// The operator sits down: the next sample turns quiet on.
+	f.idle.Set(time.Second)
+	f.tick(t, "quiet on", func() bool { return f.daemon.Stats().Quiet == "on" })
+	blocked := agent("p1", "", "", domain.StatusBlocked)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusBlocked)})
+	f.tick(t, "silent post", func() bool { return len(f.tg.Sent()) == 2 })
+	if sent := f.tg.Sent(); sent[1].Notify || sent[1].ThreadID != 101 {
+		t.Fatalf("post while quiet = %+v", sent[1])
+	}
+	if f.hasCall("edit:") {
+		t.Fatalf("icon edited while quiet: %v", f.tg.Calls())
+	}
+
+	// Leaving heals the icon with one edit and rings once for the question.
+	f.idle.Set(time.Hour)
+	f.tick(t, "catch-up", func() bool { return f.hasCall("edit:101:status=blocked") && len(f.tg.Sent()) == 3 })
+	if sent := f.tg.Sent(); !sent[2].Notify {
+		t.Fatalf("catch-up post = %+v", sent[2])
+	}
+	edits := 0
+	for _, c := range f.tg.Calls() {
+		if strings.HasPrefix(c, "edit:") {
+			edits++
+		}
+	}
+	if edits != 1 {
+		t.Fatalf("catch-up edits = %d: %v", edits, f.tg.Calls())
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonAwayCommandAndQuietOption(t *testing.T) {
+	f := newDaemon(t)
+	f.idle.Set(time.Second)
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.start(t)
+	f.waitCalls(t, 2)
+	assertCalls(t, f.tg, "rights", started1)
+
+	// /away from the phone catches up at once and answers.
+	f.tg.Push(domain.GeneralCommand{MessageID: 9, FromID: 1, Text: "/away 1h"})
+	f.tick(t, "away catch-up", func() bool { return f.hasCall("create:reviewer:working") && len(f.tg.Sent()) == 2 })
+	if sent := f.tg.Sent(); !strings.HasPrefix(sent[1].Text, "🏃 away until 13:00") || sent[1].ReplyTo != 9 {
+		t.Fatalf("/away reply = %+v", sent[1])
+	}
+	if st := f.daemon.Stats(); st.Quiet != "away-manual" {
+		t.Fatalf("Stats after /away = %+v", st)
+	}
+	// /here returns to the automatic verdict: quiet again.
+	f.tg.Push(domain.GeneralCommand{MessageID: 10, FromID: 1, Text: "/here"})
+	f.tick(t, "quiet after /here", func() bool { return f.daemon.Stats().Quiet == "on" })
+	if sent := f.tg.Sent(); len(sent) != 3 || sent[2].Text != "🖥 presence is automatic again: at the desk, quiet on" {
+		t.Fatalf("/here reply = %+v", sent)
+	}
+
+	// A status change now waits; switching quiet off in the options heals it.
+	idle := agent("p1", "", "", domain.StatusIdle)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
+	f.tick(t, "edit debounce", func() bool { return f.clock.Pending() >= 6 })
+	time.Sleep(20 * time.Millisecond)
+	if f.hasCall("edit:") {
+		t.Fatalf("edited while quiet: %v", f.tg.Calls())
+	}
+	if err := f.opts.Set(context.Background(), domain.OptionQuietEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t, "heal after option change", func() bool { return f.hasCall("edit:101:status=idle") })
+	if st := f.daemon.Stats(); st.Quiet != "off" {
+		t.Fatalf("Stats with quiet disabled = %+v", st)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
 	}
 }

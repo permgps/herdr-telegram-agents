@@ -40,6 +40,7 @@ type Daemon struct {
 	capture    *Capture
 	configs    domain.ConfigStore
 	opts       *Options
+	presence   *Presence
 	clock      domain.Clock
 	log        *slog.Logger
 
@@ -74,6 +75,8 @@ type Stats struct {
 	SyncOff bool
 	// DeleteAfterDays is the stale-topic age in force; 0 means off.
 	DeleteAfterDays int
+	// Quiet is the presence word: off, on, away or away-manual.
+	Quiet string
 }
 
 // Stats snapshots the running daemon. It is safe to call from another
@@ -88,6 +91,7 @@ func (d *Daemon) Stats() Stats {
 		HerdrOK:         h.LastErr == nil,
 		SyncOff:         !d.opts.SyncEnabled(),
 		DeleteAfterDays: days(d.opts.DeleteAfter()),
+		Quiet:           d.presence.State().Word(),
 	}
 	if h.LastErr != nil {
 		s.HerdrFailingSince = h.LastOK
@@ -100,7 +104,7 @@ func (d *Daemon) Stats() Stats {
 }
 
 // StatsLine renders Stats as the one-line status reply:
-// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off cleanup=<n>d|off.
+// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off cleanup=<n>d|off quiet=off|on|away|away-manual.
 func StatsLine(s Stats, now time.Time) string {
 	version := s.Version
 	if version == "" {
@@ -122,8 +126,12 @@ func StatsLine(s Stats, now time.Time) string {
 	if s.DeleteAfterDays > 0 {
 		cleanup = fmt.Sprintf("%dd", s.DeleteAfterDays)
 	}
-	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s",
-		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync, cleanup)
+	quiet := s.Quiet
+	if quiet == "" {
+		quiet = "off"
+	}
+	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s quiet=%s",
+		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync, cleanup, quiet)
 }
 
 // reportDrops warns about bridge jobs lost since the last report, at most
@@ -143,24 +151,32 @@ func (d *Daemon) reportDrops(now time.Time) {
 	d.lastDropReport = now
 }
 
-// NewDaemon wires the loop. The registry, reconciler, bridge and capture
-// are built by the caller so the composition root can share the clock and
-// logger.
+// NewDaemon wires the loop. The registry, reconciler, bridge, capture and
+// presence tracker are built by the caller so the composition root can
+// share the clock and logger; a nil presence behaves like a platform
+// without an idle source (quiet mode never engages).
 func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
 	registry *Registry, reconciler *Reconciler, bridge *Bridge, capture *Capture, configs domain.ConfigStore,
-	opts *Options, clock domain.Clock, log *slog.Logger) *Daemon {
+	opts *Options, presence *Presence, clock domain.Clock, log *slog.Logger) *Daemon {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	if opts == nil {
 		opts = NewOptions(domain.DefaultOptions(), nil, nil, log)
 	}
+	if presence == nil {
+		presence = NewPresence(nil, opts, clock, log)
+	}
+	// Quiet mode reaches the reconciler as one predicate (topic writes
+	// wait only while quiet.topics is on) and the bridge as the tracker.
+	reconciler.SetQuiet(func() bool { return presence.Quiet() && opts.QuietTopics() })
+	bridge.SetPresence(presence, opts)
 	// General notices go through the redactor too; rights, icons and
 	// events pass through the wrapper untouched.
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
 	d := &Daemon{
 		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge, capture: capture,
-		configs: configs, opts: opts, clock: clock, log: log,
+		configs: configs, opts: opts, presence: presence, clock: clock, log: log,
 		SocketGrace: socketGrace, HealthInterval: healthInterval,
 		resync: make(chan struct{}, 1),
 		sweep:  make(chan struct{}, 1),
@@ -192,6 +208,10 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		}
 		d.log.Info("sweep requested", slog.Int("max_age_days", days(cur.DeleteAfter())))
 		d.SweepNow()
+	})
+	opts.OnChange("quiet.", func(key string, cur domain.Options) {
+		d.log.Info("quiet option changed", slog.String("key", key), slog.String("value", cur.String(key)))
+		d.presence.Recompute()
 	})
 	return d
 }
@@ -225,7 +245,18 @@ func (d *Daemon) Resync() {
 func (d *Daemon) Run(ctx context.Context) error {
 	start := d.clock.Now()
 	d.started = start
-	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle), slog.Bool("sync", d.opts.SyncEnabled()))
+	// Presence is sampled before the first reconcile: a daemon started
+	// while the operator is typing edits no icon; the catch-up follows when
+	// they leave. Whatever the first sample says is the baseline, not a
+	// transition, so a queued change is dropped here.
+	d.presence.Poll(ctx)
+	select {
+	case <-d.presence.Changes():
+	default:
+	}
+	pst := d.presence.State()
+	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle), slog.Bool("sync", d.opts.SyncEnabled()),
+		slog.Bool("quiet_enabled", pst.Enabled), slog.Bool("presence_supported", pst.Supported), slog.String("quiet", pst.Word()))
 	d.tg.SetStatusIcons(d.opts.StatusIcons())
 	if !d.opts.SyncEnabled() {
 		d.log.Warn("sync is off, mirror paused until it is switched on in /options")
@@ -286,8 +317,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	health := d.clock.After(d.HealthInterval)
 	sweep := d.clock.After(sweepInterval)
+	presenceTick := d.clock.After(presenceInterval)
 	for {
 		select {
+		case <-presenceTick:
+			presenceTick = d.clock.After(presenceInterval)
+			d.presence.Poll(ctx)
+		case quiet := <-d.presence.Changes():
+			if quiet {
+				d.log.Debug("quiet began, topic writes wait for the catch-up")
+				continue
+			}
+			d.log.Info("quiet ended, catching up")
+			if err := d.replay(ctx, false); err != nil {
+				return err
+			}
+			d.bridge.Submit(presenceAway{})
 		case <-ctx.Done():
 			d.shutdown()
 			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {

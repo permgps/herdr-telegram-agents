@@ -72,7 +72,7 @@ func TestStartControlRoundTrip(t *testing.T) {
 func TestStatsLinePassesThrough(t *testing.T) {
 	now := time.Now()
 	s := Stats{Version: "v0.1.0", PID: 7, Since: now.Add(-time.Minute), Agents: 2, HerdrOK: true}
-	if got, want := StatsLine(s, now), "version=v0.1.0 pid=7 uptime=1m0s agents=2 dropped=0 herdr=ok sync=on cleanup=off"; got != want {
+	if got, want := StatsLine(s, now), "version=v0.1.0 pid=7 uptime=1m0s agents=2 dropped=0 herdr=ok sync=on cleanup=off quiet=off"; got != want {
 		t.Fatalf("StatsLine = %q, want %q", got, want)
 	}
 }

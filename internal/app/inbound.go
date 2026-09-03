@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -20,12 +21,34 @@ const helpText = `Commands
 /focus: bring the agent's pane to the front in Herdr
 /clear, /compact [instructions], /usage, /model [name]: typed into the agent as Claude Code commands while it is idle; the screen after the command is posted as a reply, /usage and a bare /model are closed with esc for you
 /status: this agent's status; in General, every agent with a link to its topic
-/options: settings panel (General only): sync, status icons, secret redaction, topic cleanup
+/away [2h]: treat you as away until /here or for the given time, so Telegram gets everything (General only)
+/here: back to automatic presence (General only)
+/options: settings panel (General only): sync, quiet mode, status icons, secret redaction, topic cleanup
 /help: this list
 
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.
 A question with up to 5 numbered options also arrives with buttons; pressing one sends its number and the button turns into ✅.
 Any other text is typed into the agent as a prompt.`
+
+// Presence replies and headers (English, like the panel strings).
+const (
+	presenceInGeneral   = "presence commands live in General"
+	presenceUnavailable = "quiet mode is not available"
+	presenceOff         = "quiet mode is off (/options → Quiet)"
+	// presenceAwayUntil and presenceAwayOpen answer /away.
+	presenceAwayUntil = "🏃 away until %s, Telegram gets everything; /here returns to automatic"
+	presenceAwayOpen  = "🏃 away until /here, Telegram gets everything"
+	// presenceHereFmt answers /here with the automatic verdict.
+	presenceHereFmt     = "🖥 presence is automatic again: %s"
+	presenceVerdictDesk = "at the desk, quiet on"
+	presenceVerdictAway = "away"
+	presenceVerdictNone = "not available on this platform"
+	// Headers of the General /status summary.
+	presenceHeaderQuiet  = "🔕 quiet: you are at the desk (/away to override)\n"
+	presenceHeaderManual = "🏃 away (manual) until %s\n"
+	presenceHeaderOpen   = "🏃 away (manual) until /here\n"
+	presenceTimeLayout   = "15:04"
+)
 
 // inbound turns operator messages into Herdr calls and answers commands.
 // It runs on the bridge goroutine.
@@ -43,6 +66,7 @@ type inbound struct {
 	panel       *panel
 	chatID      int64
 	botUsername string
+	clock       domain.Clock
 	log         *slog.Logger
 
 	// deb arms the settle timer of a forwarded command; pending holds what
@@ -72,6 +96,7 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 		herdr: herdr, tg: tg, topics: topics, agents: agents, live: live, out: out,
 		opts: opts, panel: newPanel(opts, tg, log),
 		chatID: chatID, botUsername: botUsername, log: log,
+		clock:   clock,
 		deb:     newDebouncer(clock, commandSettle, log),
 		pending: map[domain.Key]followUp{},
 	}
@@ -136,6 +161,8 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, helpText)
 	case domain.CmdOptions:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, panelInGeneral)
+	case domain.CmdAway, domain.CmdHere:
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, presenceInGeneral)
 	case domain.CmdForward:
 		return i.forward(ctx, msg, key, agent, cmd)
 	default:
@@ -265,9 +292,73 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 		return i.reply(ctx, 0, cmd.MessageID, helpText)
 	case domain.CmdOptions:
 		return i.panel.Open(ctx, cmd)
+	case domain.CmdAway:
+		return i.reply(ctx, 0, cmd.MessageID, i.away(parsed.Away, cmd.FromID))
+	case domain.CmdHere:
+		return i.reply(ctx, 0, cmd.MessageID, i.here(cmd.FromID))
 	default:
 		return i.reply(ctx, 0, cmd.MessageID, "unknown command, see /help")
 	}
+}
+
+// away applies /away and words the reply.
+func (i *inbound) away(d time.Duration, by int64) string {
+	switch {
+	case i.presence == nil:
+		return presenceUnavailable
+	case !i.opts.QuietEnabled():
+		return presenceOff
+	}
+	st := i.presence.Away(d, by)
+	i.log.Debug("away applied", slog.Int64("by", by), slog.Time("until", st.Until), slog.String("word", st.Word()))
+	if st.Until.IsZero() {
+		return presenceAwayOpen
+	}
+	return fmt.Sprintf(presenceAwayUntil, i.clockTime(st.Until))
+}
+
+// here applies /here and words the automatic verdict.
+func (i *inbound) here(by int64) string {
+	switch {
+	case i.presence == nil:
+		return presenceUnavailable
+	case !i.opts.QuietEnabled():
+		return presenceOff
+	}
+	st := i.presence.Here(by)
+	i.log.Debug("here applied", slog.Int64("by", by), slog.String("word", st.Word()))
+	verdict := presenceVerdictAway
+	switch {
+	case !st.Supported:
+		verdict = presenceVerdictNone
+	case st.Quiet:
+		verdict = presenceVerdictDesk
+	}
+	return fmt.Sprintf(presenceHereFmt, verdict)
+}
+
+// presenceHeader is the /status line about quiet mode, empty when there is
+// nothing to say (quiet off, or away by the automatic verdict).
+func (i *inbound) presenceHeader() string {
+	if i.presence == nil || !i.opts.QuietEnabled() {
+		return ""
+	}
+	st := i.presence.State()
+	switch {
+	case st.ManualAway && st.Until.IsZero():
+		return presenceHeaderOpen
+	case st.ManualAway:
+		return fmt.Sprintf(presenceHeaderManual, i.clockTime(st.Until))
+	case st.Quiet:
+		return presenceHeaderQuiet
+	}
+	return ""
+}
+
+// clockTime renders an instant as wall-clock time in the daemon clock's
+// location (local time on a real clock).
+func (i *inbound) clockTime(at time.Time) string {
+	return at.In(i.clock.Now().Location()).Format(presenceTimeLayout)
 }
 
 // SetPresence wires the presence tracker for /away, /here and /status.
@@ -293,6 +384,7 @@ func (i *inbound) statusSummary() string {
 	if !i.opts.SyncEnabled() {
 		header = "🔇 Herdr → Telegram sync is off (/options)\n"
 	}
+	header += i.presenceHeader()
 	if len(live) == 0 {
 		return header + "no agents"
 	}
