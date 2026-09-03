@@ -1,9 +1,10 @@
-[Back to README](../README.md) · [Next: Development →](development.md)
+[← Talking to agents](commands.md) · [Back to README](../README.md) · [Next: Development →](development.md)
 
 # How the sync behaves
 
-The rules the daemon follows when it mirrors agents into topics, and where its
-logs and state live.
+The rules the daemon follows when it mirrors agents into topics, the options
+that change them, and where its files, logs and state live. What you can write
+in a topic and what gets posted there is in [commands.md](commands.md).
 
 ## Topics and statuses
 
@@ -184,7 +185,23 @@ says so in the log (once per run for the missing right). `Off` disables it;
 than 500, when the oldest exited ones are dropped without touching Telegram
 (as before the cleanup existed).
 
-## Logs and state
+## Files, logs and state
+
+| File | Location | Content |
+|------|----------|---------|
+| `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, log level |
+| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping; entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
+| `options.json` | config dir, mode 0600 | the `/options` choices |
+| `daemon.pid` | state dir | pid of the running daemon |
+| `daemon.log`, `daemon.log.1`, `daemon.log.2` | state dir | JSON log, rotated at 5 MiB |
+| `daemon.err.log` | state dir | stderr of the last daemon start |
+| `control.sock` | state dir | the daemon's control channel for the stop, resync and status actions (a named pipe on Windows, so no file) |
+
+`stop`, `resync` and `status` reach the daemon through that control channel.
+A daemon from an older build that does not answer still receives SIGTERM or
+SIGHUP on Unix and is killed if it answers neither. The `status` action prints
+the daemon's own line: `version=… pid=… uptime=… agents=… dropped=… herdr=ok|failing
+since … sync=on|off cleanup=<n>d|off quiet=on|away|away-manual|off`.
 
 `LOG_LEVEL=debug|info|warn|error` in Herdr's environment overrides the level
 saved in `config.json` (default `info`). The daemon writes JSON lines to
@@ -192,14 +209,12 @@ saved in `config.json` (default `info`). The daemon writes JSON lines to
 `15:04:05 INFO message key=value`. Delete `mapping.json` while the daemon is
 stopped to forget every topic; the next start creates fresh ones and leaves the
 old topics untouched. Entries of exited agents are no longer dropped by age;
-the [topic cleanup](#topic-cleanup) deletes the topic and the entry together. Delete `options.json` in the config dir to return every
-option to its default.
-
-The files themselves are listed in the README under
-[Setup](../README.md#setup).
+the [topic cleanup](#topic-cleanup) deletes the topic and the entry together.
+Delete `options.json` in the config dir to return every option to its
+default.
 
 ## See Also
 
-- [README: Talking to agents](../README.md#talking-to-agents): what gets posted and what you can send
-- [README: Actions](../README.md#actions): start, stop, resync, status and logs from Herdr
+- [Talking to agents](commands.md): what gets posted and what you can send
+- [README: Actions](../README.md#actions): start, stop, resync, status, logs, doctor and the test message from Herdr
 - [Development](development.md): building from source and the tree layout
