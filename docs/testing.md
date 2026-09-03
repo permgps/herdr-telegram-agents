@@ -71,8 +71,11 @@ Telegram group on a phone.
 - [ ] **`/keys`, `/focus`, `/status`, `/help`** in a topic
 - [ ] **Claude Code commands**: `/clear`, `/compact`, `/usage`, `/model` on an idle agent; `/usage` and a bare `/model` come back as a panel and leave no overlay open; a command sent while the agent works is refused with a hint
 - [ ] **General topic**: `/status` lists every agent with a link, `/help` works, other messages are ignored
+- [ ] **Options panel**: `/options` in General shows the groups; Sync → untick the checkbox → toast `saved`, button `☐`; a status change in Herdr makes no topic edit, `/status` starts with `🔇`, the `status` action prints `sync=off`; tick it again → `resync requested` in the log and the icons repaint
+- [ ] **Icon picker**: Appearance → `working` → a grid of eight emoji per row over two pages renders and taps well on the phone (fallback: six per row); pick 🔥 → the working topic's icon changes; pick ✅ → toast `used by idle`; `↺ Reset to defaults` → ⚡ is back; `✖ Close` → summary text without buttons; a second `/options` strips the old panel's keyboard
+- [ ] **Options survive a restart**: restart the daemon with sync off → the started notice ends with `(sync off, see /options)` and the log has the warning; switch it on → resync
 - [ ] **Access control**: a message from a non-operator, or in another chat, is ignored and logged
-- [ ] **Actions**: `start`, `stop`, `restart`, `status`, `resync`, `logs` each report their outcome as a Herdr notification; `status` shows the daemon's line with agents, dropped jobs and socket health
+- [ ] **Actions**: `start`, `stop`, `restart`, `status`, `resync`, `logs` each report their outcome as a Herdr notification; `status` shows the daemon's line with agents, dropped jobs, socket health and `sync=on|off`
 
 ## Resilience
 

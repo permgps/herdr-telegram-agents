@@ -36,6 +36,9 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **Rename or close** a topic in Telegram to rename or mute the agent in Herdr.
 - **A control panel** in the General topic: `/status` with links to every
   agent, `/help`, daemon notices.
+- **Settings from the phone**: `/options` in General opens a panel with
+  buttons: pause the Herdr → Telegram mirror, pick the status icons from
+  Telegram's topic-icon pack. Everything is in English.
 - **A daemon that looks after itself**: starts with Herdr, exits when Herdr
   is gone, heals topic drift on start and on `resync`.
 
@@ -132,6 +135,7 @@ Anything you write in a topic reaches the agent:
 | `/focus` | the pane is brought to the front in Herdr |
 | `/clear`, `/compact [instructions]`, `/usage`, `/model [name]` | typed into the agent as its own Claude Code command; two seconds later the screen is posted as a quoted reply (`/usage` and a bare `/model` are closed with `esc` for you); only while the agent is idle |
 | `/status` | `<emoji> <status> · <label> · pane <id>` |
+| `/options` | a hint: the settings panel lives in General |
 | `/help` | the command list |
 
 The four Claude Code commands are typed verbatim through `agent.prompt`, so
@@ -167,10 +171,22 @@ exited agent get `agent has exited`. Only the configured group and the operator
 ids from setup are accepted; everything else is dropped and logged.
 
 The **General** topic is the control panel: `/status` lists every live agent
-with its status emoji and a link to its topic, `/help` shows the commands, and
-the daemon posts silent notices there when it starts, stops, loses or regains
-the **Manage topics** right, or gives up on the Herdr socket. Other messages in
-General are ignored. The commands appear in Telegram's `/` menu for the group.
+with its status emoji and a link to its topic, `/options` opens the settings
+panel, `/help` shows the commands, and the daemon posts silent notices there
+when it starts, stops, loses or regains the **Manage topics** right, or gives
+up on the Herdr socket. Other messages in General are ignored. The commands
+appear in Telegram's `/` menu for the group.
+
+The settings panel is one message edited in place as you press its buttons:
+groups first, then the options of a group. **Sync** holds the `Herdr →
+Telegram sync` checkbox: untick it and the daemon stops creating, editing and
+closing topics and stops posting screens until you tick it again, while
+everything you send to agents keeps working; ticking it runs a full resync.
+**Appearance** holds one icon per status, chosen from a grid of the emoji
+Telegram allows as topic icons (no two statuses may share one); a pick
+repaints the live topics at once. The choices are saved in `options.json`
+next to `config.json` and survive restarts; see
+[docs/behaviour.md](docs/behaviour.md#options).
 
 ## Actions
 
@@ -180,7 +196,7 @@ General are ignored. The commands appear in Telegram's `/` menu for the group.
 | `Telegram Agents: start` | Starts the daemon if it is not running |
 | `Telegram Agents: stop` | Asks the daemon to exit through its control socket (SIGTERM as the Unix fallback, then SIGKILL after 10 s) |
 | `Telegram Agents: restart` | Stop followed by start |
-| `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs and Herdr socket health |
+| `Telegram Agents: status` | Reports whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs, Herdr socket health and whether the sync switch is on |
 | `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents (control socket, SIGHUP as the Unix fallback) |
 | `Telegram Agents: logs` | Opens an overlay with the last 100 log lines and follows the file |
 
@@ -193,8 +209,9 @@ is killed if it answers neither.
 ## How the sync behaves
 
 Topic naming, the status icons, what happens when an agent exits or comes
-back, renaming and closing topics by hand, the daemon's own exit rules and
-where its logs live are described in [docs/behaviour.md](docs/behaviour.md).
+back, renaming and closing topics by hand, the options panel, the daemon's
+own exit rules and where its logs live are described in
+[docs/behaviour.md](docs/behaviour.md).
 
 ## Upgrade
 
@@ -219,7 +236,7 @@ that tag was built from.
 
 | Page | What it covers |
 |------|----------------|
-| [docs/behaviour.md](docs/behaviour.md) | Topic naming and icons, exit and resume rules, manual rename and close, logs and state |
+| [docs/behaviour.md](docs/behaviour.md) | Topic naming and icons, exit and resume rules, manual rename and close, the options panel, logs and state |
 | [docs/development.md](docs/development.md) | Building from source, `make` targets, publishing a release, the `dev` subcommand, the tree layout |
 | [docs/testing.md](docs/testing.md) | Automated gates and the manual checklist run before a release |
 

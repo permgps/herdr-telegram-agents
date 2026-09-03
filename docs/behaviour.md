@@ -12,8 +12,10 @@ logs and state live.
   else the agent kind (for example `V3Jobs · claude`). The terminal title is
   not used, so a topic keeps its name while the agent works through tasks.
 - The status is the topic icon: ⚡ working, ✅ idle (the check Herdr shows),
-  ❓ blocked, 🏆 done, 👀 unknown, 🏁 exited. The icons come from Telegram's free topic-icon pack;
-  the colour is the fallback when the pack lacks an emoji.
+  ❓ blocked, 🏆 done, 👀 unknown, 🏁 exited by default; `/options` lets you
+  pick others (see [Options](#options)). The icons come from Telegram's free
+  topic-icon pack; the colour is the fallback when the pack lacks an emoji,
+  and an edit then leaves the icon unchanged.
 - Agents are identified by pane and terminal id; a topic is created the first
   time an agent appears and reused after a restart.
 - When an agent's pane closes the topic gets the 🏁 icon and is closed. If the
@@ -59,6 +61,38 @@ logs and state live.
   operator submits with `enter`. Only operators can press; anyone else gets
   `not allowed`.
 
+## Options
+
+`/options` in the General topic answers with one message that is edited in
+place as you press its buttons; only operators can press them, and every
+string on it is English. A new `/options` retires the previous panel's
+keyboard, `✖ Close` leaves a one-line-per-option summary behind. The buttons
+carry everything they need, so a panel still works after the daemon was
+restarted.
+
+- **Level 1** lists the groups (Sync, Appearance) with a description each.
+- **Level 2** lists the options of a group: a checkbox toggles on the spot
+  (`☑` / `☐`), a choice shows its current value and opens the picker,
+  `↺ Reset to defaults` restores the whole group, `‹ Back` and `✖ Close`
+  navigate.
+- **Level 3** is the picker for a choice: the emoji of Telegram's topic-icon
+  pack in the pack's order, eight per row, two pages, the current value in
+  brackets. Only those emoji can be topic icons, which is why there is no
+  free-text field.
+
+The options today:
+
+| Option | Group | What it does |
+|--------|-------|--------------|
+| `Herdr → Telegram sync` | Sync | Default on. Off: the daemon creates, edits and closes no topic and posts no screen until it is on again. Messages, keys, `/screen`, `/status` and presses on existing question buttons keep working, the screen capture keeps running, daemon notices keep posting. Back on: a full resync, like the `resync` action. A daemon that starts with sync off says so in its started notice, in the `/status` header (`🔇 …`), in the `status` action line (`sync=off`) and in the log. |
+| `working` … `exited` | Appearance | The topic icon of each status and the emoji `/status` prints. Picking an emoji another status already uses answers `used by <status>` and changes nothing. A pick repaints every live topic at once (a `resync`), or when sync comes back on. |
+
+Values are saved in `options.json` next to `config.json` (mode 0600) as
+`{"version": 1, "values": {"sync.enabled": true, "icons.working": "⚡", …}}`.
+Missing keys take their defaults and unknown keys survive a save. The file
+is read once at daemon start: edit it by hand and restart the daemon, or use
+the panel, which applies a change immediately.
+
 ## Logs and state
 
 `LOG_LEVEL=debug|info|warn|error` in Herdr's environment overrides the level
@@ -66,7 +100,8 @@ saved in `config.json` (default `info`). The daemon writes JSON lines to
 `daemon.log` in the state dir; the logs action renders them as
 `15:04:05 INFO message key=value`. Delete `mapping.json` while the daemon is
 stopped to forget every topic; the next start creates fresh ones and leaves the
-old topics untouched.
+old topics untouched. Delete `options.json` in the config dir to return every
+option to its default.
 
 The files themselves are listed in the README under
 [Setup](../README.md#setup).
