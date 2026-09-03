@@ -13,7 +13,7 @@
 
 id = "permgps.telegram-agents"
 name = "Telegram Agents"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.5"
 description = "One Telegram forum topic per live Herdr agent: status in the topic icon, questions and answers both ways."
 platforms = ["linux", "macos", "windows"]

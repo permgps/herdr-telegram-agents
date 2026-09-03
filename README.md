@@ -42,7 +42,7 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **A daemon that looks after itself**: starts with Herdr, exits when Herdr
   is gone, heals topic drift on start and on `resync`.
 
-Version `0.2.0`. macOS and Linux are verified end to end; Windows is built and
+Version `0.3.0`. macOS and Linux are verified end to end; Windows is built and
 unit-tested on every change but has not been run against a real Herdr yet.
 
 ## Requirements
