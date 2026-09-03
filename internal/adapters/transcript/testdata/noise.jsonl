@@ -1,0 +1,7 @@
+{"type":"user","message":{"content":[{"type":"text","text":"typed prompt"}]}}
+{"type":"system","subtype":"local_command","content":"x"}
+{"type":"attachment","attachment":{"type":"deferred_tools_delta"}}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Noisy final"},{"type":"text","text":"   "}]}}
+{"type":"mode","mode":"normal"}
+{not json at all
+{"type":"ai-title","aiTitle":"t"}

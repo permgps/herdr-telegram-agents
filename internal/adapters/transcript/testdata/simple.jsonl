@@ -1,0 +1,6 @@
+{"type":"user","isSidechain":false,"cwd":"/p","message":{"role":"user","content":"do it"}}
+{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Working on it."}]}}
+{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]}}
+{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"Done: **all good**.\n"}]}}
+{"type":"last-prompt","lastPrompt":"do it"}

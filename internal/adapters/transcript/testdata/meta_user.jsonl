@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"q"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Answer"}]}}
+{"type":"user","isMeta":true,"message":{"content":"<local-command-stdout></local-command-stdout>"}}
+{"type":"user","isMeta":true,"turnCompanion":true,"message":{"content":[{"type":"text","text":"companion"}]}}

@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":"do it"}}
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"Final."}]}}
+{"type":"user","isSidechain":true,"message":{"content":"subagent prompt"}}
+{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"Subagent report"}]}}
