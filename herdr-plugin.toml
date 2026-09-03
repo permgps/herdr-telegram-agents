@@ -13,7 +13,7 @@
 
 id = "permgps.telegram-agents"
 name = "Telegram Agents"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.7.5"
 description = "One Telegram forum topic per live Herdr agent: status in the topic icon, questions and answers both ways."
 platforms = ["linux", "macos", "windows"]
@@ -70,6 +70,16 @@ id = "logs"
 title = "Telegram Agents: logs"
 command = ["bin/herdr-tg", "action", "logs"]
 
+[[actions]]
+id = "doctor"
+title = "Telegram Agents: doctor"
+command = ["bin/herdr-tg", "action", "doctor"]
+
+[[actions]]
+id = "send-test"
+title = "Telegram Agents: send test message"
+command = ["bin/herdr-tg", "action", "send-test"]
+
 # Interactive setup wizard; opened by the setup action through
 # `herdr plugin pane open --plugin permgps.telegram-agents --entrypoint setup`.
 # Pane commands are looked up in PATH rather than the plugin directory
@@ -88,3 +98,10 @@ id = "logs"
 title = "Telegram Agents logs"
 placement = "overlay"
 command = ["bin/herdr-tg", "logs-pane"]
+
+# One line per diagnostic check; opened by the doctor action.
+[[panes]]
+id = "doctor"
+title = "Telegram Agents doctor"
+placement = "overlay"
+command = ["bin/herdr-tg", "doctor-pane"]
