@@ -48,8 +48,10 @@ func (s Status) Live() bool {
 	return s != StatusExited
 }
 
-// Emoji is the glyph that stands for the status in bot text, the same one
-// the topic icon pack prefers. Unknown values render as StatusUnknown.
+// Emoji is the built-in glyph of the status: the default of the
+// icons.<status> option. Runtime callers read Options.StatusIcons() so an
+// operator's choice wins; this table only seeds it. Unknown values render
+// as StatusUnknown.
 func (s Status) Emoji() string {
 	switch s {
 	case StatusWorking:

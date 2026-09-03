@@ -60,10 +60,13 @@ type HerdrGateway interface {
 
 // Button is one inline button under a bot message. Text is what the
 // operator sees; Data comes back verbatim in ButtonPressed and must stay
-// within Telegram's 64-byte limit.
+// within Telegram's 64-byte limit. Buttons with the same non-zero Row share
+// one keyboard row; Row 0 means "a row of its own", which keeps the
+// one-button-per-row callers unchanged.
 type Button struct {
 	Text string
 	Data string
+	Row  int
 }
 
 // Outgoing is one message for the forum group. ThreadID 0 addresses the
@@ -114,6 +117,17 @@ type TelegramGateway interface {
 	// AnswerButton closes the spinner of a pressed button with a short
 	// toast; callbackID comes from ButtonPressed.
 	AnswerButton(ctx context.Context, callbackID, text string) error
+	// EditText replaces the text and the inline keyboard of a bot message
+	// in one call; an empty buttons slice removes the keyboard. Editing to
+	// the same content is a success.
+	EditText(ctx context.Context, messageID int, text string, html bool, buttons []Button) error
+	// SetStatusIcons replaces the emoji used for topic icons from now on;
+	// safe to call from any goroutine. The default table is in force until
+	// the first call.
+	SetStatusIcons(icons StatusIcons)
+	// IconPack lists the emoji of the free topic-icon pack in Telegram's
+	// order, cached at connect; nil when the pack is unknown.
+	IconPack() []string
 	// SendDocument uploads one file into a topic, or into General when
 	// ThreadID is 0, as a single silent message.
 	SendDocument(ctx context.Context, doc Document) error
@@ -146,6 +160,13 @@ type Rights struct {
 type ConfigStore interface {
 	Load(ctx context.Context) (Config, error)
 	Save(ctx context.Context, cfg Config) error
+}
+
+// OptionsStore persists the operator-editable options. A missing file
+// yields DefaultOptions, not an error.
+type OptionsStore interface {
+	Load(ctx context.Context) (Options, error)
+	Save(ctx context.Context, o Options) error
 }
 
 // MappingStore persists the agent-to-topic mapping. A missing file yields

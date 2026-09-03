@@ -17,7 +17,7 @@ func sticker(emoji, id string) *models.Sticker {
 	return &models.Sticker{Emoji: emoji, CustomEmojiID: id}
 }
 
-func TestIconSetFor(t *testing.T) {
+func TestIconSetForEmoji(t *testing.T) {
 	set := NewIconSet([]*models.Sticker{
 		sticker("🔥", "fire1"),
 		sticker("⚡", "bolt1"),
@@ -26,43 +26,49 @@ func TestIconSetFor(t *testing.T) {
 		sticker("", "noemoji"), // no emoji: ignored
 		nil,
 		sticker("🏁", "flag1"),
-		sticker("❔", "q1"),
 		sticker("☕️", "coffee"), // with U+FE0F, as the live pack sends it
 		sticker("👀", "eyes"),
-		sticker("🏆", "cup"),
 	})
 
 	tests := []struct {
-		status domain.Status
 		emoji  string
+		status domain.Status
+		id     string
 		color  int
 	}{
-		{domain.StatusWorking, "bolt1", 7322096},
-		{domain.StatusIdle, "coffee", 16766590},
-		{domain.StatusBlocked, "", 16478047},
-		{domain.StatusDone, "cup", 9367192},
-		{domain.StatusUnknown, "eyes", 13338331},
-		{domain.StatusExited, "flag1", 13338331},
-		{domain.Status("weird"), "", 13338331},
+		{"⚡", domain.StatusWorking, "bolt1", 7322096},
+		{"⚡️", domain.StatusWorking, "bolt1", 7322096}, // selector ignored on lookup
+		{"☕", domain.StatusIdle, "coffee", 16766590},   // selector ignored in the pack
+		{"❓", domain.StatusBlocked, "", 16478047},      // not in the pack: colour only
+		{"👀", domain.StatusUnknown, "eyes", 13338331},
+		{"🏁", domain.StatusExited, "flag1", 13338331},
+		{"🔥", domain.Status("weird"), "fire1", 13338331},
 	}
 	for _, tc := range tests {
-		got := set.For(tc.status)
-		if got.EmojiID != tc.emoji || got.Color != tc.color {
-			t.Errorf("For(%s) = %+v, want emoji %q color %d", tc.status, got, tc.emoji, tc.color)
+		got := set.ForEmoji(tc.emoji, tc.status)
+		if got.EmojiID != tc.id || got.Color != tc.color {
+			t.Errorf("ForEmoji(%s, %s) = %+v, want id %q color %d", tc.emoji, tc.status, got, tc.id, tc.color)
 		}
+	}
+	if want := []string{"🔥", "⚡", "🏁", "☕️", "👀"}; strings.Join(set.Emojis(), "") != strings.Join(want, "") {
+		t.Errorf("Emojis = %q, want pack order %q", set.Emojis(), want)
+	}
+	if (IconSet{}).Emojis() != nil {
+		t.Error("zero set lists emoji")
 	}
 }
 
-func TestEveryStatusHasColor(t *testing.T) {
+func TestEveryStatusHasColorAndDefaultIcon(t *testing.T) {
+	defaults := domain.DefaultStatusIcons()
 	for _, st := range []domain.Status{
 		domain.StatusWorking, domain.StatusIdle, domain.StatusBlocked,
 		domain.StatusDone, domain.StatusUnknown, domain.StatusExited,
 	} {
-		if (IconSet{}).For(st).Color == 0 {
+		if (IconSet{}).ForEmoji(defaults.For(st), st).Color == 0 {
 			t.Errorf("%s has no color", st)
 		}
-		if len(preferredEmoji[st]) == 0 {
-			t.Errorf("%s has no preferred emoji", st)
+		if defaults.For(st) == "" {
+			t.Errorf("%s has no default emoji", st)
 		}
 	}
 }
@@ -90,17 +96,17 @@ func TestLoadIcons(t *testing.T) {
 	if src.calls != 1 {
 		t.Errorf("calls = %d, want 1", src.calls)
 	}
-	if got := set.For(domain.StatusDone).EmojiID; got != "ok1" {
+	if got := set.ForEmoji("🏆", domain.StatusDone).EmojiID; got != "ok1" {
 		t.Errorf("done icon = %q", got)
 	}
-	if got := set.For(domain.StatusWorking).EmojiID; got != "rocket" {
-		t.Errorf("working icon = %q", got)
+	if got := set.ForEmoji("⚡", domain.StatusWorking).EmojiID; got != "" {
+		t.Errorf("working icon = %q, want none (no fallback to 🚀 any more)", got)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "telegram topic icons loaded") || !strings.Contains(out, "stickers=2") {
 		t.Errorf("missing info log: %s", out)
 	}
-	if !strings.Contains(out, "with_icon=\"[working done]\"") || !strings.Contains(out, "without_icon=\"[idle blocked unknown exited]\"") {
+	if !strings.Contains(out, "with_icon=[done]") || !strings.Contains(out, "without_icon=\"[working idle blocked unknown exited]\"") {
 		t.Errorf("status lists not logged: %s", out)
 	}
 

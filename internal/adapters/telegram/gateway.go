@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -50,10 +51,15 @@ type Gateway struct {
 	botID     int64
 	operators map[int64]bool
 	icons     IconSet
-	queue     *Queue
-	events    chan domain.Event
-	stopped   chan struct{}
-	log       *slog.Logger
+	// statusIcons is the emoji per status in force (SetStatusIcons);
+	// iconWarned lists emoji already reported as missing from the pack.
+	iconMu      sync.RWMutex
+	statusIcons domain.StatusIcons
+	iconWarned  map[string]bool
+	queue       *Queue
+	events      chan domain.Event
+	stopped     chan struct{}
+	log         *slog.Logger
 	// noticeDelay is Config.NoticeDelay.
 	noticeDelay time.Duration
 	// deleteWarned is set after the first failed service-message deletion
@@ -74,15 +80,17 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 		ops[id] = true
 	}
 	g := &Gateway{
-		api:       api,
-		chatID:    cfg.ChatID,
-		botID:     cfg.BotID,
-		operators: ops,
-		icons:     cfg.Icons,
-		queue:     queue,
-		events:    make(chan domain.Event, eventBuffer),
-		stopped:   make(chan struct{}),
-		log:       log,
+		api:         api,
+		chatID:      cfg.ChatID,
+		botID:       cfg.BotID,
+		operators:   ops,
+		icons:       cfg.Icons,
+		statusIcons: domain.DefaultStatusIcons(),
+		iconWarned:  map[string]bool{},
+		queue:       queue,
+		events:      make(chan domain.Event, eventBuffer),
+		stopped:     make(chan struct{}),
+		log:         log,
 
 		noticeDelay: cfg.NoticeDelay,
 	}
@@ -103,10 +111,56 @@ func (g *Gateway) Run(ctx context.Context) {
 // Events returns inbound topic and membership events.
 func (g *Gateway) Events() <-chan domain.Event { return g.events }
 
+// SetStatusIcons replaces the emoji used for topic icons from now on and
+// logs which of them the pack resolves; unresolved ones leave an edited
+// topic's icon unchanged and give a created topic only its colour.
+func (g *Gateway) SetStatusIcons(icons domain.StatusIcons) {
+	g.iconMu.Lock()
+	g.statusIcons = icons
+	g.iconWarned = map[string]bool{}
+	g.iconMu.Unlock()
+	var unresolved []string
+	for _, st := range []domain.Status{
+		domain.StatusWorking, domain.StatusIdle, domain.StatusBlocked,
+		domain.StatusDone, domain.StatusUnknown, domain.StatusExited,
+	} {
+		if _, ok := g.icons.ID(icons.For(st)); !ok {
+			unresolved = append(unresolved, string(st))
+		}
+	}
+	g.log.Info("status icons set",
+		slog.String("working", icons.Working), slog.String("idle", icons.Idle),
+		slog.String("blocked", icons.Blocked), slog.String("done", icons.Done),
+		slog.String("unknown", icons.Unknown), slog.String("exited", icons.Exited),
+		slog.Any("unresolved", unresolved))
+}
+
+// IconPack lists the free topic-icon pack in Telegram's order.
+func (g *Gateway) IconPack() []string { return g.icons.Emojis() }
+
+// iconFor resolves the configured emoji of a status to an Icon and warns
+// once per emoji when the pack lacks it.
+func (g *Gateway) iconFor(status domain.Status) Icon {
+	g.iconMu.RLock()
+	emoji := g.statusIcons.For(status)
+	g.iconMu.RUnlock()
+	icon := g.icons.ForEmoji(emoji, status)
+	if icon.EmojiID == "" && emoji != "" {
+		g.iconMu.Lock()
+		warned := g.iconWarned[emoji]
+		g.iconWarned[emoji] = true
+		g.iconMu.Unlock()
+		if !warned {
+			g.log.Warn("icon not in pack, topic icon unchanged", slog.String("emoji", emoji), slog.String("status", string(status)))
+		}
+	}
+	return icon
+}
+
 // CreateTopic creates a forum topic with the status icon; icon_color is the
 // fallback Telegram applies when no custom emoji id is given.
 func (g *Gateway) CreateTopic(ctx context.Context, name string, status domain.Status) (domain.Topic, error) {
-	icon := g.icons.For(status)
+	icon := g.iconFor(status)
 	name = truncateName(name, topicNameMax)
 	var topic domain.Topic
 	err := g.queue.Do(ctx, func(ctx context.Context) error {
@@ -136,7 +190,7 @@ func (g *Gateway) EditTopic(ctx context.Context, threadID int, patch domain.Topi
 		params.Name = truncateName(*patch.Name, topicNameMax)
 	}
 	if patch.Status != nil {
-		params.IconCustomEmojiID = g.icons.For(*patch.Status).EmojiID
+		params.IconCustomEmojiID = g.iconFor(*patch.Status).EmojiID
 	}
 	if params.Name == "" && params.IconCustomEmojiID == "" {
 		g.log.Debug("editForumTopic skipped", slog.Int("thread_id", threadID), slog.Bool("empty_patch", patch.Empty()))
@@ -264,10 +318,47 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 // row, which keeps long option labels readable on a phone.
 func inlineKeyboard(buttons []domain.Button) *models.InlineKeyboardMarkup {
 	rows := make([][]models.InlineKeyboardButton, 0, len(buttons))
+	lastRow := 0
 	for _, b := range buttons {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: b.Text, CallbackData: b.Data}})
+		btn := models.InlineKeyboardButton{Text: b.Text, CallbackData: b.Data}
+		if b.Row != 0 && b.Row == lastRow && len(rows) > 0 {
+			rows[len(rows)-1] = append(rows[len(rows)-1], btn)
+			continue
+		}
+		rows = append(rows, []models.InlineKeyboardButton{btn})
+		lastRow = b.Row
 	}
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// EditText replaces the text and the keyboard of one of the bot's messages
+// in one editMessageText call; an empty buttons slice removes the keyboard.
+// "message is not modified" is the state the caller wants.
+func (g *Gateway) EditText(ctx context.Context, messageID int, text string, html bool, buttons []domain.Button) error {
+	if utf8.RuneCountInString(text) > textMax {
+		text = string([]rune(text)[:textMax-1]) + "…"
+	}
+	params := &bot.EditMessageTextParams{
+		ChatID:      g.chatID,
+		MessageID:   messageID,
+		Text:        text,
+		ReplyMarkup: inlineKeyboard(buttons),
+	}
+	if html {
+		params.ParseMode = models.ParseModeHTML
+	}
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.EditMessageText(ctx, params)
+		return translate(err)
+	})
+	if errors.Is(err, ErrMessageNotModified) {
+		g.log.Debug("editMessageText already in place", slog.Int("message_id", messageID))
+		err = nil
+	}
+	return g.finish("editMessageText", err,
+		slog.Int("message_id", messageID),
+		slog.Int("chars", utf8.RuneCountInString(text)),
+		slog.Int("buttons", len(buttons)))
 }
 
 // EditButtons replaces the inline keyboard of one of the bot's messages;

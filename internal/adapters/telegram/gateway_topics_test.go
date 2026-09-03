@@ -260,3 +260,47 @@ func TestEditTopicUnchangedIsSuccess(t *testing.T) {
 		t.Fatalf("editForumTopic calls = %d, want 1 (no retry)", n)
 	}
 }
+
+func TestCreateTopicUsesConfiguredIcon(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("createForumTopic", func(f url.Values) apiReply {
+		return okReply(map[string]any{"message_thread_id": 9, "name": f.Get("name"), "icon_custom_emoji_id": f.Get("icon_custom_emoji_id")})
+	})
+	icons := domain.DefaultStatusIcons()
+	icons.Working = "🏁" // in the harness pack as "flag"
+	h.gw.SetStatusIcons(icons)
+
+	if _, err := h.gw.CreateTopic(h.ctx, "builder", domain.StatusWorking); err != nil {
+		t.Fatal(err)
+	}
+	f := h.api.callsOf("createForumTopic")[0].form
+	if f.Get("icon_custom_emoji_id") != "flag" || f.Get("icon_color") != "7322096" {
+		t.Errorf("form = %v, want the configured 🏁 id with the working colour", f)
+	}
+	if !strings.Contains(h.buf.String(), "status icons set") {
+		t.Errorf("SetStatusIcons not logged: %s", h.buf.String())
+	}
+	if pack := h.gw.IconPack(); len(pack) != 3 || pack[0] != "⚡" || pack[2] != "🏁" {
+		t.Errorf("IconPack = %q", pack)
+	}
+}
+
+func TestEditTopicSkipsUnknownIconAndWarnsOnce(t *testing.T) {
+	h := newHarness(t)
+	icons := domain.DefaultStatusIcons()
+	icons.Working = "🔥" // not in the harness pack
+	h.gw.SetStatusIcons(icons)
+
+	st := domain.StatusWorking
+	for i := 0; i < 2; i++ {
+		if err := h.gw.EditTopic(h.ctx, 42, domain.TopicPatch{Status: &st}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(h.api.callsOf("editForumTopic")); n != 0 {
+		t.Errorf("editForumTopic called %d times for an icon the pack lacks", n)
+	}
+	if n := strings.Count(h.buf.String(), "icon not in pack"); n != 1 {
+		t.Errorf("warned %d times, want once:\n%s", n, h.buf.String())
+	}
+}

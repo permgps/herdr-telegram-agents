@@ -42,6 +42,13 @@ var (
 	// control channel: it is not running, or it is an older build that
 	// only understands signals.
 	ErrControlUnavailable = errors.New("daemon control channel unavailable")
+	// ErrUnknownOption means the option key is not in the registry.
+	ErrUnknownOption = errors.New("unknown option")
+	// ErrInvalidOption means the value does not fit the option's kind or
+	// choice list.
+	ErrInvalidOption = errors.New("invalid option value")
+	// ErrDuplicateIcon means two statuses would share the same topic icon.
+	ErrDuplicateIcon = errors.New("two statuses share an icon")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

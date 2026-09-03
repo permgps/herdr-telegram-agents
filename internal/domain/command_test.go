@@ -30,6 +30,8 @@ func TestParseCommand(t *testing.T) {
 		{"focus", "/focus", "herdr_bot", domain.Command{Kind: domain.CmdFocus}},
 		{"status", "/status", "herdr_bot", domain.Command{Kind: domain.CmdStatus}},
 		{"help", "/help", "herdr_bot", domain.Command{Kind: domain.CmdHelp}},
+		{"options", "/options", "herdr_bot", domain.Command{Kind: domain.CmdOptions}},
+		{"options with suffix", "/Options@herdr_bot extra", "herdr_bot", domain.Command{Kind: domain.CmdOptions}},
 		{"upper case word", "/HELP", "herdr_bot", domain.Command{Kind: domain.CmdHelp}},
 		{"bot suffix stripped", "/status@Herdr_Bot", "herdr_bot", domain.Command{Kind: domain.CmdStatus}},
 		{"bot suffix with args", "/screen@herdr_bot 5", "herdr_bot", domain.Command{Kind: domain.CmdScreen, Lines: 5}},

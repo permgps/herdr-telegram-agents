@@ -133,3 +133,64 @@ func copyMapping(m *domain.Mapping) *domain.Mapping {
 	}
 	return out
 }
+
+// MemOptionsStore keeps options in memory. Load answers with the defaults
+// until something was saved (or seeded through Set).
+type MemOptionsStore struct {
+	mu    sync.Mutex
+	opts  domain.Options
+	saves int
+	err   error
+}
+
+var _ domain.OptionsStore = (*MemOptionsStore)(nil)
+
+// NewMemOptionsStore returns a store holding the defaults.
+func NewMemOptionsStore() *MemOptionsStore { return &MemOptionsStore{opts: domain.DefaultOptions()} }
+
+// Set seeds the stored options without counting as a save.
+func (s *MemOptionsStore) Set(o domain.Options) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opts = o
+}
+
+// FailNext makes the next Save return err.
+func (s *MemOptionsStore) FailNext(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+// Saved returns how many times Save succeeded.
+func (s *MemOptionsStore) Saved() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saves
+}
+
+// Stored returns the last saved (or seeded) options.
+func (s *MemOptionsStore) Stored() domain.Options {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opts
+}
+
+func (s *MemOptionsStore) Load(context.Context) (domain.Options, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opts, nil
+}
+
+func (s *MemOptionsStore) Save(_ context.Context, o domain.Options) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		err := s.err
+		s.err = nil
+		return err
+	}
+	s.opts = o
+	s.saves++
+	return nil
+}

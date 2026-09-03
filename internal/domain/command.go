@@ -25,6 +25,9 @@ const (
 	CmdStatus CommandKind = "status"
 	// CmdHelp prints the command list.
 	CmdHelp CommandKind = "help"
+	// CmdOptions opens the settings panel; only General serves it, a
+	// topic answers with a hint.
+	CmdOptions CommandKind = "options"
 	// CmdForward types the slash line into the agent as one of its own
 	// commands (Claude Code /clear, /compact, /usage, /model); Text holds
 	// the exact line and Forward says what to do once it has run.
@@ -191,6 +194,8 @@ func ParseCommand(text, botUsername string) Command {
 		return Command{Kind: CmdStatus}
 	case "help":
 		return Command{Kind: CmdHelp}
+	case "options":
+		return Command{Kind: CmdOptions}
 	}
 	if rule, ok := forwardRuleFor(word, rest != ""); ok {
 		line := "/" + word

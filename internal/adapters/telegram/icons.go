@@ -12,26 +12,12 @@ import (
 )
 
 // Icon is what the adapter sends for a status: the custom emoji id of a
-// topic icon (empty when the icon pack has none of the preferred emoji, in
-// which case an edit leaves the icon unchanged) and the icon_color fallback
+// topic icon (empty when the icon pack lacks the configured emoji, in which
+// case an edit leaves the icon unchanged) and the icon_color fallback
 // Telegram only honours at creation time.
 type Icon struct {
 	EmojiID string
 	Color   int
-}
-
-// preferredEmoji lists, per status, the sticker emoji to look for in the
-// free topic-icon pack; the first one present wins. Checked against the
-// live pack on 2026-09-02 (112 stickers): the first choice of every status
-// exists there. Emoji are compared without the U+FE0F presentation
-// selector, which the pack uses inconsistently ("⚡️" but "✅").
-var preferredEmoji = map[domain.Status][]string{
-	domain.StatusWorking: {"⚡", "🔥", "🚀"},
-	domain.StatusIdle:    {"✅", "☕", "⛅"}, // the green check Herdr shows for idle
-	domain.StatusBlocked: {"❓", "❗", "⁉"},
-	domain.StatusDone:    {"🏆", "🎉", "🎖"},
-	domain.StatusUnknown: {"👀", "🔮", "🤖"},
-	domain.StatusExited:  {"🏁", "⛔", "🔚"},
 }
 
 // emojiKey normalises an emoji for lookups by dropping variation selectors.
@@ -50,15 +36,19 @@ var statusColor = map[domain.Status]int{
 	domain.StatusExited:  13338331, // 0xCB86DB purple
 }
 
-// IconSet resolves statuses to icons from one getForumTopicIconStickers
-// result. The zero value has no emoji ids and only colors.
+// IconSet resolves emoji to topic-icon ids from one
+// getForumTopicIconStickers result and remembers the pack order for the
+// options panel. The zero value has no emoji ids and only colors.
 type IconSet struct {
 	byEmoji map[string]string
+	order   []string
 }
 
-// NewIconSet indexes stickers by emoji; the first sticker per emoji wins.
+// NewIconSet indexes stickers by emoji; the first sticker per emoji wins
+// and Emojis keeps the pack order, each emoji spelled as the pack spells it.
 func NewIconSet(stickers []*models.Sticker) IconSet {
 	m := make(map[string]string, len(stickers))
+	order := make([]string, 0, len(stickers))
 	for _, s := range stickers {
 		if s == nil || s.CustomEmojiID == "" || s.Emoji == "" {
 			continue
@@ -66,23 +56,37 @@ func NewIconSet(stickers []*models.Sticker) IconSet {
 		key := emojiKey(s.Emoji)
 		if _, dup := m[key]; !dup {
 			m[key] = s.CustomEmojiID
+			order = append(order, s.Emoji)
 		}
 	}
-	return IconSet{byEmoji: m}
+	return IconSet{byEmoji: m, order: order}
 }
 
-// For returns the icon for a status. Unknown statuses get the unknown color.
-func (s IconSet) For(status domain.Status) Icon {
+// Emojis lists the pack's emoji in Telegram's order; nil for the zero set.
+func (s IconSet) Emojis() []string {
+	if len(s.order) == 0 {
+		return nil
+	}
+	return append([]string(nil), s.order...)
+}
+
+// ID resolves one emoji (variation selector ignored) to its sticker id.
+func (s IconSet) ID(emoji string) (string, bool) {
+	id, ok := s.byEmoji[emojiKey(emoji)]
+	return id, ok
+}
+
+// ForEmoji returns the icon for an emoji: its sticker id when the pack has
+// it, else only the colour of the status (used at creation, ignored by an
+// edit). Unknown statuses get the unknown colour.
+func (s IconSet) ForEmoji(emoji string, status domain.Status) Icon {
 	color, ok := statusColor[status]
 	if !ok {
 		color = statusColor[domain.StatusUnknown]
 	}
 	icon := Icon{Color: color}
-	for _, e := range preferredEmoji[status] {
-		if id, ok := s.byEmoji[emojiKey(e)]; ok {
-			icon.EmojiID = id
-			break
-		}
+	if id, ok := s.ID(emoji); ok {
+		icon.EmojiID = id
 	}
 	return icon
 }
@@ -93,8 +97,10 @@ type iconSource interface {
 	GetForumTopicIconStickers(ctx context.Context) ([]*models.Sticker, error)
 }
 
-// LoadIcons fetches the topic-icon pack once and logs which statuses got an
-// icon id. The gateway caches the result for the life of the process.
+// LoadIcons fetches the topic-icon pack once and logs which of the default
+// status icons the pack has. The gateway caches the result for the life of
+// the process; the operator's own choice is applied later through
+// SetStatusIcons.
 func LoadIcons(ctx context.Context, api iconSource, log *slog.Logger) (IconSet, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -104,12 +110,13 @@ func LoadIcons(ctx context.Context, api iconSource, log *slog.Logger) (IconSet, 
 		return IconSet{}, fmt.Errorf("getForumTopicIconStickers: %w", translate(err))
 	}
 	set := NewIconSet(stickers)
+	defaults := domain.DefaultStatusIcons()
 	var with, without []string
 	for _, st := range []domain.Status{
 		domain.StatusWorking, domain.StatusIdle, domain.StatusBlocked,
 		domain.StatusDone, domain.StatusUnknown, domain.StatusExited,
 	} {
-		if set.For(st).EmojiID != "" {
+		if _, ok := set.ID(defaults.For(st)); ok {
 			with = append(with, string(st))
 		} else {
 			without = append(without, string(st))

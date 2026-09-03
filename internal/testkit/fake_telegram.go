@@ -21,13 +21,16 @@ import (
 //	send:<thread>:<text>     send:<thread>:<text>:reply=<id>   (":notify" and ":buttons=<n>" appended when set)
 //	buttons:<message>:<text1>|<text2>   (empty text list when the keyboard is removed)
 //	answer:<callback>:<text>
+//	edittext:<message>:<text>:buttons=<n>
 //	react:<thread>:<message>:<emoji>
 //	document:<thread>:<name>:<bytes>   (":reply=<id>" appended when set)
 //	rights
 //
 // Thread 0 in Send stands for the General topic and is always accepted.
-// Send hands out message ids from 1000 upwards; EditButtons keeps the last
-// keyboard per message id for Buttons.
+// Send hands out message ids from 1000 upwards; EditButtons and EditText
+// keep the last keyboard per message id for Buttons, EditText the last text
+// for Text. SetStatusIcons is remembered for Icons; IconPack answers with
+// the slice given to SetIconPack (by default the six defaults plus 🔥 🤖 🧠).
 type FakeTelegram struct {
 	mu        sync.Mutex
 	topics    map[int]*domain.Topic
@@ -36,6 +39,9 @@ type FakeTelegram struct {
 	calls     []string
 	sent      []domain.Outgoing
 	buttons   map[int][]domain.Button
+	texts     map[int]string
+	icons     domain.StatusIcons
+	pack      []string
 	docs      []domain.Document
 	failNext  map[string]error
 	rights    domain.Rights
@@ -56,6 +62,9 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 		nextID:    100,
 		nextMsgID: 1000,
 		buttons:   map[int][]domain.Button{},
+		texts:     map[int]string{},
+		icons:     domain.DefaultStatusIcons(),
+		pack:      []string{"⚡️", "✅", "❓", "🏆", "👀", "🏁", "🔥", "🤖", "🧠"},
 		failNext:  map[string]error{},
 		rights:    domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true},
 		events:    make(chan domain.Event, 64),
@@ -64,7 +73,8 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 }
 
 // FailNext makes the next call of method (create, edit, close, reopen,
-// send, document, react, rights, buttons, answer) return err. Only one failure is queued per method.
+// send, document, react, rights, buttons, answer, edittext) return err.
+// Only one failure is queued per method.
 func (f *FakeTelegram) FailNext(method string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -97,12 +107,34 @@ func (f *FakeTelegram) Sent() []domain.Outgoing {
 	return append([]domain.Outgoing(nil), f.sent...)
 }
 
-// Buttons returns the keyboard a message carries after the last Send or
-// EditButtons that touched it; nil when it has none.
+// Buttons returns the keyboard a message carries after the last Send,
+// EditButtons or EditText that touched it; nil when it has none.
 func (f *FakeTelegram) Buttons(messageID int) []domain.Button {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]domain.Button(nil), f.buttons[messageID]...)
+}
+
+// Text returns the text a message carries after the last EditText that
+// touched it, or the text it was sent with.
+func (f *FakeTelegram) Text(messageID int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.texts[messageID]
+}
+
+// Icons returns the table given to the last SetStatusIcons.
+func (f *FakeTelegram) Icons() domain.StatusIcons {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.icons
+}
+
+// SetIconPack replaces what IconPack answers; nil means "pack unknown".
+func (f *FakeTelegram) SetIconPack(pack []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pack = append([]string(nil), pack...)
 }
 
 // Documents returns every file accepted by SendDocument, in order.
@@ -248,10 +280,39 @@ func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) (int, error)
 	f.sent = append(f.sent, out)
 	id := f.nextMsgID
 	f.nextMsgID++
+	f.texts[id] = out.Text
 	if len(out.Buttons) > 0 {
 		f.buttons[id] = append([]domain.Button(nil), out.Buttons...)
 	}
 	return id, nil
+}
+
+func (f *FakeTelegram) EditText(_ context.Context, messageID int, text string, _ bool, buttons []domain.Button) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.record("edittext", fmt.Sprintf("edittext:%d:%s:buttons=%d", messageID, text, len(buttons))); err != nil {
+		return err
+	}
+	f.texts[messageID] = text
+	if len(buttons) == 0 {
+		delete(f.buttons, messageID)
+		return nil
+	}
+	f.buttons[messageID] = append([]domain.Button(nil), buttons...)
+	return nil
+}
+
+func (f *FakeTelegram) SetStatusIcons(icons domain.StatusIcons) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.icons = icons
+	f.log.Debug("fake telegram icons", slog.String("working", icons.Working))
+}
+
+func (f *FakeTelegram) IconPack() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.pack...)
 }
 
 func (f *FakeTelegram) EditButtons(_ context.Context, messageID int, buttons []domain.Button) error {

@@ -357,3 +357,69 @@ func TestAnswerButton(t *testing.T) {
 		t.Errorf("form = %v", f)
 	}
 }
+
+func TestEditTextSendsMarkupAndHTML(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editMessageText", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 7}) })
+
+	buttons := []domain.Button{{Text: "☑ Sync", Data: "o:t:sync.enabled"}, {Text: "‹ Back", Data: "o:h"}}
+	if err := h.gw.EditText(h.ctx, 7, "<b>Sync</b>", true, buttons); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.gw.EditText(h.ctx, 7, "plain", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("editMessageText")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	f := calls[0].form
+	if f.Get("chat_id") != "-1001234567890" || f.Get("message_id") != "7" || f.Get("text") != "<b>Sync</b>" || f.Get("parse_mode") != "HTML" {
+		t.Errorf("first edit form = %v", f)
+	}
+	if !strings.Contains(f.Get("reply_markup"), `"callback_data":"o:t:sync.enabled"`) {
+		t.Errorf("reply_markup = %s", f.Get("reply_markup"))
+	}
+	if g := calls[1].form; g.Get("parse_mode") != "" || !strings.Contains(g.Get("reply_markup"), `"inline_keyboard":[]`) {
+		t.Errorf("second edit form = %v", g)
+	}
+}
+
+func TestEditTextNotModifiedIsNil(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editMessageText", func(url.Values) apiReply {
+		return errReply(400, "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message")
+	})
+	if err := h.gw.EditText(h.ctx, 7, "same", false, nil); err != nil {
+		t.Fatalf("not-modified must be success, got %v", err)
+	}
+}
+
+func TestEditTextOtherErrorIsReturned(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("editMessageText", func(url.Values) apiReply { return errReply(400, "Bad Request: message to edit not found") })
+	err := h.gw.EditText(h.ctx, 7, "x", false, nil)
+	var api *telegram.APIError
+	if !errors.As(err, &api) || api.Code != 400 {
+		t.Fatalf("err = %v, want *APIError 400", err)
+	}
+}
+
+func TestInlineKeyboardGroupsRows(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+
+	buttons := []domain.Button{
+		{Text: "a", Data: "1", Row: 1}, {Text: "b", Data: "2", Row: 1}, {Text: "c", Data: "3", Row: 1},
+		{Text: "d", Data: "4", Row: 2},
+		{Text: "e", Data: "5"}, {Text: "f", Data: "6"},
+	}
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 0, Text: "grid", Buttons: buttons}); err != nil {
+		t.Fatal(err)
+	}
+	markup := h.api.callsOf("sendMessage")[0].form.Get("reply_markup")
+	want := `[[{"text":"a","callback_data":"1"},{"text":"b","callback_data":"2"},{"text":"c","callback_data":"3"}],[{"text":"d","callback_data":"4"}],[{"text":"e","callback_data":"5"}],[{"text":"f","callback_data":"6"}]]`
+	if !strings.Contains(markup, want) {
+		t.Errorf("reply_markup = %s\nwant %s", markup, want)
+	}
+}
