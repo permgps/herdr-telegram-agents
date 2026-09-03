@@ -45,6 +45,7 @@ func TestDecodeAgentListSample(t *testing.T) {
 		Status:         domain.StatusIdle,
 		Revision:       172,
 		StateChangeSeq: 9,
+		Cwd:            "/Users/alex/Projects/Work/v3laravel",
 	}
 	if a != want {
 		t.Fatalf("toDomainAgent =\n %+v\nwant\n %+v", a, want)

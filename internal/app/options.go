@@ -72,6 +72,9 @@ func (o *Options) QuietTopics() bool { return o.Get().QuietTopics() }
 // QuietPosts is what quiet mode does with screen posts.
 func (o *Options) QuietPosts() domain.PostsMode { return o.Get().QuietPosts() }
 
+// PostsDone is what the topic receives when an agent turns done.
+func (o *Options) PostsDone() domain.DoneMode { return o.Get().PostsDone() }
+
 // QuietReannounce reports whether leaving re-posts still-blocked agents.
 func (o *Options) QuietReannounce() bool { return o.Get().QuietReannounce() }
 

@@ -52,7 +52,7 @@ func TestPanelOpenShowsGroupsAndRetiresPrevious(t *testing.T) {
 	if len(sent) != 1 || sent[0].ThreadID != 0 || !sent[0].HTML || sent[0].ReplyTo != 50 {
 		t.Fatalf("Sent = %+v", sent)
 	}
-	if got := texts(sent[0].Buttons); strings.Join(got, "|") != "Sync|Quiet|Appearance|Privacy|Topics|✖ Close" {
+	if got := texts(sent[0].Buttons); strings.Join(got, "|") != "Sync|Quiet|Posts|Appearance|Privacy|Topics|✖ Close" {
 		t.Errorf("home buttons = %v", got)
 	}
 	if !strings.Contains(sent[0].Text, "<b>Sync</b>: What the mirror writes to Telegram.") {

@@ -122,8 +122,11 @@ func TestValidateOptionsAgainstSource(t *testing.T) {
 
 func TestOptionGroupsAndSpecs(t *testing.T) {
 	groups := OptionGroups()
-	if len(groups) != 5 || groups[0].Name != GroupSync || groups[1].Name != GroupQuiet || groups[2].Name != GroupAppearance || groups[3].Name != GroupPrivacy || groups[4].Name != GroupTopics {
+	if len(groups) != 6 || groups[0].Name != GroupSync || groups[1].Name != GroupQuiet || groups[2].Name != GroupPosts || groups[3].Name != GroupAppearance || groups[4].Name != GroupPrivacy || groups[5].Name != GroupTopics {
 		t.Fatalf("groups = %+v", groups)
+	}
+	if got := OptionsInGroup(GroupPosts); len(got) != 1 || got[0].Key != OptionPostsDone || got[0].Kind != KindChoice || got[0].Default != "screen" || got[0].Choices != ChoiceSourceDone {
+		t.Errorf("posts options = %+v", got)
 	}
 	quiet := OptionsInGroup(GroupQuiet)
 	wantQuiet := []struct {
@@ -399,4 +402,44 @@ func TestQuietChoiceLabels(t *testing.T) {
 			t.Errorf("ChoiceButton(%s, %q) = %q, want %q", tc.spec.Key, tc.value, got, tc.button)
 		}
 	}
+}
+
+func TestPostsDone(t *testing.T) {
+	opts := DefaultOptions()
+	if got := opts.PostsDone(); got != DoneScreen {
+		t.Fatalf("default PostsDone = %q", got)
+	}
+	for _, v := range DoneChoices() {
+		set, err := opts.With(OptionPostsDone, v)
+		if err != nil {
+			t.Fatalf("With(%q): %v", v, err)
+		}
+		if err := ValidateOptions(set, nil); err != nil {
+			t.Fatalf("ValidateOptions(%q): %v", v, err)
+		}
+		if got := set.PostsDone(); string(got) != v {
+			t.Errorf("PostsDone after %q = %q", v, got)
+		}
+	}
+	bad, err := opts.With(OptionPostsDone, "html")
+	if err == nil {
+		if err := ValidateOptions(bad, nil); err == nil {
+			t.Fatal("posts.done = html passed validation")
+		}
+	}
+	if got := ChoiceLabel(OptionSpecs[indexOf(OptionPostsDone)], "formatted"); got != "Formatted" {
+		t.Errorf("ChoiceLabel = %q", got)
+	}
+	if got := ChoiceButton(OptionSpecs[indexOf(OptionPostsDone)], "reply"); got != "Reply" {
+		t.Errorf("ChoiceButton = %q", got)
+	}
+}
+
+func indexOf(key string) int {
+	for i, s := range OptionSpecs {
+		if s.Key == key {
+			return i
+		}
+	}
+	return -1
 }

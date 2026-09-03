@@ -84,14 +84,33 @@ const (
 	ChoiceSourceMinutes = "minutes"
 	// ChoiceSourcePosts is the static list of PostsMode values.
 	ChoiceSourcePosts = "posts"
+	// OptionPostsDone says what a topic receives when its agent finishes:
+	// a DoneMode value.
+	OptionPostsDone = "posts.done"
+	// ChoiceSourceDone is the static list of DoneMode values.
+	ChoiceSourceDone = "done"
 	// Group names, in the panel's display order.
 	GroupSync       = "sync"
 	GroupQuiet      = "quiet"
+	GroupPosts      = "posts"
 	GroupAppearance = "appearance"
 	GroupPrivacy    = "privacy"
 	GroupTopics     = "topics"
 
 	iconKeyPrefix = "icons."
+)
+
+// DoneMode is what the topic receives when its agent turns done.
+type DoneMode string
+
+const (
+	// DoneScreen posts the tail of the terminal screen as a code block.
+	DoneScreen DoneMode = "screen"
+	// DoneReply posts the agent's last reply from its transcript as a code
+	// block.
+	DoneReply DoneMode = "reply"
+	// DoneFormatted posts the agent's last reply rendered from Markdown.
+	DoneFormatted DoneMode = "formatted"
 )
 
 // PostsMode is what quiet mode does with screen posts while the operator
@@ -114,6 +133,7 @@ const (
 var OptionGroupSpecs = []OptionGroup{
 	{Name: GroupSync, Title: "Sync", Description: "What the mirror writes to Telegram."},
 	{Name: GroupQuiet, Title: "Quiet", Description: "Less noise while you are at the machine."},
+	{Name: GroupPosts, Title: "Posts", Description: "What a topic receives when its agent finishes."},
 	{Name: GroupAppearance, Title: "Appearance", Description: "How topics and status lines look."},
 	{Name: GroupPrivacy, Title: "Privacy", Description: "What never leaves this machine."},
 	{Name: GroupTopics, Title: "Topics", Description: "Lifecycle of the forum topics."},
@@ -178,6 +198,15 @@ func buildOptionSpecs() []OptionSpec {
 			Description: "When you leave, post the screen of every agent still waiting, with sound, once per question.",
 			Kind:        KindBool,
 			Default:     "true",
+		},
+		{
+			Key:         OptionPostsDone,
+			Group:       GroupPosts,
+			Title:       "Done post",
+			Description: "What is posted when an agent finishes: Screen is the last 12 lines of the terminal, Reply is the agent's last message from its transcript, Formatted renders that message with bold, lists, links and code.",
+			Kind:        KindChoice,
+			Default:     string(DoneScreen),
+			Choices:     ChoiceSourceDone,
 		},
 	}
 	descriptions := map[Status]string{
@@ -252,6 +281,12 @@ var postsChoices = []string{string(PostsSilent), string(PostsHeld), string(Posts
 // PostsChoices returns the PostsMode values the panel offers.
 func PostsChoices() []string { return append([]string(nil), postsChoices...) }
 
+// doneChoices is the list the panel offers for OptionPostsDone.
+var doneChoices = []string{string(DoneScreen), string(DoneReply), string(DoneFormatted)}
+
+// DoneChoices returns the DoneMode values the panel offers.
+func DoneChoices() []string { return append([]string(nil), doneChoices...) }
+
 // StaticChoices answers the choice lists the domain owns itself; the
 // application layer asks it before the external ChoiceSource.
 func StaticChoices(name string) ([]string, bool) {
@@ -262,6 +297,8 @@ func StaticChoices(name string) ([]string, bool) {
 		return MinutesChoices(), true
 	case ChoiceSourcePosts:
 		return PostsChoices(), true
+	case ChoiceSourceDone:
+		return DoneChoices(), true
 	}
 	return nil, false
 }
@@ -307,6 +344,8 @@ func ChoiceLabel(spec OptionSpec, value string) string {
 		return fmt.Sprintf("%d min", n)
 	case ChoiceSourcePosts:
 		return postsWord(value)
+	case ChoiceSourceDone:
+		return doneWord(value)
 	}
 	return value
 }
@@ -333,6 +372,8 @@ func ChoiceButton(spec OptionSpec, value string) string {
 		return fmt.Sprintf("%dm", n)
 	case ChoiceSourcePosts:
 		return postsWord(value)
+	case ChoiceSourceDone:
+		return doneWord(value)
 	}
 	return value
 }
@@ -347,6 +388,20 @@ func postsWord(value string) string {
 		return "Held"
 	case PostsNormal:
 		return "Normal"
+	}
+	return value
+}
+
+// doneWord capitalises a known DoneMode value ("reply" → "Reply") and
+// returns anything else as is.
+func doneWord(value string) string {
+	switch DoneMode(strings.TrimSpace(value)) {
+	case DoneScreen:
+		return "Screen"
+	case DoneReply:
+		return "Reply"
+	case DoneFormatted:
+		return "Formatted"
 	}
 	return value
 }
@@ -506,6 +561,16 @@ func (o Options) QuietPosts() PostsMode {
 		return m
 	}
 	return PostsSilent
+}
+
+// PostsDone is what the topic receives when an agent turns done;
+// DoneScreen for an unknown value.
+func (o Options) PostsDone() DoneMode {
+	switch m := DoneMode(strings.TrimSpace(o.String(OptionPostsDone))); m {
+	case DoneScreen, DoneReply, DoneFormatted:
+		return m
+	}
+	return DoneScreen
 }
 
 // QuietReannounce reports whether leaving re-posts still-blocked agents

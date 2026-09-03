@@ -225,6 +225,7 @@ func toDomainAgent(a agentInfo) domain.Agent {
 		Revision:       a.Revision,
 		StateChangeSeq: a.StateChangeSeq,
 		Focused:        a.Focused,
+		Cwd:            a.Cwd,
 	}
 }
 

@@ -58,6 +58,23 @@ type HerdrGateway interface {
 	WatchPanes(ctx context.Context, paneIDs []string) error
 }
 
+// Reply is an agent's last message taken from its own transcript. Text is
+// the raw Markdown as the agent wrote it. Source names the file it came
+// from, for logs only. Age is how long ago that file was last written.
+type Reply struct {
+	Text   string
+	Source string
+	Age    time.Duration
+}
+
+// ReplySource finds the last reply of an agent outside Herdr, in the
+// agent's own session transcript. It returns ErrNoReply, wrapped with the
+// reason, whenever nothing usable exists; the caller then falls back to
+// the screen.
+type ReplySource interface {
+	LastReply(ctx context.Context, agent Agent) (Reply, error)
+}
+
 // Button is one inline button under a bot message. Text is what the
 // operator sees; Data comes back verbatim in ButtonPressed and must stay
 // within Telegram's 64-byte limit. Buttons with the same non-zero Row share
@@ -71,15 +88,22 @@ type Button struct {
 
 // Outgoing is one message for the forum group. ThreadID 0 addresses the
 // General topic. Code renders the text as a code block; HTML sends it as
-// ready HTML the caller has escaped (used for links). ReplyTo quotes the
-// operator message with that id when non-zero. Notify sends the message
-// with a sound; everything else is silent. Buttons, when set, are attached
-// to the last message part as an inline keyboard, one button per row.
+// ready HTML the caller has escaped (used for links); Markdown is raw
+// Markdown the adapter splits on fence boundaries and renders to Telegram
+// HTML. The three are exclusive; when several are set Code wins, then
+// HTML. MaxParts caps how many message parts a long text becomes (0 =
+// unlimited); the last kept part ends with a trailer naming the dropped
+// characters. ReplyTo quotes the operator message with that id when
+// non-zero. Notify sends the message with a sound; everything else is
+// silent. Buttons, when set, are attached to the last message part as an
+// inline keyboard, one button per row.
 type Outgoing struct {
 	ThreadID int
 	Text     string
 	Code     bool
 	HTML     bool
+	Markdown bool
+	MaxParts int
 	ReplyTo  int
 	Notify   bool
 	Buttons  []Button

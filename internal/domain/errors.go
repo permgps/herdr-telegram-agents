@@ -52,6 +52,11 @@ var (
 	// ErrIdleUnsupported means this platform has no source for the input
 	// idle time, so presence cannot be measured automatically.
 	ErrIdleUnsupported = errors.New("input idle time not available on this platform")
+	// ErrNoReply means the reply source has no last reply for the agent:
+	// unsupported agent kind, unknown working directory, no transcript, or
+	// no text after the last prompt. Wrapped with the reason; the caller
+	// falls back to the screen.
+	ErrNoReply = errors.New("no reply available")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

@@ -59,6 +59,18 @@ func TestRegistrySnapshotDiff(t *testing.T) {
 		t.Fatalf("unchanged snapshot emitted %v", kinds(evs))
 	}
 
+	// A working directory is carried but never counts as a change.
+	withCwd := agent("p1", "t1", "a", domain.StatusWorking)
+	withCwd.Cwd = "/home/op/proj"
+	h.SetAgents([]domain.Agent{withCwd, agent("p2", "t2", "b", domain.StatusIdle)})
+	evs, _ = r.Snapshot(ctx)
+	if len(evs) != 0 {
+		t.Fatalf("cwd-only snapshot emitted %v", kinds(evs))
+	}
+	if a, _ := r.Agent(domain.Key{PaneID: "p1", TerminalID: "t1"}); a.Cwd != "/home/op/proj" {
+		t.Fatalf("Cwd after snapshot = %q", a.Cwd)
+	}
+
 	h.SetAgents([]domain.Agent{agent("p1", "t1", "renamed", domain.StatusWorking), agent("p2", "t3", "b", domain.StatusIdle)})
 	evs, _ = r.Snapshot(ctx)
 	if got := kinds(evs); !equal(got, []string{"gone:p2/t2", "appeared:p2/t3", "changed:p1/t1"}) {
@@ -101,7 +113,9 @@ func TestRegistrySnapshotIgnoresNonAgentPanesAndReportsErrors(t *testing.T) {
 func TestRegistryApplyStatusAndUpdate(t *testing.T) {
 	h := testkit.NewFakeHerdr(nil)
 	r := app.NewRegistry(h, testkit.NewFakeClock(t0), nil)
-	h.SetAgents([]domain.Agent{agent("p1", "t1", "a", domain.StatusWorking)})
+	first := agent("p1", "t1", "a", domain.StatusWorking)
+	first.Cwd = "/home/op/proj"
+	h.SetAgents([]domain.Agent{first})
 	if _, err := r.Snapshot(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +144,8 @@ func TestRegistryApplyStatusAndUpdate(t *testing.T) {
 	if evs, _ = r.Apply(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &unnamed}); len(evs) != 0 {
 		t.Fatalf("nameless pane.updated emitted %v", evs)
 	}
-	if a, _ := r.Agent(domain.Key{PaneID: "p1", TerminalID: "t1"}); a.Name != "a" {
-		t.Fatalf("name after nameless pane.updated = %q", a.Name)
+	if a, _ := r.Agent(domain.Key{PaneID: "p1", TerminalID: "t1"}); a.Name != "a" || a.Cwd != "/home/op/proj" {
+		t.Fatalf("name/cwd after nameless pane.updated = %q %q", a.Name, a.Cwd)
 	}
 	replacement := agent("p1", "t2", "c", domain.StatusWorking)
 	if evs, structural = r.Apply(domain.HerdrEvent{Kind: domain.PaneUpdated, PaneID: "p1", Agent: &replacement}); !structural || len(evs) != 0 {

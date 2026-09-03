@@ -32,6 +32,10 @@ type Agent struct {
 	Revision       int64
 	StateChangeSeq int64
 	Focused        bool
+	// Cwd is the working directory Herdr reports for the pane; the reply
+	// source uses it to find the agent's own transcript. Empty when Herdr
+	// does not know it.
+	Cwd string
 }
 
 // labelSeparator joins the workspace and the agent part of a label, the

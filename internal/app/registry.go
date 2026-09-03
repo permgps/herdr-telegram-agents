@@ -236,6 +236,9 @@ func (r *Registry) applyUpdate(ev domain.HerdrEvent) ([]AgentEvent, bool) {
 		a.TabLabel = old.TabLabel
 	}
 	a.Name = old.Name
+	if a.Cwd == "" {
+		a.Cwd = old.Cwd
+	}
 	r.agents[a.Key] = a
 	if !differs(old, a) {
 		return nil, false
