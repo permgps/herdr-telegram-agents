@@ -53,5 +53,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # A failure is also reported as an annotation so the reason is visible
+      # without downloading the log (nobody develops this on Windows).
       - name: go test
-        run: go test ./...
+        shell: pwsh
+        run: |
+          $out = go test ./... 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 0) {
+            $tail = (($out -split "`n" | Select-Object -Last 60) -join "%0A")
+            Write-Host "::error title=windows tests::$tail"
+          }
+          exit $code
