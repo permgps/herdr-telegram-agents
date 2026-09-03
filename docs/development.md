@@ -40,18 +40,35 @@ verification against the release assets, lives in [testing.md](testing.md).
 
 ## Publishing a release
 
+`herdr plugin install` clones the head of `main` and runs `scripts/install.sh`,
+which downloads the release asset named by `version` in `herdr-plugin.toml`.
+So at every moment `main` must pair a manifest with a release that already
+exists: push the tag first, let the release publish, and only then push
+`main`. Pushing `main` with a bumped version before the release exists
+breaks installs with a 404 until the workflow finishes.
+
 1. Set `version` in `herdr-plugin.toml` to the new number in the commit you
    are going to tag; the install scripts download the asset named by that
    version, and the release workflow refuses a tag that does not match it.
-2. `make lint && make test`, push `main` and wait for CI to pass.
-3. `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`. The release
-   workflow builds the five binaries and `checksums.txt`; GoReleaser writes
-   the release notes from the commit list.
+   Changes to the manifest (actions, panes, startup) and to the install
+   scripts ship in that same commit: an installer always runs the manifest
+   from `main` against the binary of the released version.
+2. `make lint && make test`, and make sure CI is green on the parent commit.
+3. `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`, without pushing
+   `main` yet. The release workflow builds the five binaries and
+   `checksums.txt` from the tagged commit; GoReleaser writes the release
+   notes from the commit list.
 4. Check that the release page lists all six assets, then
-   `sh scripts/verify-install.sh X.Y.Z all`.
-5. Nothing else: the repository carries the GitHub topic `herdr-plugin`, so
+   `sh scripts/verify-install.sh X.Y.Z all` (it clones the tag, so it works
+   before `main` moves).
+5. `git push origin main`.
+6. Nothing else: the repository carries the GitHub topic `herdr-plugin`, so
    the [marketplace](https://herdr.dev/plugins/) card picks up the new
    version within 30 minutes.
+
+Commits that touch only Go code are safe to push to `main` at any time:
+installers keep getting the binary of the last release until `version`
+moves.
 
 ## The `dev` subcommand
 
