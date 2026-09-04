@@ -75,6 +75,16 @@ const (
 	// presenceInterval is how often the daemon samples the machine's input
 	// idle time to decide whether the operator is at the desk.
 	presenceInterval = 10 * time.Second
+	// turnSettle is how long an agent must stay idle before its turn counts
+	// as over (✅ reaction, turn duration); Herdr's detection dips out of
+	// working for a second or two while a tool runs, so a shorter wait
+	// would end turns that are still going.
+	turnSettle = 5 * time.Second
+	// agentStartTimeout is how long /new lets Herdr wait for the agent to be
+	// ready in its new pane; agentStartGrace is the extra time the background
+	// goroutine gets for the socket round trip.
+	agentStartTimeout = 60 * time.Second
+	agentStartGrace   = 10 * time.Second
 	// choiceLabelRunes is the longest option label shown on an inline
 	// button; longer labels are cut with an ellipsis so a phone still shows
 	// the number and the start of the text.

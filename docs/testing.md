@@ -66,6 +66,9 @@ Telegram group on a phone.
 - [ ] **Stale buttons**: answer in Herdr and press the old button: `agent is not waiting anymore` and the keyboard disappears; an agent exiting with buttons pending loses them on exit
 - [ ] **Button access control**: a press from a non-operator account answers `not allowed` and sends nothing
 - [ ] **Done**: a finished agent posts its tail silently
+- [ ] **Reactions**: a plain prompt in a topic gets 👀 within a second and ✅ when the turn ends (done, or 5 s of idle); a `y` reply to a dialog gets none; untick `React to prompts` in `/options` → Posts → a prompt gets none
+- [ ] **Question delay**: `/options` → Posts → `Question delay` → `10s`; answer a Claude Code question in Herdr within 10 s → no post, log `screen skipped … reason=not_blocked`; leave the next one unanswered → posted after ~11.5 s with buttons, log `capture compared`; set it back to `Off`
+- [ ] **Short done posts**: `Skip short done posts` → `30s`; a one-word prompt answered in 5 s → no done post, log `reason=short_turn`; a longer task posts as usual; set it back to `Off`
   - [ ] `Done post` = `Reply` in `/options`, finish a turn: the agent's last message arrives as monospace text, the log has `reply posted` with the transcript path
   - [ ] `Done post` = `Formatted`, finish a turn whose reply has a list and inline code: bullets and `<code>` render, a fenced block stays one block
   - [ ] a non-Claude agent, or a Claude pane whose directory has no `~/.claude/projects/<slug>/`, still posts the screen and the log shows `reply source unavailable`
@@ -73,6 +76,9 @@ Telegram group on a phone.
 - [ ] **Prompts**: plain text in a topic is typed into the agent and the icon turns ⚡
 - [ ] **`/keys`, `/focus`, `/status`, `/help`** in a topic
 - [ ] **Claude Code commands**: `/clear`, `/compact`, `/usage`, `/model` on an idle agent; `/usage` and a bare `/model` come back as a panel and leave no overlay open; a command sent while the agent works is refused with a hint
+- [ ] **Stop and interrupt**: `/stop` on a working agent → the turn stops in Herdr and the reply is `⏹ sent esc`; `/interrupt` → `⛔ sent ctrl+c` and Claude Code shows the interrupt; `/stop` in General → `agent commands live in the agent's topic`
+- [ ] **Close**: `/close` → `Close <label>? …` with `Yes, close` / `No`; `No` → `not closed`; `/close` again, `Yes` → `closing <label> …`, the topic gets 🏁 and closes, the tab is gone in Herdr
+- [ ] **New agent**: `/new <workspace>` in General → `starting claude in <workspace> …`, then `started claude in <workspace> (pane …)` and a topic `<workspace> · claude` appears; `/new` → the workspace list; `/new zzz` → `no workspace named "zzz"` with the list; `/new <workspace> codex` starts Codex
 - [ ] **General topic**: `/status` lists every agent with a link, `/help` works, other messages are ignored
 - [x] **Options panel**: `/options` in General shows the groups; Sync → untick the checkbox → toast `saved`, button `☐`; a status change in Herdr makes no topic edit, `/status` starts with `🔇`, the `status` action prints `sync=off`; tick it again → `resync requested` in the log and the icons repaint (2026-09-03, v0.2.0-4-g608197f, from the phone)
 - [x] **Icon picker**: Appearance → `working` → a grid of eight emoji per row over two pages renders and taps well on the phone (fallback: six per row); pick 🔥 → the working topic's icon changes; pick ✅ → toast `used by idle`; `↺ Reset to defaults` → ⚡ is back; `✖ Close` → summary text without buttons; a second `/options` strips the old panel's keyboard (2026-09-03, v0.2.0-4-g608197f, from the phone)

@@ -33,7 +33,8 @@ func TestInboundPromptAndShortReply(t *testing.T) {
 	if p := f.herdr.Prompts(); len(p) != 1 || p[0] != "p1: fix the tests" {
 		t.Fatalf("Prompts = %v", p)
 	}
-	assertCallsEqual(t, f.tg)
+	// Delivery is confirmed by 👀 on the message, never by a reply.
+	assertCallsEqual(t, f.tg, "react:101:5:👀")
 
 	// "y" while idle is a prompt, while blocked a key press.
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "y")); err != nil {
@@ -49,8 +50,33 @@ func TestInboundPromptAndShortReply(t *testing.T) {
 	if k := f.herdr.Keys(); len(k) != 1 || k[0].Target != "p1" || !reflect.DeepEqual(k[0].Keys, []string{"y"}) {
 		t.Fatalf("Keys = %+v", k)
 	}
-	// Delivery is silent: no reaction, no reply.
-	assertCallsEqual(t, f.tg)
+	// The prompt reacted, the key press did not; no reply either way.
+	assertCallsEqual(t, f.tg, "react:101:5:👀", "react:101:6:👀")
+}
+
+func TestInboundPromptReacts(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 2, "hello")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "react:101:2:👀")
+	// A failed prompt gets the ⚠️ reply and no reaction.
+	f.herdr.FailNext("prompt", domain.ErrDisconnected)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 3, "again")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "send:101:⚠️ herdr is unreachable:reply=3")
+	// Reactions off: the prompt goes through silently.
+	if err := f.opts.Set(f.ctx, domain.OptionPostsReactions, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 4, "quiet")); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.tg.Calls(); len(calls) != 2 {
+		t.Fatalf("reaction with the option off: %q", calls)
+	}
 }
 
 func TestInboundKeysFocusScreen(t *testing.T) {
@@ -615,6 +641,9 @@ func TestInboundAwayAndHere(t *testing.T) {
 	if !strings.Contains(helpText, "/away [2h]") || !strings.Contains(helpText, "/here") {
 		t.Error("help text lacks the presence commands")
 	}
+	if !strings.Contains(helpText, "/stop:") || !strings.Contains(helpText, "/interrupt:") || !strings.Contains(helpText, "/close:") {
+		t.Error("help text lacks the control commands")
+	}
 }
 
 func TestInboundPresenceUnavailableAndTopicHint(t *testing.T) {
@@ -672,4 +701,296 @@ func TestInboundStatusPresenceHeader(t *testing.T) {
 	if got := general(f, t, 5, "/status"); !strings.HasPrefix(got, "🔇 Herdr → Telegram sync is off (/options)\n🔕 quiet: you are at the desk (/away to override)\n1 agent") {
 		t.Fatalf("status with both headers = %q", got)
 	}
+}
+
+func TestInboundStopAndInterrupt(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/stop")); err != nil {
+		t.Fatal(err)
+	}
+	// Both keys go out in any live status, a blocked dialog included.
+	f.setStatus(a, domain.StatusBlocked)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "/interrupt@agents_bot")); err != nil {
+		t.Fatal(err)
+	}
+	keys := f.herdr.Keys()
+	if len(keys) != 2 || keys[0].Target != "p1" || !reflect.DeepEqual(keys[0].Keys, []string{"esc"}) || !reflect.DeepEqual(keys[1].Keys, []string{"ctrl+c"}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⏹ sent esc:reply=5", "send:101:⛔ sent ctrl+c:reply=6")
+	if n := len(f.herdr.Prompts()); n != 0 {
+		t.Errorf("control commands reached the agent as prompts: %d", n)
+	}
+	// With arguments the words are unknown commands, not key presses.
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "/stop now")); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 3 || sent[2].Text != "unknown command, see /help" || len(f.herdr.Keys()) != 2 {
+		t.Fatalf("/stop now: sent=%+v keys=%d", sent, len(f.herdr.Keys()))
+	}
+}
+
+func TestInboundStopFailure(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.FailNext("keys", domain.ErrDisconnected)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/stop")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ herdr is unreachable:reply=5")
+	f.herdr.FailNext("keys", domain.ErrAgentGone)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "/interrupt")); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 2 || sent[1].Text != "⚠️ agent is gone" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestInboundControlCommandsInGeneral(t *testing.T) {
+	f := newBridgeFixture(t)
+	for id, text := range map[int]string{1: "/stop", 2: "/interrupt", 3: "/close"} {
+		if got := general(f, t, id, text); got != topicOnly {
+			t.Errorf("%s in General = %q, want %q", text, got, topicOnly)
+		}
+	}
+	if n := len(f.herdr.Keys()) + len(f.herdr.Closed()); n != 0 {
+		t.Errorf("General control commands reached herdr: %d calls", n)
+	}
+}
+
+func closePress(thread, message int, data string) domain.ButtonPressed {
+	return domain.ButtonPressed{CallbackID: "cb", ThreadID: thread, MessageID: message, FromID: 1, Data: data}
+}
+
+func TestInboundCloseAsksAndCloses(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/close")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:Close ws · reviewer? The pane and its tab go away.:reply=5:buttons=2")
+	buttons := f.tg.Buttons(1000)
+	if len(buttons) != 2 || buttons[0].Text != "Yes, close" || buttons[0].Data != "c:y" || buttons[0].Row != 1 || buttons[1].Text != "No" || buttons[1].Data != "c:n" || buttons[1].Row != 1 {
+		t.Fatalf("buttons = %+v", buttons)
+	}
+	if err := f.in.PressClose(f.ctx, closePress(101, 1000, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	if closed := f.herdr.Closed(); len(closed) != 1 || closed[0] != "p1" {
+		t.Fatalf("Closed = %v", closed)
+	}
+	assertCallsEqual(t, f.tg,
+		"send:101:Close ws · reviewer? The pane and its tab go away.:reply=5:buttons=2",
+		"edittext:1000:closing ws · reviewer …:buttons=0",
+		"answer:cb:closing")
+	// The question is spent: a second press is stale.
+	if err := f.in.PressClose(f.ctx, closePress(101, 1000, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "answer:cb:not the latest question" || len(f.herdr.Closed()) != 1 {
+		t.Fatalf("second press: calls=%q closed=%v", calls, f.herdr.Closed())
+	}
+}
+
+func TestInboundCloseNo(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/close")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.PressClose(f.ctx, closePress(101, 1000, "c:n")); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.herdr.Closed()) != 0 {
+		t.Fatalf("No closed the pane: %v", f.herdr.Closed())
+	}
+	assertCallsEqual(t, f.tg,
+		"send:101:Close ws · reviewer? The pane and its tab go away.:reply=5:buttons=2",
+		"edittext:1000:not closed:buttons=0",
+		"answer:cb:kept")
+}
+
+func TestInboundCloseStalePress(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	for id := 5; id <= 6; id++ {
+		if err := f.in.HandleTopic(f.ctx, topicMsg(101, id, "/close")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The second question retired the first one's keyboard.
+	assertCallsEqual(t, f.tg,
+		"send:101:Close ws · reviewer? The pane and its tab go away.:reply=5:buttons=2",
+		"buttons:1000:",
+		"send:101:Close ws · reviewer? The pane and its tab go away.:reply=6:buttons=2")
+	if err := f.in.PressClose(f.ctx, closePress(101, 1000, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "answer:cb:not the latest question" || len(f.herdr.Closed()) != 0 {
+		t.Fatalf("stale press: calls=%q closed=%v", calls, f.herdr.Closed())
+	}
+	// An unmapped thread and unknown data are stale too.
+	if err := f.in.PressClose(f.ctx, closePress(999, 1001, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.PressClose(f.ctx, closePress(101, 1001, "c:zz")); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.tg.Calls()
+	if calls[len(calls)-3] != "answer:cb:topic is not mapped" || calls[len(calls)-1] != "answer:cb:unknown button" || len(f.herdr.Closed()) != 0 {
+		t.Fatalf("calls = %q", calls)
+	}
+	// The latest question is still live.
+	if err := f.in.PressClose(f.ctx, closePress(101, 1001, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "answer:cb:not the latest question" {
+		t.Fatalf("unknown data must retire the question: %q", calls)
+	}
+}
+
+func TestInboundCloseAfterExit(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/close")); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.agents, a.Key)
+	if err := f.in.PressClose(f.ctx, closePress(101, 1000, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg,
+		"send:101:Close ws · reviewer? The pane and its tab go away.:reply=5:buttons=2",
+		"buttons:1000:",
+		"answer:cb:agent has exited")
+	if len(f.herdr.Closed()) != 0 {
+		t.Fatalf("exited agent closed: %v", f.herdr.Closed())
+	}
+	// Forget after a question drops it without a Telegram call.
+	f.agents[a.Key] = a
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "/close")); err != nil {
+		t.Fatal(err)
+	}
+	f.in.Forget(a.Key)
+	if n := len(f.tg.Calls()); n != 4 {
+		t.Fatalf("Forget made a Telegram call: %q", f.tg.Calls())
+	}
+	if err := f.in.PressClose(f.ctx, closePress(101, 1001, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "answer:cb:not the latest question" {
+		t.Fatalf("press after Forget: %q", calls)
+	}
+}
+
+func TestInboundCloseFailure(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/close")); err != nil {
+		t.Fatal(err)
+	}
+	f.herdr.FailNext("close", domain.ErrDisconnected)
+	if err := f.in.PressClose(f.ctx, closePress(101, 1000, "c:y")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg,
+		"send:101:Close ws · reviewer? The pane and its tab go away.:reply=5:buttons=2",
+		"edittext:1000:⚠️ could not close: herdr is unreachable:buttons=0",
+		"answer:cb:⚠️ failed")
+	// Fatal Telegram errors surface.
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "/close")); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.FailNext("edittext", domain.ErrBotUnauthorized)
+	if err := f.in.PressClose(f.ctx, closePress(101, 1001, "c:n")); !errors.Is(err, domain.ErrBotUnauthorized) {
+		t.Fatalf("fatal error not returned: %v", err)
+	}
+}
+
+func TestInboundNewListsWorkspaces(t *testing.T) {
+	f := newBridgeFixture(t)
+	if got := general(f, t, 1, "/new"); got != "no workspaces" {
+		t.Fatalf("/new without workspaces = %q", got)
+	}
+	f.herdr.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}, {ID: "w2", Label: "Web"}, {ID: "w3", Label: ""}})
+	if got := general(f, t, 2, "/new"); got != "workspaces: Work, Web, w3" {
+		t.Fatalf("/new = %q", got)
+	}
+	if got := general(f, t, 3, "/new zzz"); got != "no workspace named \"zzz\"\nworkspaces: Work, Web, w3" {
+		t.Fatalf("/new zzz = %q", got)
+	}
+	if got := general(f, t, 4, "/new w"); got != "\"w\" matches Work, Web and w3\nworkspaces: Work, Web, w3" {
+		t.Fatalf("/new w = %q", got)
+	}
+	if got := general(f, t, 5, "/new codex"); got != "workspaces: Work, Web, w3" {
+		t.Fatalf("/new codex = %q", got)
+	}
+	f.herdr.FailNext("workspaces", domain.ErrDisconnected)
+	if got := general(f, t, 6, "/new Work"); got != "⚠️ herdr: herdr is unreachable" {
+		t.Fatalf("/new with herdr down = %q", got)
+	}
+	if n := len(f.herdr.Tabs()) + len(f.herdr.Starts()); n != 0 {
+		t.Fatalf("a listing reached tab.create or agent.start: %d", n)
+	}
+	// In a topic the command only points at General.
+	f.add(t, "p1", "t1", "alpha", domain.StatusIdle)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "/new Work")); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != newInGeneral {
+		t.Fatalf("/new in topic: %+v", sent)
+	}
+}
+
+func TestInboundNewStartsAgent(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.herdr.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}, {ID: "w2", Label: "Web"}})
+	f.herdr.SetStartResult(domain.Agent{Key: domain.Key{PaneID: "p-new", TerminalID: "term-new"}, TabID: "t-new"})
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: 9, FromID: 1, Text: "/new wor codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if tabs := f.herdr.Tabs(); len(tabs) != 1 || tabs[0].WorkspaceID != "w1" {
+		t.Fatalf("Tabs = %+v", tabs)
+	}
+	starts := f.herdr.Starts()
+	if len(starts) != 1 || starts[0] != (testkit.StartCall{Name: "codex", Kind: "codex", PaneID: "p-new", Timeout: 60 * time.Second}) {
+		t.Fatalf("Starts = %+v", starts)
+	}
+	assertCallsEqual(t, f.tg, "send:0:starting codex in Work …:reply=9", "send:0:started codex in Work (pane p-new):reply=9")
+	// A taken name gets a suffix; the default kind is claude.
+	f.agents[domain.Key{PaneID: "p-new", TerminalID: "term-new"}] = domain.Agent{Key: domain.Key{PaneID: "p-new", TerminalID: "term-new"}, Name: "claude", Status: domain.StatusIdle}
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: 10, FromID: 1, Text: "/new web"}); err != nil {
+		t.Fatal(err)
+	}
+	starts = f.herdr.Starts()
+	if len(starts) != 2 || starts[1].Name != "claude-2" || starts[1].Kind != "claude" {
+		t.Fatalf("Starts = %+v", starts)
+	}
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "send:0:started claude in Web (pane p-new):reply=10" {
+		t.Fatalf("calls = %q", calls)
+	}
+}
+
+func TestInboundNewCreateTabFails(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.herdr.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}})
+	f.herdr.FailNext("tab", domain.ErrDisconnected)
+	if got := general(f, t, 1, "/new Work"); got != "⚠️ could not create a tab: herdr is unreachable" {
+		t.Fatalf("reply = %q", got)
+	}
+	if len(f.herdr.Starts()) != 0 {
+		t.Fatal("agent.start called after a failed tab.create")
+	}
+}
+
+func TestInboundNewStartFails(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.herdr.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}})
+	f.herdr.FailNext("start", errors.New("herdr agent.start: agent not detected within 60s"))
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: 1, FromID: 1, Text: "/new Work"}); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:0:starting claude in Work …:reply=1", "send:0:⚠️ claude did not start in Work: herdr agent.start: agent not detected within 60s:reply=1")
 }

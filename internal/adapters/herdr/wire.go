@@ -153,6 +153,44 @@ type tabRenameParams struct {
 	Label string `json:"label"`
 }
 
+// tabCreateParams is tab.create with Herdr's defaults for cwd and label;
+// focus is always sent so a tab opened from the phone never steals the
+// desktop's focus.
+type tabCreateParams struct {
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Focus       bool   `json:"focus"`
+}
+
+// paneInfo is the slice of PaneInfo the plugin reads from tab_created.
+type paneInfo struct {
+	PaneID      string `json:"pane_id"`
+	WorkspaceID string `json:"workspace_id"`
+	TabID       string `json:"tab_id"`
+}
+
+type tabCreatedResult struct {
+	Type     string   `json:"type"`
+	Tab      tabInfo  `json:"tab"`
+	RootPane paneInfo `json:"root_pane"`
+}
+
+type agentStartParams struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	PaneID    string `json:"pane_id"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+}
+
+type agentStartedResult struct {
+	Type  string    `json:"type"`
+	Agent agentInfo `json:"agent"`
+	Argv  []string  `json:"argv"`
+}
+
+type paneCloseParams struct {
+	PaneID string `json:"pane_id"`
+}
+
 type notifyParams struct {
 	Title string `json:"title"`
 	Body  string `json:"body,omitempty"`

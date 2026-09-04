@@ -78,6 +78,15 @@ func (o *Options) PostsDone() domain.DoneMode { return o.Get().PostsDone() }
 // QuietReannounce reports whether leaving re-posts still-blocked agents.
 func (o *Options) QuietReannounce() bool { return o.Get().QuietReannounce() }
 
+// PostsReactions reports whether prompts get 👀 / ✅ reactions.
+func (o *Options) PostsReactions() bool { return o.Get().PostsReactions() }
+
+// BlockedDelay is the extra wait before a blocked post; zero means none.
+func (o *Options) BlockedDelay() time.Duration { return o.Get().BlockedDelay() }
+
+// MinTurn is the shortest turn whose done screen is posted; zero posts all.
+func (o *Options) MinTurn() time.Duration { return o.Get().MinTurn() }
+
 // Choices lists the allowed values of a choice source; nil when unknown.
 // Lists the domain owns (the day counts) are answered without asking the
 // external source.

@@ -296,3 +296,66 @@ func TestFakeIdle(t *testing.T) {
 		t.Errorf("Calls = %d", idle.Calls())
 	}
 }
+
+func TestFakeHerdrWorkspacesTabsStartsAndCloses(t *testing.T) {
+	h := testkit.NewFakeHerdr(nil)
+	ctx := context.Background()
+
+	h.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}})
+	ws, err := h.ListWorkspaces(ctx)
+	if err != nil || len(ws) != 1 || ws[0].Label != "Work" {
+		t.Fatalf("ListWorkspaces = %+v, %v", ws, err)
+	}
+	h.FailNext("workspaces", domain.ErrDisconnected)
+	if _, err := h.ListWorkspaces(ctx); !errors.Is(err, domain.ErrDisconnected) {
+		t.Fatalf("ListWorkspaces after FailNext = %v", err)
+	}
+
+	tab, err := h.CreateTab(ctx, "w1")
+	if err != nil || tab.ID != "t-new" || tab.WorkspaceID != "w1" || tab.RootPaneID != "p-new" {
+		t.Fatalf("CreateTab = %+v, %v", tab, err)
+	}
+	h.FailNext("tab", domain.ErrDisconnected)
+	if _, err := h.CreateTab(ctx, "w2"); !errors.Is(err, domain.ErrDisconnected) {
+		t.Fatalf("CreateTab after FailNext = %v", err)
+	}
+	if tabs := h.Tabs(); len(tabs) != 2 || tabs[0].WorkspaceID != "w1" || tabs[1].WorkspaceID != "w2" {
+		t.Fatalf("Tabs = %+v", tabs)
+	}
+
+	agent, err := h.StartAgent(ctx, "claude", "claude", "p-new", 60*time.Second)
+	if err != nil || agent.PaneID != "p-new" || agent.Kind != "claude" || agent.Name != "claude" {
+		t.Fatalf("StartAgent = %+v, %v", agent, err)
+	}
+	h.SetStartResult(domain.Agent{Key: domain.Key{PaneID: "p9", TerminalID: "t9"}, TabID: "t-new"})
+	agent, err = h.StartAgent(ctx, "codex-2", "codex", "p-new", time.Second)
+	if err != nil || agent.PaneID != "p9" || agent.TerminalID != "t9" || agent.Kind != "codex" || agent.Name != "codex-2" {
+		t.Fatalf("StartAgent with result = %+v, %v", agent, err)
+	}
+	h.FailNext("start", domain.ErrAgentGone)
+	if _, err := h.StartAgent(ctx, "claude", "claude", "p-new", time.Second); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("StartAgent after FailNext = %v", err)
+	}
+	starts := h.Starts()
+	if len(starts) != 3 || starts[0] != (testkit.StartCall{Name: "claude", Kind: "claude", PaneID: "p-new", Timeout: 60 * time.Second}) {
+		t.Fatalf("Starts = %+v", starts)
+	}
+	h.SetStartDelay(time.Hour)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := h.StartAgent(cancelled, "claude", "claude", "p-new", time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("StartAgent with cancelled ctx = %v", err)
+	}
+	h.SetStartDelay(0)
+
+	if err := h.ClosePane(ctx, "p1"); err != nil {
+		t.Fatal(err)
+	}
+	h.FailNext("close", domain.ErrAgentGone)
+	if err := h.ClosePane(ctx, "p2"); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("ClosePane after FailNext = %v", err)
+	}
+	if closed := h.Closed(); len(closed) != 2 || closed[0] != "p1" || closed[1] != "p2" {
+		t.Fatalf("Closed = %v", closed)
+	}
+}

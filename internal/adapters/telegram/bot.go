@@ -111,19 +111,24 @@ func Poll(ctx context.Context, b *bot.Bot, log *slog.Logger) {
 
 // botCommands is the menu Telegram shows for "/" in the configured chat.
 // Descriptions are one line each; the commands work in topics and, for
-// status, options and help, in General (options only there).
+// status, options and help, in General (options, new, away and here only
+// there).
 var botCommands = []models.BotCommand{
 	{Command: "screen", Description: "Show the agent screen (N: last N lines, all: output since your last message)"},
 	{Command: "keys", Description: "Send raw keys to the agent, e.g. /keys esc"},
 	{Command: "focus", Description: "Bring the agent's pane to the front in Herdr"},
+	{Command: "stop", Description: "Send esc to the agent: cancel the running turn or dialog"},
+	{Command: "interrupt", Description: "Send ctrl+c to the agent"},
 	{Command: "clear", Description: "Claude Code /clear: start a fresh conversation (idle agents only)"},
 	{Command: "compact", Description: "Claude Code /compact [instructions]: compact the context"},
 	{Command: "usage", Description: "Claude Code /usage: show the usage panel, closed for you afterwards"},
 	{Command: "model", Description: "Claude Code /model [name]: show the picker or set the model"},
+	{Command: "close", Description: "Close the agent's pane (asks Yes/No)"},
+	{Command: "new", Description: "Start an agent: /new <workspace> [kind] (General)"},
 	{Command: "status", Description: "Agent status here, all agents in General"},
 	{Command: "away", Description: "Treat me as away (General): /away or /away 2h"},
 	{Command: "here", Description: "Back to automatic presence (General)"},
-	{Command: "options", Description: "Settings panel (General): sync, quiet mode, icons, redaction, topic cleanup"},
+	{Command: "options", Description: "Settings panel (General): sync, quiet mode, posts, icons, redaction, topic cleanup"},
 	{Command: "help", Description: "List the commands"},
 }
 

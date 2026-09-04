@@ -34,8 +34,11 @@ func newDebouncer(clock domain.Clock, delay time.Duration, log *slog.Logger) *de
 // Due delivers keys whose timer fired.
 func (d *debouncer) Due() <-chan domain.Key { return d.due }
 
-// Schedule arms (or re-arms) the timer for key.
-func (d *debouncer) Schedule(key domain.Key) {
+// Schedule arms (or re-arms) the timer for key with the default delay.
+func (d *debouncer) Schedule(key domain.Key) { d.ScheduleAfter(key, d.delay) }
+
+// ScheduleAfter arms (or re-arms) the timer for key with an explicit delay.
+func (d *debouncer) ScheduleAfter(key domain.Key, delay time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if cancel, ok := d.pending[key]; ok {
@@ -43,8 +46,8 @@ func (d *debouncer) Schedule(key domain.Key) {
 	}
 	cancel := make(chan struct{})
 	d.pending[key] = cancel
-	timer := d.clock.After(d.delay)
-	d.log.Debug("edit scheduled", slog.String("key", key.String()), slog.Int64("delay_ms", d.delay.Milliseconds()))
+	timer := d.clock.After(delay)
+	d.log.Debug("edit scheduled", slog.String("key", key.String()), slog.Int64("delay_ms", delay.Milliseconds()))
 	go func() {
 		select {
 		case <-timer:

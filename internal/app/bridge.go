@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,10 @@ type Bridge struct {
 	fatal   chan error
 	dropped atomic.Int64
 	log     *slog.Logger
+	// runCtx is the context of Run; spawn derives its goroutines from it
+	// and wg counts them so Run returns only when they are done.
+	runCtx context.Context
+	wg     sync.WaitGroup
 
 	// CallTimeout bounds one job; tests shorten it.
 	CallTimeout time.Duration
@@ -47,7 +52,7 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
 	out := newOutbound(herdr, tg, topics, registry.Agent, registry.Live, capture, opts, replies, clock, log)
 	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, cfg.ChatID, cfg.BotUsername, clock, log)
-	return &Bridge{
+	b := &Bridge{
 		out:         out,
 		in:          in,
 		jobs:        make(chan any, bridgeBuffer),
@@ -55,6 +60,41 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		log:         log,
 		CallTimeout: bridgeCallTimeout,
 	}
+	// A slow agent.start runs off the loop and reports back as a job, so
+	// the bridge stays the only writer to Telegram.
+	in.async = func(run func(context.Context) startResult) {
+		b.spawn(func(ctx context.Context) { b.Submit(run(ctx)) })
+	}
+	return b
+}
+
+// startResult is the job a background agent start submits when it is
+// over: what was asked, what Herdr answered and when it began.
+type startResult struct {
+	messageID int
+	workspace string
+	kind      string
+	name      string
+	paneID    string
+	agent     domain.Agent
+	err       error
+	started   time.Time
+}
+
+// spawn runs fn on its own goroutine with a context bound to Run and the
+// start timeout plus grace; Run waits for every spawned goroutine.
+func (b *Bridge) spawn(fn func(context.Context)) {
+	parent := b.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		ctx, cancel := context.WithTimeout(parent, agentStartTimeout+agentStartGrace)
+		defer cancel()
+		fn(ctx)
+	}()
 }
 
 // presenceAway is the job the daemon submits when quiet mode ends: the
@@ -86,7 +126,7 @@ func (b *Bridge) Fatal() <-chan error { return b.fatal }
 // next event or a resync brings the state back.
 func (b *Bridge) Submit(job any) {
 	switch job.(type) {
-	case AgentEvent, domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand, presenceAway:
+	case AgentEvent, domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand, presenceAway, startResult:
 	default:
 		b.log.Warn("bridge job of unknown type dropped", slog.String("type", fmt.Sprintf("%T", job)))
 		return
@@ -108,6 +148,8 @@ func (b *Bridge) Dropped() int64 { return b.dropped.Load() }
 func (b *Bridge) Run(ctx context.Context) {
 	b.log.Info("bridge started")
 	defer b.log.Info("bridge stopped")
+	b.runCtx = ctx
+	defer b.wg.Wait()
 	for {
 		select {
 		case <-ctx.Done():
@@ -118,6 +160,8 @@ func (b *Bridge) Run(ctx context.Context) {
 			b.run(ctx, "screen", func(ctx context.Context) error { return b.out.Fire(ctx, key) })
 		case key := <-b.in.Due():
 			b.run(ctx, "command", func(ctx context.Context) error { return b.in.Fire(ctx, key) })
+		case key := <-b.out.TurnDue():
+			b.run(ctx, "turn", func(ctx context.Context) error { return b.out.EndTurn(ctx, key) })
 		}
 	}
 }
@@ -128,12 +172,17 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 		b.log.Debug("bridge job", slog.String("kind", "agent_event"), slog.String("event", string(j.Kind)), slog.String("key", j.Agent.Key.String()))
 		b.out.Observe(j)
 		if j.Kind == AgentGone {
+			b.in.Forget(j.Agent.Key)
 			b.run(ctx, "forget", func(ctx context.Context) error { return b.out.Forget(ctx, j.Agent.Key) })
 		}
 	case domain.ButtonPressed:
 		b.log.Debug("bridge job", slog.String("kind", "button"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID))
 		if strings.HasPrefix(j.Data, panelPrefix) {
 			b.run(ctx, "options_button", func(ctx context.Context) error { return b.in.PressPanel(ctx, j) })
+			return
+		}
+		if strings.HasPrefix(j.Data, closePrefix) {
+			b.run(ctx, "close_button", func(ctx context.Context) error { return b.in.PressClose(ctx, j) })
 			return
 		}
 		b.run(ctx, "button", func(ctx context.Context) error { return b.out.Press(ctx, j) })
@@ -146,6 +195,9 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 	case presenceAway:
 		b.log.Debug("bridge job", slog.String("kind", "catch_up"))
 		b.run(ctx, "catch_up", b.out.CatchUp)
+	case startResult:
+		b.log.Debug("bridge job", slog.String("kind", "start_result"), slog.Int("message_id", j.messageID), slog.Bool("ok", j.err == nil))
+		b.run(ctx, "start_result", func(ctx context.Context) error { return b.in.StartFinished(ctx, j) })
 	}
 }
 

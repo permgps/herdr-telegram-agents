@@ -97,7 +97,13 @@ func (f *bridgeFixture) setStatus(a domain.Agent, st domain.Status) domain.Agent
 // fire advances the clock past the settle delay and runs every due key.
 func (f *bridgeFixture) fire(t *testing.T, want int) {
 	t.Helper()
-	f.clock.Advance(screenSettle)
+	f.fireAfter(t, screenSettle, want)
+}
+
+// fireAfter advances the clock by d and runs every due key.
+func (f *bridgeFixture) fireAfter(t *testing.T, d time.Duration, want int) {
+	t.Helper()
+	f.clock.Advance(d)
 	for i := 0; i < want; i++ {
 		select {
 		case key := <-f.out.Due():
@@ -835,5 +841,421 @@ func TestOutboundDoneNilReplySourceUsesScreen(t *testing.T) {
 	f.fire(t, 1)
 	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "recap: all tests pass" || !sent[0].Code || sent[0].Markdown {
 		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+// endTurns advances the clock past the idle settle and runs every due turn.
+func (f *bridgeFixture) endTurns(t *testing.T, want int) {
+	t.Helper()
+	f.clock.Advance(turnSettle)
+	for i := 0; i < want; i++ {
+		select {
+		case key := <-f.out.TurnDue():
+			if err := f.out.EndTurn(f.ctx, key); err != nil {
+				t.Fatalf("EndTurn = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("due turn %d did not fire", i+1)
+		}
+	}
+	select {
+	case key := <-f.out.TurnDue():
+		t.Fatalf("unexpected extra due turn %v", key)
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestOutboundReactsOnPromptAndDone(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.herdr.SetScreen("p1", "recap: all tests pass")
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "react:101:2:👀")
+	if tr := f.out.turns[a.Key]; tr.messageID != 2 || !tr.started.IsZero() || !tr.reacted {
+		t.Fatalf("turn after prompt to an idle agent = %+v", tr)
+	}
+	f.clock.Advance(3 * time.Second)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	if tr := f.out.turns[a.Key]; !tr.started.Equal(f.clock.Now()) {
+		t.Fatalf("turn start not set on working: %+v", tr)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	// ✅ lands before the done post; the turn is gone.
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅", "send:101:recap: all tests pass")
+	if _, open := f.out.turns[a.Key]; open {
+		t.Fatal("turn still open after done")
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"turn ended","key":"p1/t1","reason":"done","message_id":2,"duration_ms":1500`) {
+		t.Fatalf("log lacks the turn end: %s", f.logBuf.String())
+	}
+}
+
+func TestOutboundIdleEndsTurnAfterSettle(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
+		t.Fatal(err)
+	}
+	if tr := f.out.turns[a.Key]; tr.started.IsZero() {
+		t.Fatalf("prompt to a working agent must start the turn: %+v", tr)
+	}
+	// A one-second dip to idle while a tool runs does not end the turn.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
+	f.clock.Advance(time.Second)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	if f.out.turnDeb.Pending() != 0 {
+		t.Fatal("idle timer still armed after working")
+	}
+	f.clock.Advance(turnSettle)
+	assertCallsEqual(t, f.tg, "react:101:2:👀")
+	// Five seconds of idle end it.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
+	f.endTurns(t, 1)
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅")
+	if _, open := f.out.turns[a.Key]; open {
+		t.Fatal("turn still open after idle settle")
+	}
+	// A turn that began without a prompt (typed in Herdr) is tracked too,
+	// but there is nothing to react on.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	if tr, open := f.out.turns[a.Key]; !open || tr.started.IsZero() || tr.reacted {
+		t.Fatalf("turn from working = %+v, %v", tr, open)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
+	f.endTurns(t, 1)
+	if calls := f.tg.Calls(); len(calls) != 2 {
+		t.Fatalf("reaction without a prompt: %q", calls)
+	}
+}
+
+func TestOutboundBlockedKeepsEyes(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.herdr.SetScreen("p1", "Allow?\n1. Yes\n2. No")
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "send:101:Allow?\n1. Yes\n2. No:notify:buttons=2")
+	if _, open := f.out.turns[a.Key]; !open || f.out.turnDeb.Pending() != 0 {
+		t.Fatal("blocked must keep the turn open without an idle timer")
+	}
+	// An exit drops the turn without a reaction.
+	f.out.Observe(AgentEvent{Kind: AgentGone, Agent: f.setStatus(a, domain.StatusExited)})
+	if err := f.out.Forget(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, open := f.out.turns[a.Key]; open {
+		t.Fatal("turn survived the exit")
+	}
+	for _, c := range f.tg.Calls() {
+		if c == "react:101:2:✅" {
+			t.Fatal("✅ on an exited agent")
+		}
+	}
+}
+
+func TestOutboundReactionsOff(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.herdr.SetScreen("p1", "done screen")
+	if err := f.opts.Set(f.ctx, domain.OptionPostsReactions, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
+		t.Fatal(err)
+	}
+	if tr, open := f.out.turns[a.Key]; !open || tr.reacted {
+		t.Fatalf("turn with reactions off = %+v, %v", tr, open)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	assertCallsEqual(t, f.tg, "send:101:done screen")
+	// A failed reaction is a warning, not a failure of the prompt.
+	if err := f.opts.Set(f.ctx, domain.OptionPostsReactions, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.FailNext("react", errors.New("boom"))
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 3); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"reaction failed"`) {
+		t.Fatal("failed reaction not logged")
+	}
+	f.tg.FailNext("react", domain.ErrBotUnauthorized)
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 4); !errors.Is(err, domain.ErrBotUnauthorized) {
+		t.Fatalf("fatal reaction error = %v", err)
+	}
+}
+
+func TestOutboundNewPromptReplacesTurn(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.herdr.SetScreen("p1", "done screen")
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 3); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	// Only the latest prompt gets the ✅; the first keeps its 👀.
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:3:👀", "react:101:3:✅", "send:101:done screen")
+}
+
+// shortTurnFixture prepares an idle agent, a prompt and a done screen with
+// posts.min_seconds set to seconds.
+func shortTurnFixture(t *testing.T, seconds string) (*bridgeFixture, domain.Agent) {
+	t.Helper()
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.herdr.SetScreen("p1", "recap: done")
+	if err := f.opts.Set(f.ctx, domain.OptionPostsMinSeconds, seconds, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
+		t.Fatal(err)
+	}
+	return f, a
+}
+
+func TestOutboundShortTurnSkipped(t *testing.T) {
+	f, a := shortTurnFixture(t, "10")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.clock.Advance(3 * time.Second)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if n := len(f.tg.Sent()); n != 0 {
+		t.Fatalf("short turn posted: %+v", f.tg.Sent())
+	}
+	if n := len(f.herdr.Reads()); n != 0 {
+		t.Fatalf("short turn read the screen: %d", n)
+	}
+	if log := f.logBuf.String(); !strings.Contains(log, `"reason":"short_turn","duration_ms":4500,"min_ms":10000`) {
+		t.Fatalf("log lacks short_turn: %s", log)
+	}
+	// Nothing was posted, so the same screen is not a duplicate later.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.clock.Advance(time.Minute)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "recap: done" {
+		t.Fatalf("long turn after a short one: %+v", sent)
+	}
+}
+
+func TestOutboundLongTurnPosts(t *testing.T) {
+	f, a := shortTurnFixture(t, "10")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.clock.Advance(30 * time.Second)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅", "send:101:recap: done")
+}
+
+func TestOutboundUnknownTurnPosts(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "recap: done")
+	if err := f.opts.Set(f.ctx, domain.OptionPostsMinSeconds, "60", 1); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon never saw this turn start: no prompt, no working event.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	assertCallsEqual(t, f.tg, "send:101:recap: done")
+	// Blocked posts ignore the threshold entirely.
+	f.herdr.SetScreen("p1", "Allow?\n1. Yes\n2. No")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 2 || !sent[1].Notify {
+		t.Fatalf("blocked post held back by min_seconds: %+v", sent)
+	}
+}
+
+func TestOutboundShortTurnStillReacts(t *testing.T) {
+	f, a := shortTurnFixture(t, "30")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.clock.Advance(2 * time.Second)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅")
+	if _, open := f.out.turns[a.Key]; open {
+		t.Fatal("turn kept after a skipped done post")
+	}
+}
+
+// delayFixture prepares a working agent with posts.blocked_delay set to
+// seconds and the screens of the first and second capture.
+func delayFixture(t *testing.T, seconds string) (*bridgeFixture, domain.Agent) {
+	t.Helper()
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsBlockedDelay, seconds, 1); err != nil {
+		t.Fatal(err)
+	}
+	return f, a
+}
+
+const (
+	firstCapture  = "Do you want to proceed?"
+	secondCapture = "Do you want to proceed?\n1. Yes\n2. Yes, and don't ask again\n3. No"
+)
+
+func TestOutboundBlockedDelayPostsBetterCapture(t *testing.T) {
+	f, a := delayFixture(t, "10")
+	f.herdr.SetScreen("p1", firstCapture)
+	a.StateChangeSeq = 7
+	a = f.setStatus(a, domain.StatusBlocked)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.fire(t, 1)
+	if n := len(f.tg.Sent()); n != 0 {
+		t.Fatalf("posted before the delay: %+v", f.tg.Sent())
+	}
+	if c, ok := f.out.captures[a.Key]; !ok || c.text != firstCapture || c.seq != 7 || f.out.deb.Pending() != 1 {
+		t.Fatalf("first capture not kept: %+v %v pending=%d", c, ok, f.out.deb.Pending())
+	}
+	// A repeated blocked event for the same question keeps the long timer.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.clock.Advance(screenSettle)
+	select {
+	case key := <-f.out.Due():
+		t.Fatalf("repeated event shortened the delay: %v", key)
+	case <-time.After(30 * time.Millisecond):
+	}
+	f.herdr.SetScreen("p1", secondCapture)
+	f.fireAfter(t, 10*time.Second-screenSettle, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || sent[0].Text != secondCapture || len(sent[0].Buttons) != 3 || !sent[0].Notify {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if n := len(f.herdr.Reads()); n != 2 {
+		t.Fatalf("reads = %d, want 2", n)
+	}
+	if _, ok := f.out.captures[a.Key]; ok {
+		t.Fatal("capture kept after the post")
+	}
+	log := f.logBuf.String()
+	if !strings.Contains(log, `"reason":"delayed"`) || !strings.Contains(log, `"msg":"capture compared"`) || !strings.Contains(log, `"won":"second"`) {
+		t.Fatalf("log lacks the delay lines: %s", log)
+	}
+	// The first capture wins when the second has fewer options; on a tie
+	// the longer text wins.
+	if got, second := betterCapture(secondCapture, firstCapture); got != secondCapture || second {
+		t.Errorf("betterCapture preferred the shorter dialog: %q", got)
+	}
+	if got, second := betterCapture("a", "ab"); got != "ab" || !second {
+		t.Errorf("betterCapture tie = %q", got)
+	}
+	if got, second := betterCapture("ab", "ab"); got != "ab" || second {
+		t.Errorf("betterCapture full tie = %q, %v", got, second)
+	}
+}
+
+func TestOutboundBlockedDelayAnsweredMeanwhile(t *testing.T) {
+	f, a := delayFixture(t, "10")
+	f.herdr.SetScreen("p1", secondCapture)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	// Answered in Herdr: the working event drops the capture and the timer.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	if _, ok := f.out.captures[a.Key]; ok || f.out.deb.Pending() != 0 {
+		t.Fatalf("capture or timer survived the answer: pending=%d", f.out.deb.Pending())
+	}
+	f.clock.Advance(10 * time.Second)
+	if n := len(f.tg.Sent()); n != 0 || len(f.herdr.Reads()) != 1 {
+		t.Fatalf("posted after the answer: sent=%d reads=%d", n, len(f.herdr.Reads()))
+	}
+	// The same when the status changed but the timer still fired.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	f.setStatus(a, domain.StatusIdle)
+	f.fireAfter(t, 10*time.Second, 1)
+	if n := len(f.tg.Sent()); n != 0 || len(f.herdr.Reads()) != 2 {
+		t.Fatalf("posted for an idle agent: sent=%d reads=%d", n, len(f.herdr.Reads()))
+	}
+	if _, ok := f.out.captures[a.Key]; ok {
+		t.Fatal("capture kept for an idle agent")
+	}
+	if !strings.Contains(f.logBuf.String(), `"reason":"not_blocked"`) {
+		t.Fatal("log lacks not_blocked")
+	}
+}
+
+func TestOutboundBlockedDelayNewQuestion(t *testing.T) {
+	f, a := delayFixture(t, "10")
+	f.herdr.SetScreen("p1", firstCapture)
+	a.StateChangeSeq = 1
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	// A newer question arrives during the wait: the settle timer re-arms
+	// and the first capture starts over.
+	a.StateChangeSeq = 2
+	f.herdr.SetScreen("p1", "Second question?")
+	a = f.setStatus(a, domain.StatusBlocked)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	f.fire(t, 1)
+	if c := f.out.captures[a.Key]; c.text != "Second question?" || c.seq != 2 || len(f.tg.Sent()) != 0 {
+		t.Fatalf("restart: capture=%+v sent=%d", c, len(f.tg.Sent()))
+	}
+	if !strings.Contains(f.logBuf.String(), `"reason":"delayed_restart"`) {
+		t.Fatal("log lacks delayed_restart")
+	}
+	f.herdr.SetScreen("p1", "Second question?\n1. Yes\n2. No")
+	f.fireAfter(t, 10*time.Second, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || len(sent[0].Buttons) != 2 || len(f.herdr.Reads()) != 3 {
+		t.Fatalf("Sent = %+v, reads = %d", sent, len(f.herdr.Reads()))
+	}
+	// A press restarts from a fresh first capture.
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	if err := f.out.Press(f.ctx, domain.ButtonPressed{CallbackID: "cb", ThreadID: 101, MessageID: 1000, FromID: 1, Data: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	f.herdr.SetScreen("p1", "Third question?")
+	f.fire(t, 1)
+	if c, ok := f.out.captures[a.Key]; !ok || c.text != "Third question?" || len(f.tg.Sent()) != 1 {
+		t.Fatalf("after press: capture=%+v ok=%v sent=%d", c, ok, len(f.tg.Sent()))
+	}
+}
+
+func TestOutboundBlockedDelayCatchUpNeverWaits(t *testing.T) {
+	f, a := delayFixture(t, "10")
+	f.herdr.SetScreen("p1", secondCapture)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	if len(f.tg.Sent()) != 0 {
+		t.Fatal("posted before the delay")
+	}
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || !sent[0].Notify || len(sent[0].Buttons) != 3 {
+		t.Fatalf("catch-up: %+v", sent)
+	}
+	if _, ok := f.out.captures[a.Key]; ok {
+		t.Fatal("catch-up left a capture behind")
+	}
+	// Off keeps the single capture at the usual settle.
+	if err := f.opts.Set(f.ctx, domain.OptionPostsBlockedDelay, "0", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.out.Forget(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	f.herdr.SetScreen("p1", "Fresh question?\n1. Yes\n2. No")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 2 || len(sent[1].Buttons) != 2 {
+		t.Fatalf("delay off: %+v", sent)
 	}
 }

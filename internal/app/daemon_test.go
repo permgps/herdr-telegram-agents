@@ -349,7 +349,7 @@ func TestDaemonTopicMessageAndGeneralStatus(t *testing.T) {
 	}
 
 	f.tg.Push(domain.GeneralCommand{MessageID: 6, FromID: 1, Text: "/status"})
-	f.waitCalls(t, 4)
+	f.waitCalls(t, 5) // the prompt's 👀, then the status reply
 	sent := f.tg.Sent()
 	last := sent[len(sent)-1]
 	if last.ThreadID != 0 || !last.HTML || last.ReplyTo != 6 || !strings.Contains(last.Text, "1 agent\n✅ <a href=\"https://t.me/c/1/101\">reviewer</a>") {

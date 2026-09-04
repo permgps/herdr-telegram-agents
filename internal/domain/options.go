@@ -89,6 +89,18 @@ const (
 	OptionPostsDone = "posts.done"
 	// ChoiceSourceDone is the static list of DoneMode values.
 	ChoiceSourceDone = "done"
+	// OptionPostsReactions puts 👀 on the operator's prompt once the agent
+	// took it and ✅ when that turn ends.
+	OptionPostsReactions = "posts.reactions"
+	// OptionPostsBlockedDelay is how many seconds a blocked post waits
+	// after the usual settle before a second capture; "0" posts at once.
+	OptionPostsBlockedDelay = "posts.blocked_delay"
+	// OptionPostsMinSeconds skips the done post of a turn shorter than
+	// this many seconds; "0" posts every done screen.
+	OptionPostsMinSeconds = "posts.min_seconds"
+	// ChoiceSourceSeconds is the static list of second counts offered by
+	// the panel for the two delay options (see SecondsChoices).
+	ChoiceSourceSeconds = "seconds"
 	// Group names, in the panel's display order.
 	GroupSync       = "sync"
 	GroupQuiet      = "quiet"
@@ -133,7 +145,7 @@ const (
 var OptionGroupSpecs = []OptionGroup{
 	{Name: GroupSync, Title: "Sync", Description: "What the mirror writes to Telegram."},
 	{Name: GroupQuiet, Title: "Quiet", Description: "Less noise while you are at the machine."},
-	{Name: GroupPosts, Title: "Posts", Description: "What a topic receives when its agent finishes."},
+	{Name: GroupPosts, Title: "Posts", Description: "What a topic receives from its agent: questions, done posts, reactions."},
 	{Name: GroupAppearance, Title: "Appearance", Description: "How topics and status lines look."},
 	{Name: GroupPrivacy, Title: "Privacy", Description: "What never leaves this machine."},
 	{Name: GroupTopics, Title: "Topics", Description: "Lifecycle of the forum topics."},
@@ -207,6 +219,34 @@ func buildOptionSpecs() []OptionSpec {
 			Kind:        KindChoice,
 			Default:     string(DoneScreen),
 			Choices:     ChoiceSourceDone,
+		},
+		{
+			Key:         OptionPostsReactions,
+			Group:       GroupPosts,
+			Title:       "React to prompts",
+			Description: "👀 on your message once the agent took it, ✅ when that turn ends. Off: no reactions.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionPostsBlockedDelay,
+			Group:       GroupPosts,
+			Title:       "Question delay",
+			Description: "Wait this long after an agent asks before posting, and stay silent when it was answered in Herdr meanwhile; the better of two screen captures is posted. Off posts after the usual 1.5 s.",
+			Kind:        KindChoice,
+			Default:     "0",
+			Choices:     ChoiceSourceSeconds,
+			Validate:    validateSeconds,
+		},
+		{
+			Key:         OptionPostsMinSeconds,
+			Group:       GroupPosts,
+			Title:       "Skip short done posts",
+			Description: "A finished turn shorter than this posts nothing. Off posts every done screen.",
+			Kind:        KindChoice,
+			Default:     "0",
+			Choices:     ChoiceSourceSeconds,
+			Validate:    validateSeconds,
 		},
 	}
 	descriptions := map[Status]string{
@@ -287,6 +327,17 @@ var doneChoices = []string{string(DoneScreen), string(DoneReply), string(DoneFor
 // DoneChoices returns the DoneMode values the panel offers.
 func DoneChoices() []string { return append([]string(nil), doneChoices...) }
 
+// secondsChoices is the list the panel offers for OptionPostsBlockedDelay
+// and OptionPostsMinSeconds.
+var secondsChoices = []string{"0", "5", "10", "30", "60", "120"}
+
+// maxSeconds bounds a hand-edited second count (one hour).
+const maxSeconds = 3600
+
+// SecondsChoices returns the second counts the panel offers: Off, 5, 10,
+// 30, 60 and 120 seconds.
+func SecondsChoices() []string { return append([]string(nil), secondsChoices...) }
+
 // StaticChoices answers the choice lists the domain owns itself; the
 // application layer asks it before the external ChoiceSource.
 func StaticChoices(name string) ([]string, bool) {
@@ -299,6 +350,8 @@ func StaticChoices(name string) ([]string, bool) {
 		return PostsChoices(), true
 	case ChoiceSourceDone:
 		return DoneChoices(), true
+	case ChoiceSourceSeconds:
+		return SecondsChoices(), true
 	}
 	return nil, false
 }
@@ -319,9 +372,18 @@ func validateMinutes(value string) error {
 	return nil
 }
 
+func validateSeconds(value string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 || n > maxSeconds {
+		return fmt.Errorf("%q is not a second count between 0 and %d: %w", value, maxSeconds, ErrInvalidOption)
+	}
+	return nil
+}
+
 // ChoiceLabel is the human form of a choice value in panel text: days
-// become "Off", "1 day" or "30 days", minutes "1 min" or "3 min", posts
-// modes "Silent", "Held", "Normal"; other sources show the value itself.
+// become "Off", "1 day" or "30 days", minutes "1 min" or "3 min", seconds
+// "Off" or "30 s", posts modes "Silent", "Held", "Normal"; other sources
+// show the value itself.
 func ChoiceLabel(spec OptionSpec, value string) string {
 	switch spec.Choices {
 	case ChoiceSourceDays:
@@ -342,6 +404,16 @@ func ChoiceLabel(spec OptionSpec, value string) string {
 			return value
 		}
 		return fmt.Sprintf("%d min", n)
+	case ChoiceSourceSeconds:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Off"
+		default:
+			return fmt.Sprintf("%d s", n)
+		}
 	case ChoiceSourcePosts:
 		return postsWord(value)
 	case ChoiceSourceDone:
@@ -351,7 +423,7 @@ func ChoiceLabel(spec OptionSpec, value string) string {
 }
 
 // ChoiceButton is the short form of a choice value on a button: "Off",
-// "7d", "3m", "Silent"; other sources show the value itself.
+// "7d", "3m", "30s", "Silent"; other sources show the value itself.
 func ChoiceButton(spec OptionSpec, value string) string {
 	switch spec.Choices {
 	case ChoiceSourceDays:
@@ -370,6 +442,16 @@ func ChoiceButton(spec OptionSpec, value string) string {
 			return value
 		}
 		return fmt.Sprintf("%dm", n)
+	case ChoiceSourceSeconds:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Off"
+		default:
+			return fmt.Sprintf("%ds", n)
+		}
 	case ChoiceSourcePosts:
 		return postsWord(value)
 	case ChoiceSourceDone:
@@ -576,6 +658,27 @@ func (o Options) PostsDone() DoneMode {
 // QuietReannounce reports whether leaving re-posts still-blocked agents
 // with sound.
 func (o Options) QuietReannounce() bool { return o.Bool(OptionQuietReannounce) }
+
+// PostsReactions reports whether prompts get 👀 / ✅ reactions.
+func (o Options) PostsReactions() bool { return o.Bool(OptionPostsReactions) }
+
+// BlockedDelay is the extra wait before a blocked post, with a second
+// capture at its end; zero means the post goes out after the usual settle
+// (also for an unparsable value).
+func (o Options) BlockedDelay() time.Duration { return o.seconds(OptionPostsBlockedDelay) }
+
+// MinTurn is the shortest turn whose done screen is posted; zero posts
+// every done screen (also for an unparsable value).
+func (o Options) MinTurn() time.Duration { return o.seconds(OptionPostsMinSeconds) }
+
+// seconds reads a second-count option; zero for garbage or a value ≤ 0.
+func (o Options) seconds(key string) time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(key)))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
+}
 
 // StatusIcons collects the six icon options.
 func (o Options) StatusIcons() StatusIcons {

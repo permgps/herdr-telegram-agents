@@ -19,16 +19,54 @@ const helpText = `Commands
 /screen [N|all]: post the agent screen: the whole visible screen, its last N lines, or with "all" everything since your last message
 /keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)
 /focus: bring the agent's pane to the front in Herdr
+/stop: send esc to the agent (soft cancel of the running turn or dialog)
+/interrupt: send ctrl+c to the agent (hard interrupt)
+/close: close the agent's pane after a Yes/No confirmation
 /clear, /compact [instructions], /usage, /model [name]: typed into the agent as Claude Code commands while it is idle; the screen after the command is posted as a reply, /usage and a bare /model are closed with esc for you
 /status: this agent's status; in General, every agent with a link to its topic
 /away [2h]: treat you as away until /here or for the given time, so Telegram gets everything (General only)
 /here: back to automatic presence (General only)
+/new <workspace> [kind]: start an agent in a new tab of that workspace (General only; kind defaults to claude)
 /options: settings panel (General only): sync, quiet mode, status icons, secret redaction, topic cleanup
 /help: this list
 
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.
 A question with up to 5 numbered options also arrives with buttons; pressing one sends its number and the button turns into ✅.
 Any other text is typed into the agent as a prompt.`
+
+// Control command replies (English, like the panel strings).
+const (
+	// stoppedReply and interruptedReply confirm the key went out.
+	stoppedReply     = "⏹ sent esc"
+	interruptedReply = "⛔ sent ctrl+c"
+	// topicOnly answers an agent command written in General.
+	topicOnly = "agent commands live in the agent's topic"
+	// closePrefix marks the callback data of the /close keyboard; closeYes
+	// and closeNo are its two buttons.
+	closePrefix = "c:"
+	closeYes    = "c:y"
+	closeNo     = "c:n"
+	// closeAskFmt is the question, closeYesLabel / closeNoLabel the
+	// buttons, closingFmt / closeKept the texts the question turns into.
+	closeAskFmt   = "Close %s? The pane and its tab go away."
+	closeYesLabel = "Yes, close"
+	closeNoLabel  = "No"
+	closingFmt    = "closing %s …"
+	closeKept     = "not closed"
+	// newInGeneral answers /new written in a topic.
+	newInGeneral = "/new works in General: /new <workspace> [kind]"
+	// Replies of /new: the workspace list, the two progress lines and the
+	// failures.
+	newWorkspacesFmt   = "workspaces: %s"
+	newNoWorkspaces    = "no workspaces"
+	newNoMatchFmt      = "no workspace named %q"
+	newManyFmt         = "%q matches %s"
+	newStartingFmt     = "starting %s in %s …"
+	newStartedFmt      = "started %s in %s (pane %s)"
+	newFailedFmt       = "⚠️ %s did not start in %s: %s"
+	newTabFailedPrefix = "⚠️ could not create a tab: "
+	newListFailed      = "⚠️ herdr: "
+)
 
 // Presence replies and headers (English, like the panel strings).
 const (
@@ -73,6 +111,13 @@ type inbound struct {
 	// to do when it fires. Both are touched on the bridge goroutine only.
 	deb     *debouncer
 	pending map[domain.Key]followUp
+	// closing is the message id of the active /close question per agent;
+	// a newer question retires the older one. Bridge goroutine only.
+	closing map[domain.Key]int
+	// async runs a slow agent start off the bridge goroutine and delivers
+	// its result to StartFinished; the bridge wires it, tests without a
+	// bridge get the synchronous default.
+	async func(run func(context.Context) startResult)
 }
 
 // followUp is a forwarded command waiting for its settle timer: which
@@ -92,14 +137,19 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 	if opts == nil {
 		opts = NewOptions(domain.DefaultOptions(), nil, nil, log)
 	}
-	return &inbound{
+	in := &inbound{
 		herdr: herdr, tg: tg, topics: topics, agents: agents, live: live, out: out,
 		opts: opts, panel: newPanel(opts, tg, log),
 		chatID: chatID, botUsername: botUsername, log: log,
 		clock:   clock,
 		deb:     newDebouncer(clock, commandSettle, log),
 		pending: map[domain.Key]followUp{},
+		closing: map[domain.Key]int{},
 	}
+	in.async = func(run func(context.Context) startResult) {
+		_ = in.StartFinished(context.Background(), run(context.Background()))
+	}
+	return in
 }
 
 // Due delivers agent keys whose forwarded command has settled; the owner
@@ -132,9 +182,11 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 	i.log.Debug("topic command text", slog.String("key", key.String()), slog.String("text", msg.Text), slog.Any("keys", cmd.Keys), slog.Int("lines", cmd.Lines))
 	switch cmd.Kind {
 	case domain.CmdPrompt:
-		return i.herdrCall(ctx, msg, key, "prompt", func(ctx context.Context) error {
-			return i.herdr.Prompt(ctx, key.PaneID, cmd.Text)
-		})
+		if err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text); err != nil {
+			return i.failed(ctx, msg, key, "prompt", err)
+		}
+		i.log.Debug("herdr call ok", slog.String("method", "prompt"), slog.String("key", key.String()), slog.Int("message_id", msg.MessageID))
+		return i.out.PromptSent(ctx, key, msg.ThreadID, msg.MessageID)
 	case domain.CmdKeys:
 		return i.herdrCall(ctx, msg, key, "send_keys", func(ctx context.Context) error {
 			return i.herdr.SendKeys(ctx, key.PaneID, cmd.Keys)
@@ -143,6 +195,12 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		return i.herdrCall(ctx, msg, key, "focus", func(ctx context.Context) error {
 			return i.herdr.Focus(ctx, key.PaneID)
 		})
+	case domain.CmdStop:
+		return i.control(ctx, msg, key, "stop", domain.KeyEscape, stoppedReply)
+	case domain.CmdInterrupt:
+		return i.control(ctx, msg, key, "interrupt", domain.KeyInterrupt, interruptedReply)
+	case domain.CmdClose:
+		return i.askClose(ctx, msg, key, agent)
 	case domain.CmdScreen:
 		var err error
 		if cmd.All {
@@ -163,10 +221,111 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, panelInGeneral)
 	case domain.CmdAway, domain.CmdHere:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, presenceInGeneral)
+	case domain.CmdNew:
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, newInGeneral)
 	case domain.CmdForward:
 		return i.forward(ctx, msg, key, agent, cmd)
 	default:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, "unknown command, see /help")
+	}
+}
+
+// control sends one control key (esc or ctrl+c) to a live agent in any
+// status and confirms it with a quoted reply; a failure gets the usual ⚠️
+// reply instead.
+func (i *inbound) control(ctx context.Context, msg domain.TopicMessage, key domain.Key, method, keyName, confirm string) error {
+	if err := i.herdr.SendKeys(ctx, key.PaneID, []string{keyName}); err != nil {
+		return i.failed(ctx, msg, key, method, err)
+	}
+	i.log.Debug("control keys sent", slog.String("method", method), slog.String("key", key.String()),
+		slog.String("keys", keyName), slog.Int("message_id", msg.MessageID))
+	return i.reply(ctx, msg.ThreadID, msg.MessageID, confirm)
+}
+
+// askClose posts the Yes/No question of /close and remembers its message
+// id; an older question of the same agent loses its buttons first, so one
+// press cannot close a pane twice.
+func (i *inbound) askClose(ctx context.Context, msg domain.TopicMessage, key domain.Key, agent domain.Agent) error {
+	if prev, ok := i.closing[key]; ok {
+		i.log.Debug("close question retired", slog.String("key", key.String()), slog.Int("message_id", prev))
+		if err := i.out.absorbEdit(key, i.tg.EditButtons(ctx, prev, nil)); err != nil {
+			return err
+		}
+		delete(i.closing, key)
+	}
+	id, err := i.tg.Send(ctx, domain.Outgoing{
+		ThreadID: msg.ThreadID,
+		Text:     fmt.Sprintf(closeAskFmt, agent.Label()),
+		ReplyTo:  msg.MessageID,
+		Buttons: []domain.Button{
+			{Text: closeYesLabel, Data: closeYes, Row: 1},
+			{Text: closeNoLabel, Data: closeNo, Row: 1},
+		},
+	})
+	if err != nil {
+		return i.absorb(err)
+	}
+	i.closing[key] = id
+	i.log.Info("close requested", slog.String("key", key.String()), slog.Int("thread_id", msg.ThreadID),
+		slog.Int("message_id", id), slog.Int64("from_id", msg.FromID))
+	return nil
+}
+
+// PressClose serves a button of the /close question (callback data with
+// the close prefix): Yes closes the pane through Herdr and the topic then
+// closes through the ordinary exit path, No keeps everything. Every path
+// answers the callback. Only fatal Telegram errors are returned.
+func (i *inbound) PressClose(ctx context.Context, ev domain.ButtonPressed) error {
+	key, ok := i.topics.KeyForThread(ev.ThreadID)
+	if !ok {
+		i.log.Debug("close button for unknown thread", slog.Int("thread_id", ev.ThreadID), slog.Int("message_id", ev.MessageID))
+		return i.out.stale(ctx, ev, "topic is not mapped")
+	}
+	if latest, ok := i.closing[key]; !ok || latest != ev.MessageID {
+		i.log.Debug("close button stale", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID), slog.Int("latest_id", latest))
+		return i.out.stale(ctx, ev, "not the latest question")
+	}
+	agent, alive := i.agents(key)
+	i.log.Info("close button pressed", slog.String("key", key.String()), slog.Int("thread_id", ev.ThreadID),
+		slog.Int("message_id", ev.MessageID), slog.Int64("from_id", ev.FromID), slog.String("data", ev.Data), slog.Bool("alive", alive))
+	delete(i.closing, key)
+	if !alive {
+		if err := i.out.absorbEdit(key, i.tg.EditButtons(ctx, ev.MessageID, nil)); err != nil {
+			return err
+		}
+		return i.out.answer(ctx, ev.CallbackID, "agent has exited")
+	}
+	switch ev.Data {
+	case closeNo:
+		i.log.Info("close cancelled", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID))
+		if err := i.out.absorbEdit(key, i.tg.EditText(ctx, ev.MessageID, closeKept, false, nil)); err != nil {
+			return err
+		}
+		return i.out.answer(ctx, ev.CallbackID, "kept")
+	case closeYes:
+		if err := i.herdr.ClosePane(ctx, key.PaneID); err != nil {
+			i.log.Warn("pane close failed", slog.String("key", key.String()), slog.String("pane", key.PaneID), slog.String("err", err.Error()))
+			if err := i.out.absorbEdit(key, i.tg.EditText(ctx, ev.MessageID, "⚠️ could not close: "+failureReason(err), false, nil)); err != nil {
+				return err
+			}
+			return i.out.answer(ctx, ev.CallbackID, "⚠️ failed")
+		}
+		i.log.Info("pane close sent", slog.String("key", key.String()), slog.String("pane", key.PaneID), slog.Int("message_id", ev.MessageID))
+		if err := i.out.absorbEdit(key, i.tg.EditText(ctx, ev.MessageID, fmt.Sprintf(closingFmt, agent.Label()), false, nil)); err != nil {
+			return err
+		}
+		return i.out.answer(ctx, ev.CallbackID, "closing")
+	}
+	i.log.Warn("close button data unknown", slog.String("key", key.String()), slog.String("data", ev.Data))
+	return i.out.stale(ctx, ev, "unknown button")
+}
+
+// Forget drops the per-agent state of an agent that is gone: its /close
+// question needs no edit, the topic is closing anyway.
+func (i *inbound) Forget(key domain.Key) {
+	if id, ok := i.closing[key]; ok {
+		i.log.Debug("close question dropped", slog.String("key", key.String()), slog.Int("message_id", id))
+		delete(i.closing, key)
 	}
 }
 
@@ -296,9 +455,130 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 		return i.reply(ctx, 0, cmd.MessageID, i.away(parsed.Away, cmd.FromID))
 	case domain.CmdHere:
 		return i.reply(ctx, 0, cmd.MessageID, i.here(cmd.FromID))
+	case domain.CmdStop, domain.CmdInterrupt, domain.CmdClose:
+		return i.reply(ctx, 0, cmd.MessageID, topicOnly)
+	case domain.CmdNew:
+		return i.startAgent(ctx, cmd, parsed)
 	default:
 		return i.reply(ctx, 0, cmd.MessageID, "unknown command, see /help")
 	}
+}
+
+// startAgent serves /new: resolves the workspace, opens a tab in it and
+// hands the slow agent.start to the background; the outcome arrives as a
+// startResult job and StartFinished words it. Only fatal Telegram errors
+// are returned.
+func (i *inbound) startAgent(ctx context.Context, cmd domain.GeneralCommand, parsed domain.Command) error {
+	i.log.Info("agent start requested", slog.Int64("from_id", cmd.FromID), slog.Int("message_id", cmd.MessageID),
+		slog.String("workspace", parsed.Workspace), slog.String("kind", parsed.AgentKind))
+	workspaces, err := i.herdr.ListWorkspaces(ctx)
+	if err != nil {
+		i.log.Warn("workspace list failed", slog.String("err", err.Error()))
+		return i.reply(ctx, 0, cmd.MessageID, newListFailed+failureReason(err))
+	}
+	ws, match := domain.MatchWorkspace(parsed.Workspace, workspaces)
+	i.log.Debug("workspace match", slog.String("label", parsed.Workspace), slog.Int("result", int(match)),
+		slog.Any("candidates", workspaceLabels(domain.MatchWorkspaces(parsed.Workspace, workspaces))))
+	if match != domain.MatchOne {
+		return i.reply(ctx, 0, cmd.MessageID, workspaceHint(parsed.Workspace, match, workspaces))
+	}
+	kind := parsed.AgentKind
+	if kind == "" {
+		kind = domain.DefaultAgentKind
+	}
+	tab, err := i.herdr.CreateTab(ctx, ws.ID)
+	if err != nil {
+		i.log.Warn("tab create failed", slog.String("workspace_id", ws.ID), slog.String("err", err.Error()))
+		return i.reply(ctx, 0, cmd.MessageID, newTabFailedPrefix+failureReason(err))
+	}
+	i.log.Info("tab created", slog.String("workspace_id", ws.ID), slog.String("workspace", ws.Label),
+		slog.String("tab_id", tab.ID), slog.String("pane", tab.RootPaneID))
+	name := i.uniqueName(kind)
+	if err := i.reply(ctx, 0, cmd.MessageID, fmt.Sprintf(newStartingFmt, kind, ws.Label)); err != nil {
+		return err
+	}
+	started := i.clock.Now()
+	i.async(func(ctx context.Context) startResult {
+		agent, err := i.herdr.StartAgent(ctx, name, kind, tab.RootPaneID, agentStartTimeout)
+		return startResult{
+			messageID: cmd.MessageID, workspace: ws.Label, kind: kind, name: name,
+			paneID: tab.RootPaneID, agent: agent, err: err, started: started,
+		}
+	})
+	return nil
+}
+
+// StartFinished words the outcome of a background agent start as a reply
+// to the /new message.
+func (i *inbound) StartFinished(ctx context.Context, r startResult) error {
+	elapsed := i.clock.Now().Sub(r.started).Milliseconds()
+	if r.err != nil {
+		i.log.Warn("agent start failed", slog.String("pane", r.paneID), slog.String("kind", r.kind),
+			slog.String("name", r.name), slog.Int64("elapsed_ms", elapsed), slog.String("err", r.err.Error()))
+		return i.reply(ctx, 0, r.messageID, fmt.Sprintf(newFailedFmt, r.kind, r.workspace, failureReason(r.err)))
+	}
+	pane := r.agent.PaneID
+	if pane == "" {
+		pane = r.paneID
+	}
+	i.log.Info("agent started", slog.String("pane", pane), slog.String("kind", r.kind), slog.String("name", r.name),
+		slog.String("workspace", r.workspace), slog.Int64("elapsed_ms", elapsed))
+	return i.reply(ctx, 0, r.messageID, fmt.Sprintf(newStartedFmt, r.kind, r.workspace, pane))
+}
+
+// uniqueName returns kind when no live agent carries that name, else the
+// first of kind-2, kind-3 … that is free.
+func (i *inbound) uniqueName(kind string) string {
+	taken := map[string]bool{}
+	for _, a := range i.live() {
+		taken[a.Name] = true
+	}
+	name := kind
+	for n := 2; taken[name]; n++ {
+		name = fmt.Sprintf("%s-%d", kind, n)
+	}
+	return name
+}
+
+// workspaceHint words a /new that named no single workspace: the list of
+// labels, prefixed with why the text did not match.
+func workspaceHint(label string, match domain.MatchResult, workspaces []domain.Workspace) string {
+	list := newNoWorkspaces
+	if len(workspaces) > 0 {
+		list = fmt.Sprintf(newWorkspacesFmt, strings.Join(workspaceLabels(workspaces), ", "))
+	}
+	switch {
+	case strings.TrimSpace(label) == "":
+		return list
+	case match == domain.MatchMany:
+		return fmt.Sprintf(newManyFmt, label, joinAnd(workspaceLabels(domain.MatchWorkspaces(label, workspaces)))) + "\n" + list
+	}
+	return fmt.Sprintf(newNoMatchFmt, label) + "\n" + list
+}
+
+// workspaceLabels lists labels in Herdr's order; a workspace without a
+// label shows its id.
+func workspaceLabels(workspaces []domain.Workspace) []string {
+	out := make([]string, 0, len(workspaces))
+	for _, ws := range workspaces {
+		label := ws.Label
+		if label == "" {
+			label = ws.ID
+		}
+		out = append(out, label)
+	}
+	return out
+}
+
+// joinAnd renders "A", "A and B" or "A, B and C".
+func joinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // away applies /away and words the reply.

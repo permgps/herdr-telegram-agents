@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -212,6 +213,74 @@ func (g *Gateway) Rename(ctx context.Context, target string, name *string) error
 // RenameTab sets a tab label through tab.rename.
 func (g *Gateway) RenameTab(ctx context.Context, tabID, label string) error {
 	return g.call(ctx, "tab.rename", tabID, tabRenameParams{TabID: tabID, Label: label}, nil)
+}
+
+// ListWorkspaces returns every workspace with its label trimmed.
+func (g *Gateway) ListWorkspaces(ctx context.Context) ([]domain.Workspace, error) {
+	var res workspaceListResult
+	if err := g.call(ctx, "workspace.list", "", nil, &res); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Workspace, 0, len(res.Workspaces))
+	for _, w := range res.Workspaces {
+		out = append(out, domain.Workspace{ID: w.WorkspaceID, Label: strings.TrimSpace(w.Label)})
+	}
+	g.log.Debug("herdr workspaces listed", slog.Int("count", len(out)))
+	return out, nil
+}
+
+// CreateTab opens an unfocused tab in the workspace through tab.create and
+// returns it with its root pane.
+func (g *Gateway) CreateTab(ctx context.Context, workspaceID string) (domain.Tab, error) {
+	var res tabCreatedResult
+	if err := g.call(ctx, "tab.create", workspaceID, tabCreateParams{WorkspaceID: workspaceID, Focus: false}, &res); err != nil {
+		return domain.Tab{}, err
+	}
+	tab := domain.Tab{
+		ID:          res.Tab.TabID,
+		WorkspaceID: res.Tab.WorkspaceID,
+		Label:       strings.TrimSpace(res.Tab.Label),
+		RootPaneID:  res.RootPane.PaneID,
+	}
+	g.log.Debug("herdr tab created",
+		slog.String("workspace_id", workspaceID),
+		slog.String("tab_id", tab.ID),
+		slog.String("pane", tab.RootPaneID))
+	return tab, nil
+}
+
+// StartAgent starts an agent through agent.start and waits for Herdr to
+// detect it; the timeout is clamped into the bounds agent.start accepts.
+func (g *Gateway) StartAgent(ctx context.Context, name, kind, paneID string, timeout time.Duration) (domain.Agent, error) {
+	timeout = min(max(timeout, domain.StartAgentMinTimeout), domain.StartAgentMaxTimeout)
+	params := agentStartParams{Name: name, Kind: kind, PaneID: paneID, TimeoutMS: timeout.Milliseconds()}
+	g.log.Debug("herdr agent start",
+		slog.String("pane", paneID),
+		slog.String("kind", kind),
+		slog.String("name", name),
+		slog.Int64("timeout_ms", params.TimeoutMS))
+	var res agentStartedResult
+	if err := g.call(ctx, "agent.start", paneID, params, &res); err != nil {
+		g.log.Warn("herdr agent start failed",
+			slog.String("pane", paneID),
+			slog.String("kind", kind),
+			slog.String("err", err.Error()))
+		return domain.Agent{}, err
+	}
+	agent := toDomainAgent(res.Agent)
+	g.log.Debug("herdr agent started",
+		slog.String("pane", agent.PaneID),
+		slog.String("terminal", agent.TerminalID),
+		slog.String("kind", agent.Kind),
+		slog.Int("argv", len(res.Argv)))
+	return agent, nil
+}
+
+// ClosePane closes a pane through pane.close; a pane Herdr no longer
+// knows is ErrAgentGone.
+func (g *Gateway) ClosePane(ctx context.Context, paneID string) error {
+	g.log.Debug("herdr pane close", slog.String("pane", paneID))
+	return g.call(ctx, "pane.close", paneID, paneCloseParams{PaneID: paneID}, nil)
 }
 
 // Notify shows a desktop notification through Herdr.

@@ -56,7 +56,27 @@ type HerdrGateway interface {
 	Events() <-chan Event
 	// WatchPanes replaces the set of panes whose status changes are streamed.
 	WatchPanes(ctx context.Context, paneIDs []string) error
+	// ListWorkspaces returns every workspace Herdr shows, with its label.
+	ListWorkspaces(ctx context.Context) ([]Workspace, error)
+	// CreateTab creates an unfocused tab in the workspace with Herdr's
+	// default cwd and label and returns it with its root pane.
+	CreateTab(ctx context.Context, workspaceID string) (Tab, error)
+	// StartAgent starts an agent of kind in a pane sitting at its shell
+	// prompt and waits up to timeout (clamped into StartAgentMinTimeout ..
+	// StartAgentMaxTimeout) for it to be ready; the returned Agent carries
+	// the pane and tab ids.
+	StartAgent(ctx context.Context, name, kind, paneID string, timeout time.Duration) (Agent, error)
+	// ClosePane closes the pane; a pane that is already gone is
+	// ErrAgentGone.
+	ClosePane(ctx context.Context, paneID string) error
 }
+
+// Bounds of the StartAgent timeout; Herdr's agent.start accepts
+// timeout_ms between 3001 and 300000.
+const (
+	StartAgentMinTimeout = 3001 * time.Millisecond
+	StartAgentMaxTimeout = 300 * time.Second
+)
 
 // Reply is an agent's last message taken from its own transcript. Text is
 // the raw Markdown as the agent wrote it. Source names the file it came

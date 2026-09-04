@@ -125,8 +125,29 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 	if len(groups) != 6 || groups[0].Name != GroupSync || groups[1].Name != GroupQuiet || groups[2].Name != GroupPosts || groups[3].Name != GroupAppearance || groups[4].Name != GroupPrivacy || groups[5].Name != GroupTopics {
 		t.Fatalf("groups = %+v", groups)
 	}
-	if got := OptionsInGroup(GroupPosts); len(got) != 1 || got[0].Key != OptionPostsDone || got[0].Kind != KindChoice || got[0].Default != "screen" || got[0].Choices != ChoiceSourceDone {
-		t.Errorf("posts options = %+v", got)
+	posts := OptionsInGroup(GroupPosts)
+	wantPosts := []struct {
+		key     string
+		kind    OptionKind
+		def     string
+		choices string
+	}{
+		{OptionPostsDone, KindChoice, "screen", ChoiceSourceDone},
+		{OptionPostsReactions, KindBool, "true", ""},
+		{OptionPostsBlockedDelay, KindChoice, "0", ChoiceSourceSeconds},
+		{OptionPostsMinSeconds, KindChoice, "0", ChoiceSourceSeconds},
+	}
+	if len(posts) != len(wantPosts) {
+		t.Fatalf("posts options = %+v", posts)
+	}
+	for i, w := range wantPosts {
+		got := posts[i]
+		if got.Key != w.key || got.Kind != w.kind || got.Default != w.def || got.Choices != w.choices {
+			t.Errorf("posts option %d = %+v, want %+v", i, got, w)
+		}
+	}
+	if posts[2].Validate == nil || posts[3].Validate == nil {
+		t.Error("seconds options must carry validateSeconds")
 	}
 	quiet := OptionsInGroup(GroupQuiet)
 	wantQuiet := []struct {
@@ -442,4 +463,68 @@ func indexOf(key string) int {
 		}
 	}
 	return -1
+}
+
+func TestSecondsOptions(t *testing.T) {
+	o := DefaultOptions()
+	if !o.PostsReactions() {
+		t.Error("reactions should default to on")
+	}
+	if off, _ := o.With(OptionPostsReactions, "false"); off.PostsReactions() {
+		t.Error("reactions still on after With")
+	}
+	if o.BlockedDelay() != 0 || o.MinTurn() != 0 {
+		t.Errorf("defaults: delay %v, min turn %v", o.BlockedDelay(), o.MinTurn())
+	}
+	for _, key := range []string{OptionPostsBlockedDelay, OptionPostsMinSeconds} {
+		for _, v := range []string{"0", "5", "45", "3600"} {
+			next, err := o.With(key, v)
+			if err != nil {
+				t.Fatalf("With(%s, %q): %v", key, v, err)
+			}
+			if err := ValidateOptions(next, nil); err != nil {
+				t.Errorf("ValidateOptions(%s %q): %v", key, v, err)
+			}
+		}
+		for _, v := range []string{"-1", "x", "", "3601", "5 s"} {
+			next, _ := o.With(key, v)
+			if err := ValidateOptions(next, nil); !errors.Is(err, ErrInvalidOption) {
+				t.Errorf("ValidateOptions(%s %q) = %v, want ErrInvalidOption", key, v, err)
+			}
+		}
+	}
+	for value, want := range map[string]time.Duration{"0": 0, "30": 30 * time.Second, "45": 45 * time.Second, "garbage": 0, "-5": 0} {
+		d, _ := o.With(OptionPostsBlockedDelay, value)
+		if got := d.BlockedDelay(); got != want {
+			t.Errorf("BlockedDelay(%q) = %v, want %v", value, got, want)
+		}
+		m, _ := o.With(OptionPostsMinSeconds, value)
+		if got := m.MinTurn(); got != want {
+			t.Errorf("MinTurn(%q) = %v, want %v", value, got, want)
+		}
+	}
+	spec, _ := LookupOption(OptionPostsBlockedDelay)
+	for _, tc := range []struct{ value, label, button string }{
+		{"0", "Off", "Off"},
+		{"5", "5 s", "5s"},
+		{"120", "120 s", "120s"},
+		{"garbage", "garbage", "garbage"},
+	} {
+		if got := ChoiceLabel(spec, tc.value); got != tc.label {
+			t.Errorf("ChoiceLabel(%q) = %q, want %q", tc.value, got, tc.label)
+		}
+		if got := ChoiceButton(spec, tc.value); got != tc.button {
+			t.Errorf("ChoiceButton(%q) = %q, want %q", tc.value, got, tc.button)
+		}
+	}
+	list, ok := StaticChoices(ChoiceSourceSeconds)
+	if !ok || strings.Join(list, ",") != "0,5,10,30,60,120" {
+		t.Errorf("StaticChoices(seconds) = %v, %v", list, ok)
+	}
+	// A hand-edited value outside the panel's list survives sanitising.
+	dirty, _ := o.With(OptionPostsBlockedDelay, "45")
+	clean, dropped := SanitizeOptions(dirty, nil)
+	if len(dropped) != 0 || clean.String(OptionPostsBlockedDelay) != "45" {
+		t.Errorf("sanitize kept %q, dropped %v", clean.String(OptionPostsBlockedDelay), dropped)
+	}
 }

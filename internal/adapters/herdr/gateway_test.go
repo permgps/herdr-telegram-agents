@@ -418,3 +418,121 @@ func TestGatewayEventsAndWatchPanes(t *testing.T) {
 		t.Fatal("events channel still open after Close")
 	}
 }
+
+func TestGatewayListWorkspaces(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("workspace.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "workspace_list", "workspaces": []map[string]any{
+			{"workspace_id": "w1", "label": " Work ", "number": 1, "focused": true},
+			{"workspace_id": "w2", "label": "Web", "number": 2},
+		}}, nil
+	})
+	g := newGateway(t, s)
+	got, err := g.ListWorkspaces(ctxT(t))
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	want := []domain.Workspace{{ID: "w1", Label: "Work"}, {ID: "w2", Label: "Web"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListWorkspaces = %+v, want %+v", got, want)
+	}
+	if p := lastParams(t, s, "workspace.list"); len(p) != 0 {
+		t.Fatalf("workspace.list params = %v, want {}", p)
+	}
+}
+
+func TestGatewayCreateTab(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("tab.create", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{
+			"type":      "tab_created",
+			"tab":       map[string]any{"tab_id": "w1:t7", "workspace_id": "w1", "label": " Tab 7 "},
+			"root_pane": map[string]any{"pane_id": "w1:p7", "workspace_id": "w1", "tab_id": "w1:t7"},
+		}, nil
+	})
+	g := newGateway(t, s)
+	tab, err := g.CreateTab(ctxT(t), "w1")
+	if err != nil {
+		t.Fatalf("CreateTab: %v", err)
+	}
+	want := domain.Tab{ID: "w1:t7", WorkspaceID: "w1", Label: "Tab 7", RootPaneID: "w1:p7"}
+	if tab != want {
+		t.Fatalf("CreateTab = %+v, want %+v", tab, want)
+	}
+	got := lastParams(t, s, "tab.create")
+	if got["workspace_id"] != "w1" || got["focus"] != false || len(got) != 2 {
+		t.Fatalf("tab.create params = %v, want {workspace_id: w1, focus: false}", got)
+	}
+}
+
+func TestGatewayStartAgent(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.start", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{
+			"type": "agent_started",
+			"agent": map[string]any{
+				"pane_id": "w1:p7", "workspace_id": "w1", "tab_id": "w1:t7", "terminal_id": "term-7",
+				"agent": "codex", "agent_status": "working", "name": "codex-2", "state_change_seq": 1,
+			},
+			"argv": []string{"codex"},
+		}, nil
+	})
+	g := newGateway(t, s)
+	agent, err := g.StartAgent(ctxT(t), "codex-2", "codex", "w1:p7", time.Second)
+	if err != nil {
+		t.Fatalf("StartAgent: %v", err)
+	}
+	if agent.PaneID != "w1:p7" || agent.TerminalID != "term-7" || agent.TabID != "w1:t7" || agent.Kind != "codex" || agent.Name != "codex-2" || agent.Status != domain.StatusWorking {
+		t.Fatalf("StartAgent = %+v", agent)
+	}
+	got := lastParams(t, s, "agent.start")
+	if got["name"] != "codex-2" || got["kind"] != "codex" || got["pane_id"] != "w1:p7" || got["timeout_ms"] != float64(3001) {
+		t.Fatalf("agent.start params = %v", got)
+	}
+	// The upper bound is clamped too.
+	if _, err := g.StartAgent(ctxT(t), "codex", "codex", "w1:p7", time.Hour); err != nil {
+		t.Fatalf("StartAgent: %v", err)
+	}
+	if reqs := s.WaitRequests("agent.start", 2, 2*time.Second); len(reqs) != 2 {
+		t.Fatalf("agent.start requests = %d", len(reqs))
+	}
+	if got := lastParams(t, s, "agent.start"); got["timeout_ms"] != float64(300000) {
+		t.Fatalf("clamped timeout_ms = %v", got["timeout_ms"])
+	}
+}
+
+func TestGatewayStartAgentErrorIsTagged(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.start", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "timeout", Message: "agent not detected"}
+	})
+	g := newGateway(t, s)
+	_, err := g.StartAgent(ctxT(t), "claude", "claude", "w1:p7", 30*time.Second)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "timeout" {
+		t.Fatalf("err = %v, want APIError timeout", err)
+	}
+}
+
+func TestGatewayClosePane(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("pane.close", ackHandler)
+	g := newGateway(t, s)
+	if err := g.ClosePane(ctxT(t), "w1:p7"); err != nil {
+		t.Fatalf("ClosePane: %v", err)
+	}
+	if got := lastParams(t, s, "pane.close"); got["pane_id"] != "w1:p7" || len(got) != 1 {
+		t.Fatalf("pane.close params = %v", got)
+	}
+}
+
+func TestGatewayClosePaneNotFoundIsAgentGone(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("pane.close", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "not_found", Message: "no such pane"}
+	})
+	g := newGateway(t, s)
+	if err := g.ClosePane(ctxT(t), "w9:p9"); !errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("err = %v, want ErrAgentGone", err)
+	}
+}

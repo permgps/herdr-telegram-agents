@@ -61,6 +61,22 @@ in a topic and what gets posted there is in [commands.md](commands.md).
 - Known limit: in a multi-select dialog a press toggles the option; the
   operator submits with `enter`. Only operators can press; anyone else gets
   `not allowed`.
+- `/close` posts its own two-button question (`Yes, close` / `No`, callback
+  data `c:y` / `c:n`). One question per agent is active: a newer `/close`
+  strips the buttons of the older one, which then answers `not the latest
+  question`. `Yes` edits the question to `closing <label> …` and calls
+  `pane.close`; `No` edits it to `not closed`; a press for an exited agent
+  answers `agent has exited`; a failed close leaves `⚠️ could not close:
+  <reason>` in the message.
+- With `Question delay` set, the first capture of a blocked screen (after
+  the usual 1.5 s) is kept in memory and the post waits N more seconds. When
+  the timer fires: an agent that is no longer blocked posts nothing; a
+  blocked agent whose question changed meanwhile (Herdr's `state_change_seq`
+  moved) starts over with a fresh first capture; otherwise the screen is
+  read again and the better capture is posted, the one with more options
+  recognised, or the longer one on a tie. Buttons, the duplicate check and
+  quiet mode apply to the chosen text as usual; the catch-up on leaving the
+  desk never waits, and a button press restarts from a fresh first capture.
 
 ## Done posts
 
@@ -93,6 +109,33 @@ is found the daemon posts the screen and logs `reply source unavailable`
 with the reason. Blocked posts and `/screen` are never affected: the dialog
 with its buttons exists only on the screen.
 
+## Turns and reactions
+
+A **turn** is one exchange with an agent. It starts with the first
+**working** status after the previous turn ended, or at once when a prompt
+from Telegram reaches an agent that is already working. It ends when the
+agent turns **done**, or once it has stayed **idle** for 5 s: Herdr's
+detection dips out of working for a second or two while a tool runs, so a
+shorter wait would end turns that are still going. A **blocked** stretch is
+part of the turn. The daemon keeps this record in memory per agent; a turn
+whose start it never saw (daemon started mid-turn) has no duration.
+
+Two things hang on it:
+
+- **Reactions** (`React to prompts`, default on). A plain prompt sent from
+  the topic gets 👀 as soon as `agent.prompt` accepted it, and ✅ replaces
+  it when that turn ends. Short replies to a dialog, `/keys`, forwarded
+  Claude Code commands and button presses get no reaction. A second prompt
+  while the first turn still runs moves the ✅ to the newer message; the
+  older keeps its 👀. Telegram may notify you of the bot's reaction
+  depending on the phone's settings; that is what a week of use measures.
+- **Short turns** (`Skip short done posts`, default `Off`). A done post is
+  skipped when the turn lasted less than N seconds, measured from the turn
+  start to the done status, blocked time included; the log says `screen
+  skipped … reason=short_turn`. A turn with an unknown start posts. Blocked
+  posts, `/screen` and the reactions are not affected, and a skipped post
+  leaves no trace, so the same screen posts next time.
+
 ## Options
 
 `/options` in the General topic answers with one message that is edited in
@@ -114,7 +157,8 @@ restarted.
   is why there is no free-text field); for the cleanup age, one row of
   `Off 7d 14d 30d 60d 90d`; for the quiet threshold `1m 2m 3m 5m 10m 15m`;
   for the posts mode `Silent Held Normal`; for the done post `Screen Reply
-  Formatted`.
+  Formatted`; for the question delay and the short-turn threshold `Off 5s
+  10s 30s 60s 120s`.
 
 The options today:
 
@@ -127,14 +171,18 @@ The options today:
 | `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
 | `Done post` | Posts | Default `Screen`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. Falls back to `Screen` for non-Claude agents or when no reply is found, see [Done posts](#done-posts). |
+| `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, ✅ when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
+| `Question delay` | Posts | Default `Off`. With `5s` … `120s`: after the usual 1.5 s capture the blocked post waits that long more, is dropped when the agent left blocked meanwhile, starts over when a newer question arrived, and otherwise posts the better of the two captures (more options recognised, then the longer text). `Off` posts the first capture at 1.5 s. Any integer of seconds up to 3600 can be typed into `options.json`. See [Questions and buttons](#questions-and-buttons). |
+| `Skip short done posts` | Posts | Default `Off`. With `5s` … `120s`: the done post of a turn shorter than that is skipped (blocked time included; a turn whose start the daemon never saw posts). Blocked posts and reactions are unaffected. Any integer of seconds up to 3600 can be typed into `options.json`. See [Turns and reactions](#turns-and-reactions). |
 | `working` … `exited` | Appearance | The topic icon of each status and the emoji `/status` prints. Picking an emoji another status already uses answers `used by <status>` and changes nothing. A pick repaints every live topic at once (a `resync`), or when sync comes back on. |
 | `Redact secrets` | Privacy | Default on. Every text the daemon posts passes the redaction step described under [Secrets in posts](#secrets-in-posts). Off: raw text. A change applies to the next post. |
 | `Delete closed topics after` | Topics | Default 30 days. The topic of an exited agent is deleted once it has been closed for that long, see [Topic cleanup](#topic-cleanup). `Off` keeps every topic. A number outside the picker's list (say `45`) can be typed into `options.json` by hand; the panel shows it without a bracketed button. |
 
 Values are saved in `options.json` next to `config.json` (mode 0600) as
 `{"version": 1, "values": {"sync.enabled": true, "quiet.enabled": true,
-"quiet.idle_minutes": "3", "quiet.posts": "silent", "icons.working": "⚡",
-"privacy.redact": true, "topics.delete_after_days": "30", …}}`.
+"quiet.idle_minutes": "3", "quiet.posts": "silent", "posts.reactions": true,
+"posts.blocked_delay": "0", "icons.working": "⚡", "privacy.redact": true,
+"topics.delete_after_days": "30", …}}`.
 Missing keys take their defaults and unknown keys survive a save. The file
 is read once at daemon start: edit it by hand and restart the daemon, or use
 the panel, which applies a change immediately.

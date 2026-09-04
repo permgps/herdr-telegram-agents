@@ -113,11 +113,17 @@ its tail silently. Anything you write in the agent's topic goes back:
 | `/keys esc enter` | raw key names |
 | `/screen`, `/screen 40`, `/screen all` | the visible screen, its last 40 lines, or everything since your last message |
 | `/focus` | the pane is brought to the front in Herdr |
+| `/stop`, `/interrupt` | `esc` (cancel the turn or dialog) or `ctrl+c` (hard interrupt), in any status |
+| `/close` | a `Yes, close` / `No` question; `Yes` closes the pane and the topic gets 🏁 |
 | `/clear`, `/compact`, `/usage`, `/model` | typed into an idle agent as a Claude Code command; the result is posted back |
 | `/status`, `/help` | this agent's status line, the command list |
 
+A prompt gets 👀 once the agent took it and ✅ when that turn ends (`React to
+prompts` in the settings).
+
 The **General** topic is the control panel: `/status` lists every agent with
-a link to its topic, `/options` opens the settings panel, `/away [2h]` and
+a link to its topic, `/new <workspace> [kind]` starts an agent in a new tab
+of that workspace, `/options` opens the settings panel, `/away [2h]` and
 `/here` override the presence check, `/help` lists the commands, and the
 daemon posts its notices there. Only the configured group and the operators
 from setup are accepted.
@@ -135,7 +141,7 @@ Its groups:
 |-------|---------------|
 | Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working |
 | Quiet | quiet mode while you are at the desk: `Away after` (3 min), `Hold topic edits`, `Screen posts` (Silent, Held, Normal), `Re-announce on leaving` |
-| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code |
+| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / ✅ on your message); `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds |
 | Appearance | one topic icon per status, from Telegram's topic-icon pack |
 | Privacy | `Redact secrets`: API keys, tokens, passwords and private keys are masked in every post |
 | Topics | `Delete closed topics after`: the topics of exited agents go after 30 days by default |

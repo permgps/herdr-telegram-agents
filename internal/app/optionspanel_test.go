@@ -320,7 +320,7 @@ func TestPanelQuietGroup(t *testing.T) {
 func TestPanelPostsGroup(t *testing.T) {
 	f := newBridgeFixture(t)
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
-	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|↺ Reset to defaults|‹ Back|✖ Close" {
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ React to prompts|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("posts buttons = %v", got)
 	}
 	pressPanel(f, t, 900, dataGrid(domain.OptionPostsDone, 0))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -39,10 +40,23 @@ type TabRenameCall struct {
 	Label string
 }
 
+// TabCall is one CreateTab call a fake recorded.
+type TabCall struct {
+	WorkspaceID string
+}
+
+// StartCall is one StartAgent call a fake recorded.
+type StartCall struct {
+	Name    string
+	Kind    string
+	PaneID  string
+	Timeout time.Duration
+}
+
 // FakeHerdr is an in-memory domain.HerdrGateway. Tests script the agent
 // list and the screens, push socket events and inspect what the application
 // asked for. FailNext fails the next call of a method (read, prompt, keys,
-// focus, rename) once.
+// focus, rename, rename_tab, workspaces, tab, start, close) once.
 type FakeHerdr struct {
 	mu         sync.Mutex
 	agents     []domain.Agent
@@ -58,10 +72,19 @@ type FakeHerdr struct {
 	focused    []string
 	renames    []RenameCall
 	tabRenames []TabRenameCall
-	failNext   map[string]error
-	info       domain.HerdrInfo
-	events     chan domain.Event
-	log        *slog.Logger
+	workspaces []domain.Workspace
+	tabs       []TabCall
+	starts     []StartCall
+	closed     []string
+	// startResult is what StartAgent answers; a zero value is filled in
+	// from the call (kind, name, pane id). startDelay makes StartAgent
+	// wait that long, or until the context ends, before answering.
+	startResult domain.Agent
+	startDelay  time.Duration
+	failNext    map[string]error
+	info        domain.HerdrInfo
+	events      chan domain.Event
+	log         *slog.Logger
 }
 
 var (
@@ -101,7 +124,8 @@ func (f *FakeHerdr) SetScreenAt(target, text string, revision int64) {
 }
 
 // FailNext makes the next call of method (read, prompt, keys, focus,
-// rename) return err. Only one failure is queued per method.
+// rename, rename_tab, workspaces, tab, start, close) return err. Only one
+// failure is queued per method.
 func (f *FakeHerdr) FailNext(method string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -141,6 +165,52 @@ func (f *FakeHerdr) Renames() []RenameCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]RenameCall(nil), f.renames...)
+}
+
+// SetWorkspaces scripts what ListWorkspaces returns.
+func (f *FakeHerdr) SetWorkspaces(workspaces []domain.Workspace) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.workspaces = append([]domain.Workspace(nil), workspaces...)
+	f.log.Debug("fake herdr workspaces set", slog.Int("count", len(workspaces)))
+}
+
+// SetStartResult scripts the agent StartAgent answers; zero fields are
+// filled in from the call.
+func (f *FakeHerdr) SetStartResult(agent domain.Agent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startResult = agent
+}
+
+// SetStartDelay makes StartAgent wait d (or until the context ends)
+// before answering, so tests can check that a start does not block
+// anything else.
+func (f *FakeHerdr) SetStartDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startDelay = d
+}
+
+// Tabs returns every CreateTab call, in order.
+func (f *FakeHerdr) Tabs() []TabCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TabCall(nil), f.tabs...)
+}
+
+// Starts returns every StartAgent call, in order.
+func (f *FakeHerdr) Starts() []StartCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]StartCall(nil), f.starts...)
+}
+
+// Closed returns the pane id of every ClosePane call, in order.
+func (f *FakeHerdr) Closed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.closed...)
 }
 
 // fail pops the queued failure for method, if any. Callers hold mu.
@@ -298,6 +368,70 @@ func (f *FakeHerdr) Notify(_ context.Context, title, body string, _ domain.Notif
 }
 
 func (f *FakeHerdr) Events() <-chan domain.Event { return f.events }
+
+func (f *FakeHerdr) ListWorkspaces(context.Context) ([]domain.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.log.Debug("fake herdr workspace list", slog.Int("count", len(f.workspaces)))
+	if err := f.fail("workspaces"); err != nil {
+		return nil, err
+	}
+	return append([]domain.Workspace(nil), f.workspaces...), nil
+}
+
+// CreateTab records the call and answers tab "t-new" with root pane
+// "p-new" in the workspace.
+func (f *FakeHerdr) CreateTab(_ context.Context, workspaceID string) (domain.Tab, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tabs = append(f.tabs, TabCall{WorkspaceID: workspaceID})
+	f.log.Debug("fake herdr tab create", slog.String("workspace_id", workspaceID))
+	if err := f.fail("tab"); err != nil {
+		return domain.Tab{}, err
+	}
+	return domain.Tab{ID: "t-new", WorkspaceID: workspaceID, Label: "new", RootPaneID: "p-new"}, nil
+}
+
+// StartAgent records the call, waits the scripted delay and answers the
+// scripted agent with the kind, name and pane id of the call filled in
+// where the script left them empty.
+func (f *FakeHerdr) StartAgent(ctx context.Context, name, kind, paneID string, timeout time.Duration) (domain.Agent, error) {
+	f.mu.Lock()
+	f.starts = append(f.starts, StartCall{Name: name, Kind: kind, PaneID: paneID, Timeout: timeout})
+	f.log.Debug("fake herdr agent start", slog.String("name", name), slog.String("kind", kind), slog.String("pane", paneID), slog.Duration("timeout", timeout))
+	err := f.fail("start")
+	delay := f.startDelay
+	agent := f.startResult
+	f.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return domain.Agent{}, ctx.Err()
+		}
+	}
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	if agent.Kind == "" {
+		agent.Kind = kind
+	}
+	if agent.Name == "" {
+		agent.Name = name
+	}
+	if agent.PaneID == "" {
+		agent.PaneID = paneID
+	}
+	return agent, nil
+}
+
+func (f *FakeHerdr) ClosePane(_ context.Context, paneID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = append(f.closed, paneID)
+	f.log.Debug("fake herdr pane close", slog.String("pane", paneID))
+	return f.fail("close")
+}
 
 func (f *FakeHerdr) WatchPanes(_ context.Context, ids []string) error {
 	f.mu.Lock()

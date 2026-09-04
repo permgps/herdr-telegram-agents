@@ -65,13 +65,13 @@ func TestBridgeRunsJobsInOrder(t *testing.T) {
 	r.bridge.Submit(topicMsg(101, 1, "first"))
 	r.bridge.Submit(topicMsg(101, 2, "second"))
 	r.bridge.Submit(domain.GeneralCommand{MessageID: 3, FromID: 1, Text: "/help"})
-	// The help reply is the only Telegram call; it comes last, so both
+	// Each prompt gets its 👀 and the help reply comes last, so both
 	// prompts are already delivered when it shows up.
-	waitUntil(t, "three jobs", func() bool { return len(r.tg.Calls()) == 1 })
+	waitUntil(t, "three jobs", func() bool { return len(r.tg.Calls()) == 3 })
 	if p := r.herdr.Prompts(); len(p) != 2 || p[0] != "p1: first" || p[1] != "p1: second" {
 		t.Fatalf("Prompts = %v", p)
 	}
-	assertCallsEqual(t, r.tg, "send:0:"+helpText+":reply=3")
+	assertCallsEqual(t, r.tg, "react:101:1:👀", "react:101:2:👀", "send:0:"+helpText+":reply=3")
 }
 
 func TestBridgeSettleTimerFiresThroughRun(t *testing.T) {
@@ -214,6 +214,42 @@ func TestBridgeForgetsOnAgentGone(t *testing.T) {
 	}
 }
 
+func TestBridgeRoutesClosePresses(t *testing.T) {
+	r := newRunningBridge(t)
+	a := r.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	r.bridge.Submit(topicMsg(101, 5, "/close"))
+	waitUntil(t, "close question", func() bool { return len(r.tg.Buttons(1000)) == 2 })
+	r.bridge.Submit(domain.ButtonPressed{CallbackID: "cb1", ThreadID: 101, MessageID: 1000, FromID: 1, Data: "c:y"})
+	waitUntil(t, "pane closed", func() bool { return len(r.herdr.Closed()) == 1 })
+	waitUntil(t, "closing answer", func() bool {
+		for _, c := range r.tg.Calls() {
+			if c == "answer:cb1:closing" {
+				return true
+			}
+		}
+		return false
+	})
+	for _, c := range r.tg.Calls() {
+		if strings.HasPrefix(c, "buttons:1000:") {
+			t.Fatalf("close press reached outbound: %q", r.tg.Calls())
+		}
+	}
+	// AgentGone drops a pending question on the inbound side.
+	r.bridge.Submit(topicMsg(101, 6, "/close"))
+	waitUntil(t, "second question", func() bool { return len(r.tg.Buttons(1001)) == 2 })
+	delete(r.agents, a.Key)
+	r.bridge.Submit(AgentEvent{Kind: AgentGone, Agent: a})
+	waitUntil(t, "forget", func() bool {
+		r.bridge.Submit(domain.ButtonPressed{CallbackID: "cb2", ThreadID: 101, MessageID: 1001, FromID: 1, Data: "c:y"})
+		for _, c := range r.tg.Calls() {
+			if c == "answer:cb2:not the latest question" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func TestBridgeRoutesPanelPressesToInbound(t *testing.T) {
 	r := newRunningBridge(t)
 	a := r.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
@@ -261,4 +297,49 @@ func TestBridgeRunsCatchUpOnPresenceAway(t *testing.T) {
 	if r.bridge.Dropped() != 0 {
 		t.Error("unknown job counted as overflow")
 	}
+}
+
+func TestBridgeNewRunsStartOffTheLoop(t *testing.T) {
+	r := newRunningBridge(t)
+	r.herdr.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}})
+	r.herdr.SetStartDelay(300 * time.Millisecond)
+	r.bridge.Submit(domain.GeneralCommand{MessageID: 1, FromID: 1, Text: "/new Work"})
+	waitUntil(t, "starting reply", func() bool { return len(r.tg.Calls()) == 1 })
+	// The start is still in flight; a /help must not wait behind it.
+	r.bridge.Submit(domain.GeneralCommand{MessageID: 2, FromID: 1, Text: "/help"})
+	waitUntil(t, "help reply", func() bool { return len(r.tg.Calls()) == 2 })
+	if calls := r.tg.Calls(); !strings.HasPrefix(calls[1], "send:0:Commands") || len(r.herdr.Starts()) != 1 {
+		t.Fatalf("calls = %q, starts = %d", calls, len(r.herdr.Starts()))
+	}
+	waitUntil(t, "started reply", func() bool { return len(r.tg.Calls()) == 3 })
+	if calls := r.tg.Calls(); calls[2] != "send:0:started claude in Work (pane p-new):reply=1" {
+		t.Fatalf("calls = %q", calls)
+	}
+}
+
+func TestBridgeRunWaitsForSpawnedStarts(t *testing.T) {
+	r := newRunningBridge(t)
+	r.herdr.SetWorkspaces([]domain.Workspace{{ID: "w1", Label: "Work"}})
+	r.herdr.SetStartDelay(time.Hour)
+	r.bridge.Submit(domain.GeneralCommand{MessageID: 1, FromID: 1, Text: "/new Work"})
+	waitUntil(t, "start in flight", func() bool { return len(r.herdr.Starts()) == 1 })
+	r.cancel()
+	select {
+	case <-r.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel while a start was in flight")
+	}
+}
+
+func TestBridgeTurnTimerFiresThroughRun(t *testing.T) {
+	r := newRunningBridge(t)
+	a := r.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	r.bridge.Submit(topicMsg(101, 4, "go"))
+	waitUntil(t, "eyes", func() bool { return len(r.tg.Calls()) == 1 })
+	r.bridge.Submit(AgentEvent{Kind: AgentChanged, Agent: r.setStatus(a, domain.StatusWorking)})
+	r.bridge.Submit(AgentEvent{Kind: AgentChanged, Agent: r.setStatus(a, domain.StatusIdle)})
+	waitUntil(t, "turn timer armed", func() bool { return r.clock.Pending() == 1 })
+	r.clock.Advance(turnSettle)
+	waitUntil(t, "check mark", func() bool { return len(r.tg.Calls()) == 2 })
+	assertCallsEqual(t, r.tg, "react:101:4:👀", "react:101:4:✅")
 }
