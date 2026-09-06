@@ -34,12 +34,21 @@ type Bridge struct {
 	CallTimeout time.Duration
 }
 
+// Services are the optional machine-side helpers the bridge uses: the
+// agent's transcript for done posts, git for /git and the inbox for
+// attachments. A nil member disables that feature with a notice.
+type Services struct {
+	Replies domain.ReplySource
+	Git     domain.GitRunner
+	Inbox   domain.InboxStore
+}
+
 // NewBridge wires the outbound and inbound use cases around the registry,
 // the reconciler's read model of the mapping and the screen capture.
 // replies supplies the agent's last reply for the done post when the
 // posts.done option asks for it; nil keeps every post screen-based.
 func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramGateway,
-	registry *Registry, reconciler *Reconciler, capture *Capture, opts *Options, replies domain.ReplySource, clock domain.Clock, log *slog.Logger) *Bridge {
+	registry *Registry, reconciler *Reconciler, capture *Capture, opts *Options, svc Services, clock domain.Clock, log *slog.Logger) *Bridge {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -50,8 +59,8 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	// Every post of the bridge passes the redactor; the reconciler keeps
 	// the raw gateway because topic names are agent labels.
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
-	out := newOutbound(herdr, tg, topics, registry.Agent, registry.Live, capture, opts, replies, clock, log)
-	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, cfg.ChatID, cfg.BotUsername, clock, log)
+	out := newOutbound(herdr, tg, topics, registry.Agent, registry.Live, capture, opts, svc.Replies, clock, log)
+	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, svc.Git, svc.Inbox, cfg.ChatID, cfg.BotUsername, clock, log)
 	b := &Bridge{
 		out:         out,
 		in:          in,

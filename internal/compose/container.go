@@ -282,7 +282,7 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 	registry := app.NewRegistry(hg, clock, log)
 	reconciler := app.NewReconciler(tg, hg, mappings, mapping, opts, clock, log)
 	capture := app.NewCapture(hg, registry.Live, clock, log)
-	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, capture, opts, transcript.NewReader(log), clock, log)
+	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, capture, opts, app.Services{Replies: transcript.NewReader(log)}, clock, log)
 	presence := app.NewPresence(system.NewIdleSource(log), opts, clock, log)
 	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, capture, state.NewConfigStore(env.ConfigDir, log), opts, presence, clock, log)
 	return d, run, closeAll, nil

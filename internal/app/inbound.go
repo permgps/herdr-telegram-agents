@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -19,6 +21,7 @@ const helpText = `Commands
 /screen [N|all]: post the agent screen: the whole visible screen, its last N lines, or with "all" everything since your last message
 /keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)
 /focus: bring the agent's pane to the front in Herdr
+/git status | diff [staged] | log [N]: git in the agent's directory; long output arrives as a file
 /stop: send esc to the agent (soft cancel of the running turn or dialog)
 /interrupt: send ctrl+c to the agent (hard interrupt)
 /close: close the agent's pane after a Yes/No confirmation
@@ -111,6 +114,10 @@ type inbound struct {
 	// to do when it fires. Both are touched on the bridge goroutine only.
 	deb     *debouncer
 	pending map[domain.Key]followUp
+	// git runs /git in the agent's directory; inbox keeps attachments.
+	// Either may be nil, which refuses the feature with a notice.
+	git   domain.GitRunner
+	inbox domain.InboxStore
 	// closing is the message id of the active /close question per agent;
 	// a newer question retires the older one. Bridge goroutine only.
 	closing map[domain.Key]int
@@ -130,7 +137,8 @@ type followUp struct {
 }
 
 func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	live func() []domain.Agent, out *outbound, opts *Options, chatID int64, botUsername string, clock domain.Clock, log *slog.Logger) *inbound {
+	live func() []domain.Agent, out *outbound, opts *Options, git domain.GitRunner, inbox domain.InboxStore,
+	chatID int64, botUsername string, clock domain.Clock, log *slog.Logger) *inbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -139,6 +147,7 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 	}
 	in := &inbound{
 		herdr: herdr, tg: tg, topics: topics, agents: agents, live: live, out: out,
+		git: git, inbox: inbox,
 		opts: opts, panel: newPanel(opts, tg, log),
 		chatID: chatID, botUsername: botUsername, log: log,
 		clock:   clock,
@@ -159,6 +168,20 @@ func (i *inbound) Due() <-chan domain.Key { return i.deb.Due() }
 // Pending returns how many forwarded commands await their follow-up.
 func (i *inbound) Pending() int { return len(i.pending) }
 
+// typed delivers the operator's message as the free text of a dialog
+// after a ✏️ press: typed as a prompt whatever it looks like.
+func (i *inbound) typed(ctx context.Context, msg domain.TopicMessage, key domain.Key, w typingWait) error {
+	i.log.Info("typed text delivered", slog.String("key", key.String()), slog.Int("thread_id", msg.ThreadID),
+		slog.Int("message_id", msg.MessageID), slog.Int("dialog_message_id", w.messageID), slog.Int("len", len(msg.Text)))
+	if err := i.herdr.Prompt(ctx, key.PaneID, msg.Text); err != nil {
+		return i.failed(ctx, msg, key, "prompt", err)
+	}
+	if err := i.out.TypingDone(ctx, key, w, msg.Text); err != nil {
+		return err
+	}
+	return i.out.PromptSent(ctx, key, msg.ThreadID, msg.MessageID)
+}
+
 // HandleTopic routes one topic message: prompt, short reply or command.
 // Success is silent (the topic icon turning ⚡ shows the agent took the
 // prompt), failure gets a quoted reply. Only fatal Telegram errors are
@@ -174,6 +197,15 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 	if !alive || !entry.Status.Live() {
 		i.log.Info("topic message for exited agent", slog.String("key", key.String()), slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID))
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, "agent has exited")
+	}
+	// An open ✏️ wait takes the next plain message as the free text of
+	// the dialog, short replies included; a command ends the wait instead.
+	if !strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
+		if w, ok := i.out.TakeTyping(ctx, key); ok {
+			return i.typed(ctx, msg, key, w)
+		}
+	} else if err := i.out.CancelTyping(ctx, key); err != nil {
+		return err
 	}
 	cmd := domain.Route(msg.Text, i.botUsername, agent.Status)
 	i.log.Info("topic command", slog.String("kind", string(cmd.Kind)), slog.String("key", key.String()),
@@ -195,6 +227,8 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		return i.herdrCall(ctx, msg, key, "focus", func(ctx context.Context) error {
 			return i.herdr.Focus(ctx, key.PaneID)
 		})
+	case domain.CmdGit:
+		return i.gitCommand(ctx, msg, key, agent, cmd.Git)
 	case domain.CmdStop:
 		return i.control(ctx, msg, key, "stop", domain.KeyEscape, stoppedReply)
 	case domain.CmdInterrupt:
@@ -459,6 +493,8 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 		return i.reply(ctx, 0, cmd.MessageID, topicOnly)
 	case domain.CmdNew:
 		return i.startAgent(ctx, cmd, parsed)
+	case domain.CmdGit:
+		return i.reply(ctx, 0, cmd.MessageID, topicOnly)
 	default:
 		return i.reply(ctx, 0, cmd.MessageID, "unknown command, see /help")
 	}
@@ -685,6 +721,94 @@ func (i *inbound) statusSummary() string {
 		lines = append(lines, icons.For(a.Status)+" "+label)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// Replies of /git.
+const (
+	gitUnavailable  = "⚠️ git is not available in this build"
+	gitNoCwd        = "⚠️ Herdr reports no working directory"
+	gitNotInstalled = "⚠️ git is not installed"
+)
+
+// gitCommand serves /git: the allow-listed argv runs in the agent's
+// working directory and the output comes back as a quoted code block, or
+// as a document when it is longer than gitInlineRunes. Only fatal
+// Telegram errors are returned.
+func (i *inbound) gitCommand(ctx context.Context, msg domain.TopicMessage, key domain.Key, agent domain.Agent, spec domain.GitSpec) error {
+	switch {
+	case spec.Sub == "":
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, domain.GitUsage)
+	case i.git == nil:
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, gitUnavailable)
+	case strings.TrimSpace(agent.Cwd) == "":
+		i.log.Warn("git without cwd", slog.String("key", key.String()), slog.String("sub", spec.Sub))
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, gitNoCwd)
+	}
+	start := i.clock.Now()
+	res, err := i.git.Run(ctx, agent.Cwd, spec.Args)
+	dur := i.clock.Now().Sub(start)
+	if err != nil {
+		i.log.Warn("git failed", slog.String("key", key.String()), slog.String("sub", spec.Sub), slog.String("dir", agent.Cwd),
+			slog.Int64("dur_ms", dur.Milliseconds()), slog.String("err", err.Error()))
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, gitFailure(spec.Sub, err))
+	}
+	out := strings.TrimRight(res.Output, " \t\r\n")
+	lines := 0
+	if out != "" {
+		lines = strings.Count(out, "\n") + 1
+	}
+	asDocument := utf8.RuneCountInString(out) > gitInlineRunes
+	i.log.Info("git command", slog.String("key", key.String()), slog.String("sub", spec.Sub), slog.String("dir", agent.Cwd),
+		slog.Int64("dur_ms", dur.Milliseconds()), slog.Int("bytes", len(out)), slog.Int("lines", lines),
+		slog.Bool("truncated", res.Truncated), slog.Bool("as_document", asDocument))
+	if out == "" {
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, gitEmpty(spec.Sub))
+	}
+	if !asDocument {
+		return i.absorb(i.send(ctx, domain.Outgoing{ThreadID: msg.ThreadID, Text: out, Code: true, ReplyTo: msg.MessageID}))
+	}
+	ext := ".txt"
+	if spec.Sub == "diff" {
+		ext = ".patch"
+	}
+	caption := fmt.Sprintf("git %s · %d lines", strings.Join(spec.Args, " "), lines)
+	if res.Truncated {
+		caption += ", truncated"
+	}
+	doc := domain.Document{
+		ThreadID: msg.ThreadID,
+		Name:     fmt.Sprintf("%s-%s-%s%s", filepath.Base(agent.Cwd), spec.Sub, i.clock.Now().Format("150405"), ext),
+		Data:     []byte(out + "\n"),
+		Caption:  caption,
+		ReplyTo:  msg.MessageID,
+	}
+	return i.absorb(i.tg.SendDocument(ctx, doc))
+}
+
+// gitEmpty words an empty git output per subcommand.
+func gitEmpty(sub string) string {
+	switch sub {
+	case "status":
+		return "clean"
+	case "diff":
+		return "no changes"
+	case "log":
+		return "no commits"
+	}
+	return "nothing"
+}
+
+// gitFailure words a git error for the operator.
+func gitFailure(sub string, err error) string {
+	switch {
+	case errors.Is(err, domain.ErrNotRepository):
+		return "⚠️ " + failureReason(err)
+	case errors.Is(err, domain.ErrGitMissing):
+		return gitNotInstalled
+	case errors.Is(err, context.DeadlineExceeded):
+		return "⚠️ git timed out"
+	}
+	return "⚠️ git " + sub + " failed: " + failureReason(err)
 }
 
 // herdrCall runs one Herdr call for an operator message; only a failure

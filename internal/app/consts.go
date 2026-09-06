@@ -89,4 +89,13 @@ const (
 	// button; longer labels are cut with an ellipsis so a phone still shows
 	// the number and the start of the text.
 	choiceLabelRunes = 60
+
+	// typingTimeout is how long a ✏️ wait stays open for the operator's
+	// text before it expires.
+	typingTimeout = 10 * time.Minute
+	// typingHeadRunes is how much of the typed text the ✅ ✏️ button shows.
+	typingHeadRunes = 30
+	// gitInlineRunes is the longest /git output posted as a message; longer
+	// output goes out as a document.
+	gitInlineRunes = 3600
 )

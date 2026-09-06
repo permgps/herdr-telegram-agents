@@ -70,6 +70,11 @@ type outbound struct {
 	// long for a second capture; zero posts the first capture.
 	blockedDelay func() time.Duration
 	captures     map[domain.Key]pendingCapture
+	// refresh holds, per agent, the message whose multi-select keyboard
+	// is redrawn from the screen on the next settle instead of a post.
+	refresh map[domain.Key]int
+	// typing holds the open ✏️ wait per agent.
+	typing map[domain.Key]typingWait
 }
 
 // pendingCapture is the first screen of a question kept while the blocked
@@ -80,11 +85,37 @@ type pendingCapture struct {
 	seq  int64
 }
 
-// keyboard is the inline keyboard under one blocked post.
+// keyboard is the inline keyboard under one blocked post. multi marks a
+// multi-select dialog whose option buttons toggle and whose Submit row
+// sends enter; textEntry is the number of the free-text entry behind the
+// ✏️ button (0 without one); waiting marks the keyboard reduced to the
+// "waiting for your text" button after a ✏️ press.
 type keyboard struct {
 	messageID int
 	choices   []domain.Choice
+	multi     bool
+	textEntry int
+	textLabel string
+	waiting   bool
 }
+
+// typingWait is an open ✏️ wait: the next plain message in the topic is
+// typed into the agent whatever it looks like, until the wait ends.
+type typingWait struct {
+	threadID  int
+	messageID int
+	until     time.Time
+}
+
+// Callback data of the dialog buttons beyond the option digits.
+const (
+	// submitData is the Submit row of a multi-select dialog: enter.
+	submitData = "enter"
+	// textEntryPrefix precedes the number of the free-text entry.
+	textEntryPrefix = "t:"
+	// doneData marks a button that already acted.
+	doneData = "done"
+)
 
 // turn is one exchange with an agent: from the prompt (or the first
 // working status seen) until done, or until idle has held for turnSettle.
@@ -153,6 +184,8 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 		minTurn:      minTurn,
 		blockedDelay: blockedDelay,
 		captures:     map[domain.Key]pendingCapture{},
+		refresh:      map[domain.Key]int{},
+		typing:       map[domain.Key]typingWait{},
 	}
 }
 
@@ -337,6 +370,8 @@ func (o *outbound) Forget(ctx context.Context, key domain.Key) error {
 	delete(o.announced, key)
 	delete(o.turns, key)
 	delete(o.captures, key)
+	delete(o.refresh, key)
+	o.endTyping(key, "exited")
 	return o.retire(ctx, key, "exited")
 }
 
@@ -401,6 +436,17 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		return o.skip(key, "exited")
 	case entry.Muted:
 		return o.skip(key, "muted")
+	}
+	// A toggled multi-select keyboard is redrawn in place; when the dialog
+	// moved on the ordinary post below takes over.
+	if msgID, ok := o.refresh[key]; ok && !force {
+		delete(o.refresh, key)
+		if agent.Status == domain.StatusBlocked {
+			done, err := o.refreshKeyboard(ctx, key, msgID, lines)
+			if done || err != nil {
+				return err
+			}
+		}
 	}
 	notify := agent.Status == domain.StatusBlocked
 	if force {
@@ -470,11 +516,11 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	if mode != domain.DoneScreen {
 		out.MaxParts = replyMaxParts
 	}
-	var choices []domain.Choice
+	var dialog domain.Dialog
 	if agent.Status == domain.StatusBlocked {
-		choices = domain.ParseChoices(text)
-		out.Buttons = choiceButtons(choices)
-		o.logChoices(key, choices)
+		dialog = domain.ParseDialog(text)
+		out.Buttons = choiceButtons(dialog)
+		o.logChoices(key, dialog)
 	}
 	id, err := o.tg.Send(ctx, out)
 	if err != nil {
@@ -482,7 +528,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	}
 	o.lastPosted[key] = hash
 	if len(out.Buttons) > 0 {
-		o.keyboards[key] = keyboard{messageID: id, choices: choices}
+		o.keyboards[key] = keyboard{messageID: id, choices: dialog.Choices, multi: dialog.Multi, textEntry: dialog.TextEntry, textLabel: dialog.TextLabel}
 	}
 	if notify && agent.Status == domain.StatusBlocked {
 		o.announced[key] = true
@@ -587,27 +633,62 @@ func (o *outbound) CatchUp(ctx context.Context) error {
 	return nil
 }
 
-func (o *outbound) logChoices(key domain.Key, choices []domain.Choice) {
-	if len(choices) == 0 {
+func (o *outbound) logChoices(key domain.Key, d domain.Dialog) {
+	if len(d.Choices) == 0 {
 		o.log.Debug("choices rejected", slog.String("key", key.String()))
 		return
 	}
-	numbers := make([]int, 0, len(choices))
-	for _, c := range choices {
+	numbers := make([]int, 0, len(d.Choices))
+	for _, c := range d.Choices {
 		numbers = append(numbers, c.Number)
 	}
-	o.log.Debug("choices parsed", slog.String("key", key.String()), slog.Int("count", len(choices)), slog.Any("numbers", numbers))
+	o.log.Debug("choices parsed", slog.String("key", key.String()), slog.Int("count", len(d.Choices)), slog.Any("numbers", numbers),
+		slog.Bool("multi", d.Multi), slog.Int("text_entry", d.TextEntry))
 }
 
-// choiceButtons renders options as buttons: the keycap digit, a space and
-// the label; the button's data is the digit the agent expects.
-func choiceButtons(choices []domain.Choice) []domain.Button {
-	if len(choices) == 0 {
+// refreshKeyboard redraws the keyboard of msgID from the current screen
+// after a toggle press. It reports true when the message was redrawn (or
+// nothing else should happen) and false when the dialog is gone, so the
+// caller posts the new screen as usual.
+func (o *outbound) refreshKeyboard(ctx context.Context, key domain.Key, msgID, lines int) (bool, error) {
+	kb, ok := o.keyboards[key]
+	if !ok || kb.messageID != msgID {
+		o.log.Debug("keyboard refresh dropped", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.String("reason", "not_latest"))
+		return false, nil
+	}
+	screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, lines)
+	if err != nil {
+		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
+		return true, nil
+	}
+	d := domain.ParseDialog(trimScreen(screen.Text))
+	if !d.Multi {
+		o.log.Debug("keyboard refresh dropped", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.String("reason", "not_multi"))
+		return false, nil
+	}
+	kb.choices, kb.textEntry, kb.textLabel = d.Choices, d.TextEntry, d.TextLabel
+	o.keyboards[key] = kb
+	o.log.Debug("keyboard refreshed", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.Int("choices", len(d.Choices)))
+	return true, o.absorbEdit(key, o.tg.EditButtons(ctx, msgID, choiceButtons(d)))
+}
+
+// choiceButtons renders a dialog as buttons: one per option (the keycap
+// digit, a space and the label; data is the digit the agent expects), a
+// "✔ Submit" row for a multi-select dialog (data enter) and a "✏️" row for
+// the free-text entry (data t:<n>).
+func choiceButtons(d domain.Dialog) []domain.Button {
+	if len(d.Choices) == 0 {
 		return nil
 	}
-	buttons := make([]domain.Button, 0, len(choices))
-	for _, c := range choices {
+	buttons := make([]domain.Button, 0, len(d.Choices)+2)
+	for _, c := range d.Choices {
 		buttons = append(buttons, domain.Button{Text: keycap(c.Number) + " " + cutLabel(c.Label), Data: strconv.Itoa(c.Number)})
+	}
+	if d.Multi {
+		buttons = append(buttons, domain.Button{Text: "✔ Submit", Data: submitData})
+	}
+	if d.TextEntry > 0 {
+		buttons = append(buttons, domain.Button{Text: "✏️ " + d.TextLabel, Data: textEntryPrefix + strconv.Itoa(d.TextEntry)})
 	}
 	return buttons
 }
@@ -635,27 +716,101 @@ func (o *outbound) retire(ctx context.Context, key domain.Key, reason string) er
 		return nil
 	}
 	delete(o.keyboards, key)
+	delete(o.refresh, key)
+	if kb.waiting {
+		o.endTyping(key, reason)
+	}
 	o.log.Debug("buttons retired", slog.String("key", key.String()), slog.Int("message_id", kb.messageID), slog.String("reason", reason))
 	return o.absorbEdit(key, o.tg.EditButtons(ctx, kb.messageID, nil))
 }
 
-// Press handles a button under one of the blocked posts: the digit goes to
-// the agent as a key press, the keyboard turns into a single ✅ button and
-// the screen timer is armed so a follow-up question is posted. Every path
-// answers the callback so the phone stops its spinner. Only fatal Telegram
-// errors are returned.
+// endTyping drops the open ✏️ wait of key, if any, with a log line.
+func (o *outbound) endTyping(key domain.Key, reason string) {
+	if w, ok := o.typing[key]; ok {
+		delete(o.typing, key)
+		o.log.Debug("typing wait ended", slog.String("key", key.String()), slog.Int("message_id", w.messageID), slog.String("reason", reason))
+	}
+}
+
+// TakeTyping returns and clears the open ✏️ wait of key when its next
+// message should be typed into the agent. An expired wait is dropped and
+// its keyboard marked, and false is returned.
+func (o *outbound) TakeTyping(ctx context.Context, key domain.Key) (typingWait, bool) {
+	w, ok := o.typing[key]
+	if !ok {
+		return typingWait{}, false
+	}
+	if o.clock.Now().After(w.until) {
+		o.endTyping(key, "timeout")
+		if err := o.markTyping(ctx, key, w, "✏️ expired"); err != nil {
+			o.log.Warn("typing keyboard edit failed", slog.String("key", key.String()), slog.String("err", err.Error()))
+		}
+		return typingWait{}, false
+	}
+	delete(o.typing, key)
+	return w, true
+}
+
+// TypingDone marks the ✏️ keyboard after the text was typed into the
+// agent: "✅ ✏️ · <head of the text>". Only fatal Telegram errors are
+// returned.
+func (o *outbound) TypingDone(ctx context.Context, key domain.Key, w typingWait, text string) error {
+	o.log.Debug("typing wait ended", slog.String("key", key.String()), slog.Int("message_id", w.messageID), slog.String("reason", "typed"))
+	return o.markTyping(ctx, key, w, "✅ ✏️ · "+headOf(text, typingHeadRunes))
+}
+
+// CancelTyping ends the open ✏️ wait of key because a command arrived
+// instead of the text; the keyboard says so. Only fatal Telegram errors
+// are returned.
+func (o *outbound) CancelTyping(ctx context.Context, key domain.Key) error {
+	w, ok := o.typing[key]
+	if !ok {
+		return nil
+	}
+	o.endTyping(key, "command")
+	return o.markTyping(ctx, key, w, "✏️ cancelled")
+}
+
+// markTyping replaces the waiting keyboard of w with one inert button and
+// forgets the keyboard.
+func (o *outbound) markTyping(ctx context.Context, key domain.Key, w typingWait, text string) error {
+	if kb, ok := o.keyboards[key]; ok && kb.messageID == w.messageID {
+		delete(o.keyboards, key)
+	}
+	return o.absorbEdit(key, o.tg.EditButtons(ctx, w.messageID, []domain.Button{{Text: text, Data: doneData}}))
+}
+
+// headOf returns the first n runes of text on one line, with an ellipsis
+// when cut.
+func headOf(text string, n int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(text) <= n {
+		return text
+	}
+	return strings.TrimSpace(string([]rune(text)[:n-1])) + "…"
+}
+
+// Press handles a button under one of the blocked posts. An option digit
+// goes to the agent as a key press and, for a single-select dialog, the
+// keyboard turns into a single ✅ button and the screen timer is armed so
+// a follow-up question is posted; for a multi-select dialog the digit
+// toggles the option and the keyboard is redrawn from the screen on the
+// next settle. "enter" (the Submit row) submits a multi-select dialog.
+// "t:<n>" (the ✏️ row) selects the free-text entry and opens a wait for
+// the operator's next message. Every path answers the callback so the
+// phone stops its spinner. Only fatal Telegram errors are returned.
 func (o *outbound) Press(ctx context.Context, ev domain.ButtonPressed) error {
 	key, ok := o.topics.KeyForThread(ev.ThreadID)
 	if !ok {
 		o.log.Debug("button for unknown thread", slog.Int("thread_id", ev.ThreadID), slog.Int("message_id", ev.MessageID))
 		return o.stale(ctx, ev, "topic is not mapped")
 	}
-	if ev.Data == "done" {
+	if ev.Data == doneData {
 		o.log.Debug("button already answered", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID))
 		return o.answer(ctx, ev.CallbackID, "already answered")
 	}
-	n, err := strconv.Atoi(ev.Data)
-	if err != nil || n < 1 || n > 9 {
+	kind, n := pressKindOf(ev.Data)
+	if kind == pressUnknown {
 		o.log.Warn("button data unknown", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID), slog.String("data", ev.Data))
 		return o.stale(ctx, ev, "unknown button")
 	}
@@ -665,9 +820,14 @@ func (o *outbound) Press(ctx context.Context, ev domain.ButtonPressed) error {
 			slog.Int("latest_id", kb.messageID), slog.String("reason", "not_latest"))
 		return o.stale(ctx, ev, "not the latest question")
 	}
+	if (kind == pressSubmit && !kb.multi) || (kind == pressText && (kb.textEntry == 0 || n != kb.textEntry)) || kb.waiting {
+		o.log.Warn("button not offered", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID), slog.String("data", ev.Data))
+		return o.stale(ctx, ev, "unknown button")
+	}
 	agent, alive := o.agents(key)
 	o.log.Info("button pressed", slog.String("key", key.String()), slog.Int("thread_id", ev.ThreadID), slog.Int("message_id", ev.MessageID),
-		slog.Int64("from_id", ev.FromID), slog.String("data", ev.Data), slog.String("status", string(agent.Status)), slog.Bool("alive", alive))
+		slog.Int64("from_id", ev.FromID), slog.String("data", ev.Data), slog.String("status", string(agent.Status)), slog.Bool("alive", alive),
+		slog.Bool("multi", kb.multi), slog.Int("text_entry", kb.textEntry))
 	switch {
 	case !alive:
 		if err := o.retire(ctx, key, "exited"); err != nil {
@@ -680,32 +840,110 @@ func (o *outbound) Press(ctx context.Context, ev domain.ButtonPressed) error {
 		}
 		return o.answer(ctx, ev.CallbackID, "agent is not waiting anymore")
 	}
-	if err := o.herdr.SendKeys(ctx, key.PaneID, []string{ev.Data}); err != nil {
+	keys := []string{ev.Data}
+	if kind == pressText {
+		keys = []string{strconv.Itoa(n)}
+	}
+	if err := o.herdr.SendKeys(ctx, key.PaneID, keys); err != nil {
 		o.log.Warn("button send_keys failed", slog.String("key", key.String()), slog.String("data", ev.Data), slog.String("err", err.Error()))
 		if err := o.retire(ctx, key, "failed"); err != nil {
 			return err
 		}
 		return o.answer(ctx, ev.CallbackID, "⚠️ "+failureReason(err))
 	}
-	delete(o.keyboards, key)
-	label := ev.Data
-	for _, c := range kb.choices {
-		if c.Number == n {
-			label = cutLabel(c.Label)
+	switch kind {
+	case pressText:
+		return o.pressedText(ctx, key, kb, ev)
+	case pressSubmit:
+		delete(o.keyboards, key)
+		delete(o.refresh, key)
+		if err := o.absorbEdit(key, o.tg.EditButtons(ctx, ev.MessageID, []domain.Button{{Text: "✅ submitted", Data: doneData}})); err != nil {
+			return err
 		}
-	}
-	pressed := []domain.Button{{Text: "✅ " + ev.Data + " · " + label, Data: "done"}}
-	if err := o.absorbEdit(key, o.tg.EditButtons(ctx, ev.MessageID, pressed)); err != nil {
-		return err
-	}
-	o.log.Info("button sent", slog.String("key", key.String()), slog.String("data", ev.Data), slog.Int("message_id", ev.MessageID))
-	if err := o.answer(ctx, ev.CallbackID, "sent: "+ev.Data); err != nil {
-		return err
+		o.log.Info("dialog submitted", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID))
+		if err := o.answer(ctx, ev.CallbackID, "submitted"); err != nil {
+			return err
+		}
+	case pressDigit:
+		if kb.multi {
+			o.refresh[key] = ev.MessageID
+			o.log.Info("option toggled", slog.String("key", key.String()), slog.String("data", ev.Data), slog.Int("message_id", ev.MessageID))
+			if err := o.answer(ctx, ev.CallbackID, "toggled: "+ev.Data); err != nil {
+				return err
+			}
+			o.deb.Schedule(key)
+			return nil
+		}
+		delete(o.keyboards, key)
+		label := ev.Data
+		for _, c := range kb.choices {
+			if c.Number == n {
+				label = cutLabel(c.Label)
+			}
+		}
+		pressed := []domain.Button{{Text: "✅ " + ev.Data + " · " + label, Data: doneData}}
+		if err := o.absorbEdit(key, o.tg.EditButtons(ctx, ev.MessageID, pressed)); err != nil {
+			return err
+		}
+		o.log.Info("button sent", slog.String("key", key.String()), slog.String("data", ev.Data), slog.Int("message_id", ev.MessageID))
+		if err := o.answer(ctx, ev.CallbackID, "sent: "+ev.Data); err != nil {
+			return err
+		}
 	}
 	// The follow-up question starts from a fresh first capture.
 	delete(o.captures, key)
 	o.deb.Schedule(key)
 	return nil
+}
+
+// pressedText finishes a ✏️ press once the entry's digit reached the
+// agent: the keyboard waits, the toast and a force-reply prompt tell the
+// operator to send the text, and the wait is recorded. No screen read is
+// armed: the text box the agent shows must not be posted as a question.
+func (o *outbound) pressedText(ctx context.Context, key domain.Key, kb keyboard, ev domain.ButtonPressed) error {
+	kb.waiting = true
+	o.keyboards[key] = kb
+	w := typingWait{threadID: ev.ThreadID, messageID: ev.MessageID, until: o.clock.Now().Add(typingTimeout)}
+	o.typing[key] = w
+	o.log.Info("typing wait opened", slog.String("key", key.String()), slog.Int("message_id", ev.MessageID), slog.Int("entry", kb.textEntry),
+		slog.Int64("timeout_ms", typingTimeout.Milliseconds()))
+	if err := o.absorbEdit(key, o.tg.EditButtons(ctx, ev.MessageID, []domain.Button{{Text: "✏️ waiting for your text", Data: doneData}})); err != nil {
+		return err
+	}
+	if err := o.answer(ctx, ev.CallbackID, "now send the text"); err != nil {
+		return err
+	}
+	_, err := o.tg.Send(ctx, domain.Outgoing{ThreadID: ev.ThreadID, ReplyTo: ev.MessageID,
+		Text: "✏️ " + kb.textLabel + ": send the text as your next message", ForceReply: true})
+	return o.absorbEdit(key, err)
+}
+
+// pressKind classifies callback data of a dialog keyboard.
+type pressKind int
+
+const (
+	pressUnknown pressKind = iota
+	pressDigit
+	pressSubmit
+	pressText
+)
+
+// pressKindOf returns the kind of data and, for a digit or a text entry,
+// its number.
+func pressKindOf(data string) (pressKind, int) {
+	if data == submitData {
+		return pressSubmit, 0
+	}
+	kind := pressDigit
+	if strings.HasPrefix(data, textEntryPrefix) {
+		kind = pressText
+		data = strings.TrimPrefix(data, textEntryPrefix)
+	}
+	n, err := strconv.Atoi(data)
+	if err != nil || n < 1 || n > 9 {
+		return pressUnknown, 0
+	}
+	return kind, n
 }
 
 // stale answers a press that cannot act and strips the buttons from the

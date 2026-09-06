@@ -29,6 +29,8 @@ type bridgeFixture struct {
 	options *testkit.MemOptionsStore
 	opts    *Options
 	replies *testkit.FakeReplies
+	git     *testkit.FakeGit
+	inbox   *testkit.FakeInbox
 	logBuf  *bytes.Buffer
 	out     *outbound
 	in      *inbound
@@ -69,7 +71,9 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	// Same wrapping as NewBridge: the fake records what really leaves.
 	tg := newRedactingGateway(f.tg, domain.NewRedactor(testBotToken), f.opts.RedactEnabled, nil)
 	f.out = newOutbound(f.herdr, tg, f.view, lookup, live, f.capture, f.opts, f.replies, f.clock, log)
-	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, -1001234567890, "agents_bot", f.clock, nil)
+	f.git = testkit.NewFakeGit()
+	f.inbox = testkit.NewFakeInbox("/state/inbox")
+	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, f.git, f.inbox, -1001234567890, "agents_bot", f.clock, log)
 	return f
 }
 

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1003,4 +1005,195 @@ func TestInboundNewStartFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCallsEqual(t, f.tg, "send:0:starting claude in Work …:reply=1", "send:0:⚠️ claude did not start in Work: herdr agent.start: agent not detected within 60s:reply=1")
+}
+
+func TestInboundTypedTextAfterTextEntry(t *testing.T) {
+	f := newBridgeFixture(t)
+	blockedWithDialog(t, f, dialogScreen)
+	if err := f.out.Press(f.ctx, press(101, 1000, "t:4")); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	// A short reply that would be a key press goes through as text.
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "y")); err != nil {
+		t.Fatal(err)
+	}
+	if prompts := f.herdr.Prompts(); len(prompts) != 1 || prompts[0] != "p1: y" {
+		t.Fatalf("Prompts = %q", prompts)
+	}
+	if keys := f.herdr.Keys(); len(keys) != 1 || keys[0].Keys[0] != "4" {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	assertCallsEqual(t, f.tg, "buttons:1000:✅ ✏️ · y", "react:101:7:👀")
+	// The wait is spent: the next short reply is a key press again.
+	f.tg.Reset()
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 8, "y")); err != nil {
+		t.Fatal(err)
+	}
+	if keys := f.herdr.Keys(); len(keys) != 2 || keys[1].Keys[0] != "y" {
+		t.Fatalf("Keys after the wait = %+v", keys)
+	}
+}
+
+func TestInboundSlashCancelsTypingWait(t *testing.T) {
+	f := newBridgeFixture(t)
+	blockedWithDialog(t, f, dialogScreen)
+	if err := f.out.Press(f.ctx, press(101, 1000, "t:4")); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "/stop")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "buttons:1000:✏️ cancelled", "send:101:⏹ sent esc:reply=7")
+	if keys := f.herdr.Keys(); len(keys) != 2 || keys[1].Keys[0] != "esc" {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	if n := len(f.herdr.Prompts()); n != 0 {
+		t.Fatalf("command typed as text: %d", n)
+	}
+}
+
+func TestInboundTypingWaitIsPerTopic(t *testing.T) {
+	f := newBridgeFixture(t)
+	blockedWithDialog(t, f, dialogScreen)
+	f.add(t, "p2", "t2", "other", domain.StatusIdle)
+	if err := f.out.Press(f.ctx, press(101, 1000, "t:4")); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	if err := f.in.HandleTopic(f.ctx, topicMsg(102, 9, "hello")); err != nil {
+		t.Fatal(err)
+	}
+	if prompts := f.herdr.Prompts(); len(prompts) != 1 || prompts[0] != "p2: hello" {
+		t.Fatalf("Prompts = %q", prompts)
+	}
+	key := domain.Key{PaneID: "p1", TerminalID: "t1"}
+	if _, ok := f.out.TakeTyping(f.ctx, key); !ok {
+		t.Fatal("the other topic's message consumed the wait")
+	}
+}
+
+// gitAgent registers an agent whose pane runs in /repo.
+func gitAgent(t *testing.T, f *bridgeFixture) domain.Agent {
+	t.Helper()
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	a.Cwd = "/home/u/repo"
+	f.agents[a.Key] = a
+	return a
+}
+
+func TestInboundGitStatusInline(t *testing.T) {
+	f := newBridgeFixture(t)
+	gitAgent(t, f)
+	f.git.SetResult(domain.GitResult{Output: "## main\n M a.go\n"})
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/git status")); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.git.Calls()
+	if len(calls) != 1 || calls[0].Dir != "/home/u/repo" || strings.Join(calls[0].Args, " ") != "status --short --branch" {
+		t.Fatalf("git calls = %+v", calls)
+	}
+	assertCallsEqual(t, f.tg, "send:101:## main\n M a.go:reply=5")
+	if sent := f.tg.Sent(); !sent[0].Code {
+		t.Fatalf("reply is not a code block: %+v", sent[0])
+	}
+}
+
+func TestInboundGitDiffAsDocument(t *testing.T) {
+	f := newBridgeFixture(t)
+	gitAgent(t, f)
+	long := strings.Repeat("+line of a long diff\n", 300)
+	f.git.SetResult(domain.GitResult{Output: long, Truncated: true})
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/git diff")); err != nil {
+		t.Fatal(err)
+	}
+	docs := f.tg.Documents()
+	if len(docs) != 1 || docs[0].Name != "repo-diff-120000.patch" || docs[0].ReplyTo != 5 || docs[0].ThreadID != 101 {
+		t.Fatalf("Documents = %+v", docs)
+	}
+	if docs[0].Caption != "git diff HEAD · 300 lines, truncated" {
+		t.Fatalf("Caption = %q", docs[0].Caption)
+	}
+	if string(docs[0].Data) != strings.TrimRight(long, "\n")+"\n" {
+		t.Fatalf("document body differs")
+	}
+	if n := len(f.tg.Sent()); n != 0 {
+		t.Fatalf("long output also sent as text: %d", n)
+	}
+}
+
+func TestInboundGitEmptyOutputs(t *testing.T) {
+	f := newBridgeFixture(t)
+	gitAgent(t, f)
+	f.git.SetResult(domain.GitResult{Output: "\n"})
+	for i, tc := range []struct{ cmd, want string }{{"/git status", "clean"}, {"/git diff staged", "no changes"}, {"/git log 3", "no commits"}} {
+		if err := f.in.HandleTopic(f.ctx, topicMsg(101, 10+i, tc.cmd)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCallsEqual(t, f.tg, "send:101:clean:reply=10", "send:101:no changes:reply=11", "send:101:no commits:reply=12")
+	calls := f.git.Calls()
+	if len(calls) != 3 || strings.Join(calls[1].Args, " ") != "diff --cached" || strings.Join(calls[2].Args, " ") != "log --oneline --decorate -n 3" {
+		t.Fatalf("git calls = %+v", calls)
+	}
+}
+
+func TestInboundGitErrors(t *testing.T) {
+	f := newBridgeFixture(t)
+	gitAgent(t, f)
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w: /home/u/repo", domain.ErrNotRepository), "⚠️ not a git repository: /home/u/repo"},
+		{domain.ErrGitMissing, "⚠️ git is not installed"},
+		{context.DeadlineExceeded, "⚠️ git timed out"},
+		{errors.New("git status: exit status 128: fatal: bad object HEAD"), "⚠️ git status failed: git status: exit status 128: fatal: bad object HEAD"},
+	}
+	for i, tc := range cases {
+		f.git.SetError(tc.err)
+		f.tg.Reset()
+		if err := f.in.HandleTopic(f.ctx, topicMsg(101, 20+i, "/git status")); err != nil {
+			t.Fatal(err)
+		}
+		assertCallsEqual(t, f.tg, fmt.Sprintf("send:101:%s:reply=%d", tc.want, 20+i))
+	}
+}
+
+func TestInboundGitUsageAndNoCwd(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := gitAgent(t, f)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "/git push")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:"+domain.GitUsage+":reply=5")
+	if n := len(f.git.Calls()); n != 0 {
+		t.Fatalf("git ran for a usage error: %d", n)
+	}
+	a.Cwd = ""
+	f.agents[a.Key] = a
+	f.tg.Reset()
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 6, "/git status")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ Herdr reports no working directory:reply=6")
+	// Without a runner the command is refused, not crashed.
+	f.in.git = nil
+	f.tg.Reset()
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "/git status")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ git is not available in this build:reply=7")
+}
+
+func TestInboundGitInGeneralHints(t *testing.T) {
+	f := newBridgeFixture(t)
+	if err := f.in.HandleGeneral(f.ctx, domain.GeneralCommand{MessageID: 3, FromID: 1, Text: "/git status"}); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:0:"+topicOnly+":reply=3")
+	if !strings.Contains(helpText, "/git status") {
+		t.Fatal("help does not mention /git")
+	}
 }
