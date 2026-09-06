@@ -115,7 +115,9 @@ func TestGitRunnerTimeout(t *testing.T) {
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "slow-git")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+	// Two commands keep the shell from exec-ing sleep in its place, so the
+	// child survives the kill and holds stdout, as a git helper would.
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\necho done\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r := NewGitRunner(nil)

@@ -20,6 +20,10 @@ const (
 	// gitMaxOutput is the most stdout a run may produce; the rest is cut
 	// and the result marked truncated.
 	gitMaxOutput = 5 << 20
+	// gitWaitDelay bounds how long a run waits for its pipes once the
+	// timeout killed git: a child that inherited stdout (a hook, a helper)
+	// would otherwise keep Wait blocked until it exits on its own.
+	gitWaitDelay = time.Second
 )
 
 // errOutputCapped stops the stdout copy once gitMaxOutput is reached.
@@ -57,6 +61,7 @@ func (r *GitRunner) Run(ctx context.Context, dir string, args []string) (domain.
 	argv := append([]string{"-c", "color.ui=never"}, args...)
 	cmd := exec.CommandContext(ctx, bin, argv...)
 	cmd.Dir = dir
+	cmd.WaitDelay = gitWaitDelay
 	cmd.Env = append(os.Environ(), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	stdout := &limitedWriter{max: r.maxBytes}
 	var stderr bytes.Buffer
