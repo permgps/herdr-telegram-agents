@@ -32,6 +32,30 @@ const measuredDialog = `⏺ Причина найдена. Варианты:
 
 Enter to select · ↑/↓ to navigate · Esc to cancel`
 
+// measuredMultiDialog is the multiSelect AskUserQuestion screen read from
+// this pane on 2026-09-06 (trailing spaces removed): ASCII checkboxes,
+// descriptions indented by two spaces, "Type something" without its period
+// and with a checkbox of its own, a two-line rule before "Chat about this".
+const measuredMultiDialog = `  Ran 1 shell command
+───────────────────────────────────────────────────────────────────────────
+←  ☐ Snapshot 2  ✔ Submit  →
+
+│ Повтор снимка: подожди около 20 секунд, переключи один пункт, подожди ещё
+│ 5 секунд и подтверди.
+
+❯ 1. [ ] В Telegram есть кнопки
+  Под постом с этим вопросом есть кнопки пунктов и ✔ Submit
+  2. [ ] В Telegram кнопок нет
+  Пост есть, но без кнопок
+  3. [ ] Поста в Telegram нет
+  Вопрос не пришёл в топик
+  4. [ ] Type something
+     Submit
+───────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel`
+
 func TestParseDialog(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -40,6 +64,10 @@ func TestParseDialog(t *testing.T) {
 	}{
 		{"measured dialog", measuredDialog,
 			domain.Dialog{Choices: []domain.Choice{{1, "Красный"}, {2, "Зелёный"}, {3, "Синий"}}, TextEntry: 4, TextLabel: "Type something"}},
+		{"measured multi-select", measuredMultiDialog,
+			domain.Dialog{Choices: []domain.Choice{{1, "[ ] В Telegram есть кнопки"}, {2, "[ ] В Telegram кнопок нет"}, {3, "[ ] Поста в Telegram нет"}},
+				Multi: true, TextEntry: 4, TextLabel: "Type something"}},
+		{"ascii toggled", "  1. [x] A\n  2. [ ] B\n", domain.Dialog{Choices: []domain.Choice{{1, "[x] A"}, {2, "[ ] B"}}, Multi: true}},
 		{"multi-select", "❯ 1. ☐ Red\n  2. ☑ Green\n  3. ☐ Blue\n\nSpace to toggle · Enter to submit",
 			domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "☑ Green"}, {3, "☐ Blue"}}, Multi: true}},
 		{"mixed glyphs", "  1. ☐ Red\n  2. Green\n", domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "Green"}}}},

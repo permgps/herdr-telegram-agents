@@ -47,21 +47,24 @@ type Dialog struct {
 
 // Service entries Claude Code adds to a question dialog: numbered like
 // options but never buttons of their own. ServiceTypeSomething opens a
-// free-text answer; ServiceChatAboutThis hands the question back to the
-// conversation. Both count for Dialog.TextEntry, the first wins.
+// free-text answer ("Type something." in a single-select dialog, "[ ] Type
+// something" in a multi-select one); ServiceChatAboutThis hands the
+// question back to the conversation. Both count for Dialog.TextEntry, the
+// first wins. Compared without the trailing period and the checkbox.
 const (
-	ServiceTypeSomething = "Type something."
+	ServiceTypeSomething = "Type something"
 	ServiceChatAboutThis = "Chat about this"
 )
 
 // choiceServiceLabels lists the service entries in the order of preference
-// for Dialog.TextEntry.
+// for Dialog.TextEntry. Labels are compared after stripCheckbox and without
+// a trailing period: a multi-select dialog draws "4. [ ] Type something".
 var choiceServiceLabels = []string{ServiceTypeSomething, ServiceChatAboutThis}
 
-// checkboxGlyphs are the markers a multi-select option starts with; the
-// pair is the one Claude Code draws (fixture of 2026-09-03, confirmed by
-// the live check of the dialog-buttons plan).
-var checkboxGlyphs = []string{"☐ ", "☑ "}
+// checkboxGlyphs are the markers a multi-select option starts with. Claude
+// Code draws "[ ]" and "[x]" (screen read live on 2026-09-06); the ☐ / ☑
+// pair of the earlier fixture is kept for other renderers.
+var checkboxGlyphs = []string{"[ ] ", "[x] ", "[X] ", "[*] ", "☐ ", "☑ ", "☒ "}
 
 // choiceItem matches "1. Label", with the optional ❯ cursor Claude Code
 // puts before the highlighted option.
@@ -113,11 +116,12 @@ func ParseDialog(screen string) Dialog {
 	d := Dialog{Choices: items[:0:0]}
 	bestRank := len(choiceServiceLabels)
 	for _, c := range items {
-		if rank := serviceRank(c.Label); rank >= 0 {
+		plain := strings.TrimSuffix(stripCheckbox(c.Label), ".")
+		if rank := serviceRank(plain); rank >= 0 {
 			if rank < bestRank {
 				bestRank = rank
 				d.TextEntry = c.Number
-				d.TextLabel = strings.TrimSuffix(c.Label, ".")
+				d.TextLabel = plain
 			}
 			continue
 		}
@@ -152,12 +156,17 @@ func allCheckboxes(choices []Choice) bool {
 }
 
 func hasCheckbox(label string) bool {
+	return stripCheckbox(label) != label
+}
+
+// stripCheckbox removes a leading checkbox glyph from an option label.
+func stripCheckbox(label string) string {
 	for _, g := range checkboxGlyphs {
 		if strings.HasPrefix(label, g) {
-			return true
+			return strings.TrimSpace(strings.TrimPrefix(label, g))
 		}
 	}
-	return false
+	return label
 }
 
 // parseChoiceLine reads one "N. Label" line.
@@ -174,8 +183,10 @@ func parseChoiceLine(line string) (int, string, bool) {
 }
 
 // isChoiceFiller reports whether a non-item line may sit inside or after
-// the dialog block: blank, a rule, an indented description or a footer
-// such as "Enter to select · ↑/↓ to navigate · Esc to cancel".
+// the dialog block: blank, a rule, an indented description (Claude Code
+// indents option descriptions by two spaces in a multi-select dialog and
+// by five in a single-select one) or a footer such as "Enter to select ·
+// ↑/↓ to navigate · Esc to cancel".
 func isChoiceFiller(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	switch {
@@ -183,7 +194,7 @@ func isChoiceFiller(line string) bool {
 		return true
 	case isChoiceRule(trimmed):
 		return true
-	case strings.HasPrefix(line, "    "):
+	case strings.HasPrefix(line, "  "):
 		return true
 	case strings.Contains(trimmed, " · "):
 		return true
