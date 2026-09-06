@@ -174,7 +174,7 @@ func buildOptionSpecs() []OptionSpec {
 			Title:       "Quiet while at the desk",
 			Description: "While you are typing on this machine, topic edits wait and screen posts are silent; everything catches up when you leave.",
 			Kind:        KindBool,
-			Default:     "true",
+			Default:     "false",
 		},
 		{
 			Key:         OptionQuietIdleMinutes,

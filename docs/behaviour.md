@@ -165,7 +165,7 @@ The options today:
 | Option | Group | What it does |
 |--------|-------|--------------|
 | `Herdr → Telegram sync` | Sync | Default on. Off: the daemon creates, edits and closes no topic and posts no screen until it is on again. Messages, keys, `/screen`, `/status` and presses on existing question buttons keep working, the screen capture keeps running, daemon notices keep posting. Back on: a full resync, like the `resync` action. A daemon that starts with sync off says so in its started notice, in the `/status` header (`🔇 …`), in the `status` action line (`sync=off`) and in the log. |
-| `Quiet while at the desk` | Quiet | Default on. While you are at the desk, topic edits wait and screen posts are silent; everything catches up when you leave. Off means today's behaviour with no presence check at all; `/away` and `/here` then answer that quiet mode is off. See [Quiet while at the desk](#quiet-while-at-the-desk). |
+| `Quiet while at the desk` | Quiet | Default off: every topic edit and screen post goes out at once, sounds included, so a fresh install shows the plugin at work. On: while you are at the desk, topic edits wait and screen posts are silent; everything catches up when you leave. Off means no presence check at all; `/away` and `/here` then answer that quiet mode is off. See [Quiet while at the desk](#quiet-while-at-the-desk). |
 | `Away after` | Quiet | Default 3 min. Minutes without keyboard or mouse input on this machine before you count as away. A value outside the picker's list (say `45`) can be typed into `options.json` by hand. |
 | `Hold topic edits` | Quiet | Default on. While at the desk no topic is created, renamed, closed, reopened or given a new icon; each of those is a Telegram service message that rings the phone. Off keeps topic edits live while at the desk. |
 | `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
@@ -195,6 +195,10 @@ form of it; the daemon deletes its own notices after ten seconds, but the
 push has fired by then. Quiet mode therefore holds those writes while you
 are at the machine, where you see Herdr anyway, and lets Telegram catch up
 when you leave.
+
+It is off by default: a fresh install mirrors every change right away, so
+you can see the plugin working. Tick `Quiet while at the desk` in
+`/options` → Quiet once the service messages ring too often.
 
 - **Presence** is the machine's input idle time, sampled every 10 seconds:
   `ioreg` (`HIDIdleTime`) on macOS, `GetLastInputInfo` on Windows. Idle

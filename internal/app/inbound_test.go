@@ -578,11 +578,20 @@ func TestInboundOptionsInTopicPointsToGeneral(t *testing.T) {
 // withPresence wires a presence tracker over a fake idle source into the
 // fixture's inbound and samples it once.
 func withPresence(f *bridgeFixture, idle time.Duration) (*Presence, *testkit.FakeIdle) {
+	quietOn(f)
 	src := testkit.NewFakeIdle(idle)
 	p := NewPresence(src, f.opts, f.clock, nil)
 	f.in.SetPresence(p)
 	p.Poll(f.ctx)
 	return p, src
+}
+
+// quietOn switches quiet mode on: it is off by default, and the presence
+// tests exercise it on.
+func quietOn(f *bridgeFixture) {
+	if err := f.opts.Set(f.ctx, domain.OptionQuietEnabled, "true", 1); err != nil {
+		panic(err)
+	}
 }
 
 func general(f *bridgeFixture, t *testing.T, id int, text string) string {
@@ -651,6 +660,7 @@ func TestInboundPresenceUnavailableAndTopicHint(t *testing.T) {
 	if got := general(f, t, 1, "/away"); got != presenceUnavailable {
 		t.Fatalf("/away without tracker = %q", got)
 	}
+	quietOn(f)
 	idle := testkit.NewFakeIdle(0)
 	idle.Unsupported()
 	p := NewPresence(idle, f.opts, f.clock, nil)

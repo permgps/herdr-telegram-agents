@@ -56,6 +56,15 @@ func newDaemon(t *testing.T) *daemonFixture {
 	return f
 }
 
+// quietOn switches quiet mode on before the daemon starts: it is off by
+// default, and the quiet tests exercise it on.
+func (f *daemonFixture) quietOn(t *testing.T) {
+	t.Helper()
+	if err := f.opts.Set(context.Background(), domain.OptionQuietEnabled, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *daemonFixture) start(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -726,8 +735,27 @@ func (f *daemonFixture) tick(t *testing.T, what string, cond func() bool) {
 	})
 }
 
+// The reported case: the operator sits at the desk, starts agents and sees
+// nothing in Telegram. With quiet mode off by default the topics are
+// created at once, presence notwithstanding.
+func TestDaemonMirrorsAtDeskByDefault(t *testing.T) {
+	f := newDaemon(t)
+	f.idle.Set(time.Second) // at the desk from the start, quiet left at its default
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.start(t)
+	f.waitCalls(t, 3)
+	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1)
+	if st := f.daemon.Stats(); st.Quiet != "off" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "quiet=off") {
+		t.Fatalf("Stats = %+v", st)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDaemonQuietDefersUntilOperatorLeaves(t *testing.T) {
 	f := newDaemon(t)
+	f.quietOn(t)
 	f.idle.Set(time.Second) // at the desk from the start
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
 	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
@@ -779,6 +807,7 @@ func TestDaemonQuietDefersUntilOperatorLeaves(t *testing.T) {
 
 func TestDaemonQuietSilentPostAndIconDrift(t *testing.T) {
 	f := newDaemon(t)
+	f.quietOn(t)
 	f.idle.Set(time.Hour) // supported source, operator away at start
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
 	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
@@ -822,6 +851,7 @@ func TestDaemonQuietSilentPostAndIconDrift(t *testing.T) {
 
 func TestDaemonAwayCommandAndQuietOption(t *testing.T) {
 	f := newDaemon(t)
+	f.quietOn(t)
 	f.idle.Set(time.Second)
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
 	f.start(t)

@@ -37,10 +37,11 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **Rename or close** a topic in Telegram to rename or mute the agent in Herdr.
 - **A control panel** in the General topic: `/status` with links to every
   agent, `/options`, `/away`, `/here`, `/help`, daemon notices.
-- **Quiet while you are at the machine**: topic edits wait and screen posts
-  go silent while your keyboard or mouse is active; when you leave,
-  everything catches up and a question still waiting rings once. macOS and
-  Windows; Linux has no idle source yet.
+- **Quiet while you are at the machine** (opt-in): topic edits wait and
+  screen posts go silent while your keyboard or mouse is active; when you
+  leave, everything catches up and a question still waiting rings once.
+  Off by default, one tick in `/options`; macOS and Windows, Linux has no
+  idle source yet.
 - **Settings from the phone**: `/options` opens a panel with buttons to pause
   the mirror, tune quiet mode, pick the status icons, mask secrets in posts
   and delete the topics of exited agents after a while.

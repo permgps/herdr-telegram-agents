@@ -21,6 +21,11 @@ type presenceFixture struct {
 func newPresence(t *testing.T, idle *testkit.FakeIdle) *presenceFixture {
 	t.Helper()
 	store := testkit.NewMemOptionsStore()
+	quietOn, err := domain.DefaultOptions().With(domain.OptionQuietEnabled, "true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Set(quietOn) // quiet mode is off by default; these tests exercise it on
 	opts := app.NewOptions(store.Stored(), store, nil, nil)
 	clock := testkit.NewFakeClock(t0)
 	return &presenceFixture{idle: idle, clock: clock, opts: opts, p: app.NewPresence(idle, opts, clock, nil)}

@@ -272,6 +272,11 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 		slog.Int64("quiet_idle_min", int64(options.QuietIdle()/time.Minute)), slog.String("quiet_posts", string(options.QuietPosts())), slog.String("icons",
 			options.StatusIcons().Working+options.StatusIcons().Idle+options.StatusIcons().Blocked+
 				options.StatusIcons().Done+options.StatusIcons().Unknown+options.StatusIcons().Exited))
+	// [FIX] quiet mode defaults to off (changed 2026-09-06) so a fresh install mirrors
+	// every change with sound; say which value is in force and whether it
+	// came from options.json or from the default.
+	log.Info("[FIX] quiet mode default", slog.Bool("quiet", options.QuietEnabled()),
+		slog.Bool("from_options_file", !options.IsDefault(domain.OptionQuietEnabled)), slog.String("path", optionsStore.Path()))
 
 	clock := realClock{}
 	registry := app.NewRegistry(hg, clock, log)

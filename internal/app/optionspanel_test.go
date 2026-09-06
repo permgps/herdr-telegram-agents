@@ -282,7 +282,7 @@ func TestPanelQuietGroup(t *testing.T) {
 	f := newBridgeFixture(t)
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupQuiet)))
 	got := texts(f.tg.Buttons(900))
-	want := "☑ Quiet while at the desk|3 min Away after|☑ Hold topic edits|Silent Screen posts|☑ Re-announce on leaving|↺ Reset to defaults|‹ Back|✖ Close"
+	want := "☐ Quiet while at the desk|3 min Away after|☑ Hold topic edits|Silent Screen posts|☑ Re-announce on leaving|↺ Reset to defaults|‹ Back|✖ Close"
 	if strings.Join(got, "|") != want {
 		t.Fatalf("quiet buttons = %v", got)
 	}
@@ -309,10 +309,10 @@ func TestPanelQuietGroup(t *testing.T) {
 		t.Fatalf("pick held: posts=%q", f.opts.Get().QuietPosts())
 	}
 	pressPanel(f, t, 900, dataToggle(domain.OptionQuietEnabled))
-	if f.opts.Get().QuietEnabled() {
-		t.Error("toggle did not switch quiet off")
+	if !f.opts.Get().QuietEnabled() {
+		t.Error("toggle did not switch quiet on")
 	}
-	if got := texts(f.tg.Buttons(900)); got[0] != "☐ Quiet while at the desk" || got[1] != "1 min Away after" || got[3] != "Held Screen posts" {
+	if got := texts(f.tg.Buttons(900)); got[0] != "☑ Quiet while at the desk" || got[1] != "1 min Away after" || got[3] != "Held Screen posts" {
 		t.Errorf("quiet buttons after edits = %v", got)
 	}
 }

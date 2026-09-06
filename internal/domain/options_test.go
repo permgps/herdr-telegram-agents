@@ -156,7 +156,7 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 		def     string
 		choices string
 	}{
-		{OptionQuietEnabled, KindBool, "true", ""},
+		{OptionQuietEnabled, KindBool, "false", ""},
 		{OptionQuietIdleMinutes, KindChoice, "3", ChoiceSourceMinutes},
 		{OptionQuietTopics, KindBool, "true", ""},
 		{OptionQuietPosts, KindChoice, "silent", ChoiceSourcePosts},
@@ -332,8 +332,11 @@ func TestDeleteAfterAndLabels(t *testing.T) {
 
 func TestQuietOptionsDefaultsAndAccessors(t *testing.T) {
 	o := DefaultOptions()
-	if !o.QuietEnabled() || !o.QuietTopics() || !o.QuietReannounce() {
-		t.Error("quiet switches should default to on")
+	if o.QuietEnabled() {
+		t.Error("quiet mode should default to off so a fresh install mirrors everything with sound")
+	}
+	if !o.QuietTopics() || !o.QuietReannounce() {
+		t.Error("quiet sub-switches should default to on for when quiet mode is turned on")
 	}
 	if got := o.QuietIdle(); got != 3*time.Minute {
 		t.Errorf("QuietIdle default = %v", got)
@@ -341,9 +344,9 @@ func TestQuietOptionsDefaultsAndAccessors(t *testing.T) {
 	if got := o.QuietPosts(); got != PostsSilent {
 		t.Errorf("QuietPosts default = %q", got)
 	}
-	off, _ := o.With(OptionQuietEnabled, "false")
-	if off.QuietEnabled() || !o.QuietEnabled() {
-		t.Error("With did not switch quiet off, or mutated the receiver")
+	on, _ := o.With(OptionQuietEnabled, "true")
+	if !on.QuietEnabled() || o.QuietEnabled() {
+		t.Error("With did not switch quiet on, or mutated the receiver")
 	}
 	for value, want := range map[string]PostsMode{"silent": PostsSilent, "held": PostsHeld, "normal": PostsNormal, "loud": PostsSilent, " held ": PostsHeld} {
 		next, _ := o.With(OptionQuietPosts, value)
