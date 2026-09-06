@@ -59,7 +59,7 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	// Every post of the bridge passes the redactor; the reconciler keeps
 	// the raw gateway because topic names are agent labels.
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
-	out := newOutbound(herdr, tg, topics, registry.Agent, registry.Live, capture, opts, svc.Replies, clock, log)
+	out := newOutbound(herdr, tg, cfg.ChatID, cfg.OperatorIDs, topics, registry.Agent, registry.Live, capture, opts, svc.Replies, clock, log)
 	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, svc.Git, svc.Inbox, cfg.ChatID, cfg.BotUsername, clock, log)
 	b := &Bridge{
 		out:         out,
@@ -120,6 +120,19 @@ func (b *Bridge) SetPresence(p *Presence, opts *Options) {
 	b.out.SetPresence(p.Quiet, opts)
 	b.in.SetPresence(p)
 }
+
+// SetPagerReachable tells the outbound whether the bot may write to at
+// least one operator's private chat; the daemon calls it after its start
+// probe and when the posts.pager option turns on. Safe from any goroutine.
+func (b *Bridge) SetPagerReachable(ok bool) { b.out.SetPagerReachable(ok) }
+
+// PagerReachable reports the flag last set by SetPagerReachable, or
+// cleared by the outbound when every operator's chat refused a message.
+func (b *Bridge) PagerReachable() bool { return b.out.PagerReachable() }
+
+// SetStatusSince wires the dashboard's record of status start times into
+// /status so it shows the same durations.
+func (b *Bridge) SetStatusSince(fn func() map[domain.Key]time.Time) { b.in.SetSince(fn) }
 
 // SetSettle overrides the screen and command settle delays (tests).
 func (b *Bridge) SetSettle(d time.Duration) {

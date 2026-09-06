@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +31,16 @@ type outbound struct {
 	topics *topicView
 	agents agentLookup
 	log    *slog.Logger
+	// chatID and operators address the pager: the group for the message
+	// link and the private chats that receive the ring.
+	chatID    int64
+	operators []int64
+	// pager reads the posts.pager switch; pagerReachable is set by the
+	// daemon after its start probe (and cleared here when every direct
+	// send fails), so a closed private chat never loses the ring: the
+	// topic post rings as it always did.
+	pager          func() bool
+	pagerReachable atomic.Bool
 
 	capture *Capture
 	clock   domain.Clock
@@ -147,7 +158,9 @@ const (
 	reactionDone  = "👌"
 )
 
-func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
+// newOutbound wires the screen poster. chatID and operators feed the
+// pager: the group for the message link and the private chats that ring.
+func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID int64, operators []int64, topics *topicView, agents agentLookup,
 	live func() []domain.Agent, capture *Capture, opts *Options, replies domain.ReplySource, clock domain.Clock, log *slog.Logger) *outbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -157,12 +170,14 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 	reactions := func() bool { return true }
 	minTurn := func() time.Duration { return 0 }
 	blockedDelay := func() time.Duration { return 0 }
+	pager := func() bool { return false }
 	if opts != nil {
 		paused = func() bool { return !opts.SyncEnabled() }
 		doneMode = opts.PostsDone
 		reactions = opts.PostsReactions
 		minTurn = opts.MinTurn
 		blockedDelay = opts.BlockedDelay
+		pager = opts.PagerEnabled
 	}
 	if live == nil {
 		live = func() []domain.Agent { return nil }
@@ -170,6 +185,9 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 	return &outbound{
 		herdr:        herdr,
 		tg:           tg,
+		chatID:       chatID,
+		operators:    append([]int64(nil), operators...),
+		pager:        pager,
 		topics:       topics,
 		agents:       agents,
 		live:         live,
@@ -199,6 +217,25 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *t
 
 // TurnDue delivers keys whose idle timer fired; call EndTurn for each.
 func (o *outbound) TurnDue() <-chan domain.Key { return o.turnDeb.Due() }
+
+// SetPagerReachable records whether the bot may write to at least one
+// operator's private chat; the daemon sets it after its start probe. Safe
+// to call from any goroutine.
+func (o *outbound) SetPagerReachable(ok bool) {
+	o.pagerReachable.Store(ok)
+	o.log.Debug("pager reachable set", slog.Bool("reachable", ok))
+}
+
+// PagerReachable reports the flag set by SetPagerReachable, cleared when
+// every direct send of a question failed.
+func (o *outbound) PagerReachable() bool { return o.pagerReachable.Load() }
+
+// paging reports whether a ringing blocked post goes to the private chat
+// instead: the option is on, the probe succeeded and there is someone to
+// page.
+func (o *outbound) paging() bool {
+	return o.pager() && o.pagerReachable.Load() && len(o.operators) > 0
+}
 
 // PromptSent records that the operator's message was accepted by the agent
 // as a prompt: a turn opens (started right away when the agent is already
@@ -536,6 +573,12 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		out.Buttons = choiceButtons(dialog)
 		o.logChoices(key, dialog)
 	}
+	// With the pager the topic post stays silent and the ring comes from
+	// the bot's private chat, so a muted group still rings exactly once.
+	paged := notify && agent.Status == domain.StatusBlocked && o.paging()
+	if paged {
+		out.Notify = false
+	}
 	id, err := o.tg.Send(ctx, out)
 	if err != nil {
 		return o.sendFailed(key, err)
@@ -545,7 +588,16 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		o.keyboards[key] = keyboard{messageID: id, choices: dialog.Choices, multi: dialog.Multi, textEntry: dialog.TextEntry, textLabel: dialog.TextLabel,
 			cursor: dialog.Cursor, submitRow: dialog.SubmitRow}
 	}
-	if notify && agent.Status == domain.StatusBlocked {
+	switch {
+	case paged:
+		rang, err := o.page(ctx, key, agent, entry.ThreadID, id, text, dialog)
+		if err != nil {
+			return err
+		}
+		if rang {
+			o.announced[key] = true
+		}
+	case notify && agent.Status == domain.StatusBlocked:
 		o.announced[key] = true
 	}
 	if mode != domain.DoneScreen {
@@ -557,8 +609,79 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	}
 	o.log.Info("screen posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 		slog.String("status", string(agent.Status)), slog.Int("lines", strings.Count(text, "\n")+1), slog.Int("bytes", len(text)),
-		slog.Int("buttons", len(out.Buttons)), slog.Int("message_id", id), slog.Bool("notify", notify), slog.Bool("forced", force))
+		slog.Int("buttons", len(out.Buttons)), slog.Int("message_id", id), slog.Bool("notify", out.Notify), slog.Bool("paged", paged), slog.Bool("forced", force))
 	return nil
+}
+
+// page sends the question to every operator's private chat with a sound:
+// the agent label, the dialog's options or the last pagerLines lines of
+// the screen, and a link to the post in the topic. It reports whether at
+// least one operator was reached; when none was, the pager is switched
+// off for the rest of the run so the next question rings in the topic.
+// A closed private chat (ErrForbidden) is not the group's fault and is
+// never fatal here; only a dead bot token or a poller conflict is.
+func (o *outbound) page(ctx context.Context, key domain.Key, agent domain.Agent, threadID, messageID int, text string, dialog domain.Dialog) (bool, error) {
+	out := domain.Outgoing{Text: pagerText(agent.Label(), text, dialog, messageLink(o.chatID, threadID, messageID)), HTML: true, Notify: true}
+	var reached []int64
+	var last error
+	for _, op := range o.operators {
+		id, err := o.tg.SendDirect(ctx, op, out)
+		switch {
+		case err == nil:
+			reached = append(reached, op)
+			o.log.Debug("pager delivered", slog.String("key", key.String()), slog.Int64("operator", op), slog.Int("direct_id", id))
+		case errors.Is(err, domain.ErrBotUnauthorized), errors.Is(err, domain.ErrPollerConflict):
+			o.log.Error("pager failed with a fatal telegram error", slog.String("key", key.String()), slog.Int64("operator", op), slog.String("err", err.Error()))
+			return len(reached) > 0, err
+		default:
+			last = err
+			o.log.Debug("pager send failed", slog.String("key", key.String()), slog.Int64("operator", op), slog.String("err", err.Error()))
+		}
+	}
+	if len(reached) == 0 {
+		o.pagerReachable.Store(false)
+		o.log.Warn("pager failed, ringing in the topic next time", slog.String("key", key.String()),
+			slog.Int("operators", len(o.operators)), slog.String("err", errString(last)))
+		return false, nil
+	}
+	o.log.Info("pager sent", slog.String("key", key.String()), slog.Any("operators", reached), slog.Int("failed", len(o.operators)-len(reached)),
+		slog.Int("message_id", messageID), slog.Int("thread_id", threadID))
+	return true, nil
+}
+
+// pagerText renders the private-chat message: "❓ <label> is waiting for
+// you", then the numbered options of a dialog or the last pagerLines
+// lines of the screen as a code block, then the link to the topic post.
+// Everything from the screen is HTML-escaped.
+func pagerText(label, screen string, dialog domain.Dialog, link string) string {
+	var b strings.Builder
+	b.WriteString("❓ <b>" + html.EscapeString(label) + "</b> is waiting for you\n")
+	if len(dialog.Choices) > 0 {
+		for _, c := range dialog.Choices {
+			b.WriteString(strconv.Itoa(c.Number) + ". " + html.EscapeString(c.Label) + "\n")
+		}
+	} else if tail := lastLines(screen, pagerLines); tail != "" {
+		b.WriteString("<pre>" + html.EscapeString(tail) + "</pre>\n")
+	}
+	b.WriteString(`<a href="` + link + `">open the topic</a>`)
+	return b.String()
+}
+
+// lastLines returns the last n lines of text, trimmed of blank edges.
+func lastLines(text string, n int) string {
+	lines := screenLines(strings.TrimSpace(text))
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return trimScreen(strings.Join(lines, "\n"))
+}
+
+// errString words a possibly nil error for a log field.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // delayedCapture implements the blocked delay: the first fire keeps the

@@ -93,17 +93,18 @@ func check(t *testing.T, checks []domain.Check, name string) domain.Check {
 func TestDoctorAllGreen(t *testing.T) {
 	f := newDoctor(t)
 	checks := f.doc.Run(context.Background())
-	if got := levels(checks); got != "✓config ✓options ✓telegram ✓group ✓herdr ✓daemon ✓mapping" {
+	if got := levels(checks); got != "✓config ✓options ✓telegram ✓group ✓operator chat ✓herdr ✓daemon ✓mapping" {
 		t.Fatalf("levels = %s", got)
 	}
 	want := map[string]string{
-		"config":   `config.json v1: @agents_bot, chat "Agents" (-1001), 2 operators, log level debug`,
-		"options":  "defaults",
-		"telegram": "@fakebot (id 42)",
-		"group":    `"Agents": forum yes, admin yes, manage topics yes, delete messages yes`,
-		"herdr":    "version fake, protocol 17",
-		"daemon":   "running (pid 4242, up 1h0m0s): version=1.2.3 pid=4242 uptime=1h0m0s agents=2 dropped=0 herdr=ok sync=on cleanup=30d",
-		"mapping":  "0 entries (0 live, 0 exited, 0 muted)",
+		"config":        `config.json v1: @agents_bot, chat "Agents" (-1001), 2 operators, log level debug`,
+		"options":       "defaults",
+		"telegram":      "@fakebot (id 42)",
+		"group":         `"Agents": forum yes, admin yes, manage topics yes, delete messages yes, pin messages yes`,
+		"operator chat": "2 operators reachable, questions can ring from the bot's chat",
+		"herdr":         "version fake, protocol 17",
+		"daemon":        "running (pid 4242, up 1h0m0s): version=1.2.3 pid=4242 uptime=1h0m0s agents=2 dropped=0 herdr=ok sync=on cleanup=30d",
+		"mapping":       "0 entries (0 live, 0 exited, 0 muted)",
 	}
 	for name, detail := range want {
 		if got := check(t, checks, name).Detail; got != detail {
@@ -112,7 +113,7 @@ func TestDoctorAllGreen(t *testing.T) {
 	}
 	report := app.RenderChecks("v1.2.3", checks)
 	lines := strings.Split(strings.TrimSpace(report), "\n")
-	if lines[0] != "Telegram Agents doctor v1.2.3" || len(lines) != 9 || lines[8] != "7 ok, 0 warnings, 0 failures" || !strings.HasPrefix(lines[1], "✓ config: ") {
+	if lines[0] != "Telegram Agents doctor v1.2.3" || len(lines) != 10 || lines[9] != "8 ok, 0 warnings, 0 failures" || !strings.HasPrefix(lines[1], "✓ config: ") {
 		t.Fatalf("report:\n%s", report)
 	}
 }
@@ -123,7 +124,7 @@ func TestDoctorFailures(t *testing.T) {
 		f.configs = testkit.NewMemConfigStore()
 		f.doc.Config = f.configs
 		checks := f.doc.Run(context.Background())
-		if got := levels(checks); got != "✗config ✓options ✗telegram ✗group ✓herdr ✓daemon ✓mapping" {
+		if got := levels(checks); got != "✗config ✓options ✗telegram ✗group ✗operator chat ✓herdr ✓daemon ✓mapping" {
 			t.Fatalf("levels = %s", got)
 		}
 		if c := check(t, checks, "config"); !strings.Contains(c.Detail, "run the setup action") {
@@ -258,4 +259,36 @@ func TestSendTest(t *testing.T) {
 	if _, err := app.SendTest(context.Background(), insp, "", now, nil); err == nil || err.Error() != "send-test failed: telegram api 400: chat not found" {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+func TestDoctorPinRightAndOperatorChat(t *testing.T) {
+	t.Run("pin right missing", func(t *testing.T) {
+		f := newDoctor(t)
+		f.insp.SetGroup(domain.GroupInfo{Title: "Agents", Rights: domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}}, nil)
+		c := check(t, f.doc.Run(context.Background()), "group")
+		if c.Level != domain.CheckWarn || !strings.Contains(c.Detail, "pin messages no") || !strings.Contains(c.Detail, "stays unpinned without Pin messages") {
+			t.Fatalf("group check = %+v", c)
+		}
+	})
+	t.Run("operator never pressed start", func(t *testing.T) {
+		f := newDoctor(t)
+		f.insp.SetProbe(2, domain.ErrForbidden)
+		checks := f.doc.Run(context.Background())
+		c := check(t, checks, "operator chat")
+		if c.Level != domain.CheckWarn || c.Detail != "the bot cannot write to operator 2: open the bot and press Start, questions ring in the topics meanwhile" {
+			t.Fatalf("operator chat check = %+v", c)
+		}
+		calls := f.insp.Calls()
+		if len(calls) != 4 || calls[2] != "probe:1" || calls[3] != "probe:2" {
+			t.Fatalf("inspector calls = %v", calls)
+		}
+	})
+	t.Run("probe error", func(t *testing.T) {
+		f := newDoctor(t)
+		f.insp.SetProbe(1, errors.New("boom"))
+		c := check(t, f.doc.Run(context.Background()), "operator chat")
+		if c.Level != domain.CheckWarn || c.Detail != "probe failed for 1: boom" {
+			t.Fatalf("operator chat check = %+v", c)
+		}
+	})
 }

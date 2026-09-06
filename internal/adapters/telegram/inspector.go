@@ -76,6 +76,19 @@ func (i *Inspector) Group(ctx context.Context) (domain.GroupInfo, error) {
 	return info, nil
 }
 
+// ProbeDirect sends a "typing" chat action to the user's private chat:
+// invisible when it succeeds, ErrForbidden when the user never pressed
+// Start or blocked the bot.
+func (i *Inspector) ProbeDirect(ctx context.Context, userID int64) error {
+	_, err := i.api.SendChatAction(ctx, &bot.SendChatActionParams{ChatID: userID, Action: models.ChatActionTyping})
+	if err != nil {
+		i.log.Info("inspector sendChatAction failed", slog.Int64("user_id", userID), slog.String("err", redact(err, i.token)))
+		return fmt.Errorf("sendChatAction: %w", translate(err))
+	}
+	i.log.Debug("inspector operator chat reachable", slog.Int64("user_id", userID))
+	return nil
+}
+
 // SendTest posts text into General with a notification and returns the
 // message id.
 func (i *Inspector) SendTest(ctx context.Context, text string) (int, error) {

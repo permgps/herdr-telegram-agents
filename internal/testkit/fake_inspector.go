@@ -2,13 +2,15 @@ package testkit
 
 import (
 	"context"
+	"strconv"
 	"sync"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
 // FakeInspector is an in-memory domain.TelegramInspector with scripted
-// answers. Every call is recorded ("identity", "group", "send-test:<text>")
+// answers. Every call is recorded ("identity", "group", "send-test:<text>",
+// "probe:<user>")
 // and a call whose Block flag is set waits for the context to end, which
 // lets tests exercise timeouts.
 type FakeInspector struct {
@@ -19,6 +21,7 @@ type FakeInspector struct {
 	groupErr error
 	sendErr  error
 	sendID   int
+	probeErr map[int64]error
 	block    map[string]bool
 	calls    []string
 }
@@ -31,10 +34,18 @@ func NewFakeInspector() *FakeInspector {
 	return &FakeInspector{
 		identity: domain.BotIdentity{ID: 42, Username: "fakebot"},
 		group: domain.GroupInfo{Title: "Agents", Rights: domain.Rights{
-			IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}},
-		sendID: 500,
-		block:  map[string]bool{},
+			IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true}},
+		sendID:   500,
+		probeErr: map[int64]error{},
+		block:    map[string]bool{},
 	}
+}
+
+// SetProbe scripts ProbeDirect for one user; nil err means reachable.
+func (f *FakeInspector) SetProbe(userID int64, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probeErr[userID] = err
 }
 
 // SetIdentity scripts Identity.
@@ -101,6 +112,15 @@ func (f *FakeInspector) Group(ctx context.Context) (domain.GroupInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.group, f.groupErr
+}
+
+func (f *FakeInspector) ProbeDirect(ctx context.Context, userID int64) error {
+	if err := f.enter(ctx, "probe", "probe:"+strconv.FormatInt(userID, 10)); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.probeErr[userID]
 }
 
 func (f *FakeInspector) SendTest(ctx context.Context, text string) (int, error) {

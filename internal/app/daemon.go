@@ -38,6 +38,7 @@ type Daemon struct {
 	reconciler *Reconciler
 	bridge     *Bridge
 	capture    *Capture
+	dashboard  *Dashboard
 	configs    domain.ConfigStore
 	opts       *Options
 	presence   *Presence
@@ -51,6 +52,9 @@ type Daemon struct {
 
 	resync chan struct{}
 	sweep  chan struct{}
+	// probe asks the loop to check the operators' private chats again
+	// (the posts.pager option turned on).
+	probe chan struct{}
 	// rights is the bot's last known standing, read by the sweep.
 	rights domain.Rights
 	// inbox is swept with the topics; nil means no inbox in this build.
@@ -79,6 +83,8 @@ type Stats struct {
 	DeleteAfterDays int
 	// Quiet is the presence word: off, on, away or away-manual.
 	Quiet string
+	// Pager is on, off or unreachable (on, but no operator chat answers).
+	Pager string
 }
 
 // Stats snapshots the running daemon. It is safe to call from another
@@ -94,6 +100,7 @@ func (d *Daemon) Stats() Stats {
 		SyncOff:         !d.opts.SyncEnabled(),
 		DeleteAfterDays: days(d.opts.DeleteAfter()),
 		Quiet:           d.presence.State().Word(),
+		Pager:           d.pagerWord(),
 	}
 	if h.LastErr != nil {
 		s.HerdrFailingSince = h.LastOK
@@ -105,8 +112,20 @@ func (d *Daemon) Stats() Stats {
 	return s
 }
 
+// pagerWord is the status word of the pager: off, on, or unreachable when
+// the option is on but no operator's private chat takes messages.
+func (d *Daemon) pagerWord() string {
+	switch {
+	case !d.opts.PagerEnabled():
+		return "off"
+	case !d.bridge.PagerReachable():
+		return "unreachable"
+	}
+	return "on"
+}
+
 // StatsLine renders Stats as the one-line status reply:
-// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off cleanup=<n>d|off quiet=off|on|away|away-manual.
+// version=<v> pid=<n> uptime=<s> agents=<n> dropped=<n> herdr=ok|failing since <s> sync=on|off cleanup=<n>d|off quiet=off|on|away|away-manual pager=off|on|unreachable.
 func StatsLine(s Stats, now time.Time) string {
 	version := s.Version
 	if version == "" {
@@ -132,8 +151,12 @@ func StatsLine(s Stats, now time.Time) string {
 	if quiet == "" {
 		quiet = "off"
 	}
-	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s quiet=%s",
-		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync, cleanup, quiet)
+	pager := s.Pager
+	if pager == "" {
+		pager = "off"
+	}
+	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s quiet=%s pager=%s",
+		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync, cleanup, quiet, pager)
 }
 
 // reportDrops warns about bridge jobs lost since the last report, at most
@@ -176,17 +199,24 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	// General notices go through the redactor too; rights, icons and
 	// events pass through the wrapper untouched.
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
+	// The dashboard shares the registry, the reconciler's topic view and
+	// the presence tracker with /status; the bridge reads its status
+	// start times for the durations in /status.
+	dashboard := NewDashboard(tg, reconciler, opts, reconciler.topics(), registry.Live, presence, cfg.ChatID, clock, log)
+	bridge.SetStatusSince(dashboard.Since)
 	d := &Daemon{
-		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge, capture: capture,
+		cfg: cfg, herdr: herdr, tg: tg, registry: registry, reconciler: reconciler, bridge: bridge, capture: capture, dashboard: dashboard,
 		configs: configs, opts: opts, presence: presence, clock: clock, log: log,
 		SocketGrace: socketGrace, HealthInterval: healthInterval,
 		resync: make(chan struct{}, 1),
 		sweep:  make(chan struct{}, 1),
+		probe:  make(chan struct{}, 1),
 	}
 	// Option hooks run on the bridge goroutine (the panel calls Set) and
 	// only signal: a resync request for the loop, an icon table for the
-	// gateway, which has its own lock.
+	// gateway, which has its own lock, a dashboard refresh for the loop.
 	opts.OnChange(domain.OptionSyncEnabled, func(_ string, cur domain.Options) {
+		d.dashboard.Schedule("option")
 		if cur.SyncEnabled() {
 			d.log.Info("sync resumed, resync requested")
 			d.Resync()
@@ -194,11 +224,22 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		}
 		d.log.Info("sync paused by operator")
 	})
+	opts.OnChange(domain.OptionSyncDashboard, func(_ string, cur domain.Options) {
+		d.log.Info("dashboard set", slog.Bool("enabled", cur.DashboardEnabled()))
+		d.dashboard.Schedule("option")
+	})
+	opts.OnChange(domain.OptionPostsPager, func(_ string, cur domain.Options) {
+		d.log.Info("pager set", slog.Bool("enabled", cur.PagerEnabled()))
+		if cur.PagerEnabled() {
+			d.ProbePager()
+		}
+	})
 	opts.OnChange("icons.", func(key string, cur domain.Options) {
 		icons := cur.StatusIcons()
 		d.tg.SetStatusIcons(icons)
 		d.log.Info("status icons applied", slog.String("key", key), slog.String("working", icons.Working), slog.String("idle", icons.Idle),
 			slog.String("blocked", icons.Blocked), slog.String("done", icons.Done), slog.String("unknown", icons.Unknown), slog.String("exited", icons.Exited))
+		d.dashboard.Schedule("option")
 		if cur.SyncEnabled() {
 			d.Resync()
 		}
@@ -222,8 +263,53 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	opts.OnChange("quiet.", func(key string, cur domain.Options) {
 		d.log.Info("quiet option changed", slog.String("key", key), slog.String("value", cur.String(key)))
 		d.presence.Recompute()
+		d.dashboard.Schedule("option")
 	})
 	return d
+}
+
+// ProbePager asks the loop to check the operators' private chats again.
+// It never blocks.
+func (d *Daemon) ProbePager() {
+	select {
+	case d.probe <- struct{}{}:
+	default:
+	}
+}
+
+// pagerNotice is posted to General when no operator's private chat takes
+// messages while posts.pager is on.
+const pagerNotice = "⚠️ questions will ring in the topics: the bot cannot write to your private chat (open the bot and press Start)"
+
+// probePager checks whether the bot may write to each operator's private
+// chat and tells the bridge; with the pager on and nobody reachable the
+// daemon says so once in the log and in General, and questions ring in
+// the topics as before. A closed chat is never fatal; a dead token is.
+func (d *Daemon) probePager(ctx context.Context, reason string) error {
+	if !d.opts.PagerEnabled() {
+		d.log.Debug("pager probe skipped", slog.String("reason", "off"))
+		return nil
+	}
+	var reachable []int64
+	for _, op := range d.cfg.OperatorIDs {
+		err := d.tg.ProbeDirect(ctx, op)
+		switch {
+		case err == nil:
+			reachable = append(reachable, op)
+		case errors.Is(err, domain.ErrBotUnauthorized), errors.Is(err, domain.ErrPollerConflict):
+			return d.fatal(ctx, err)
+		default:
+			d.log.Info("operator chat closed", slog.Int64("operator", op), slog.String("err", err.Error()))
+		}
+	}
+	ok := len(reachable) > 0
+	d.bridge.SetPagerReachable(ok)
+	d.log.Info("pager reachable", slog.Int("operators", len(d.cfg.OperatorIDs)), slog.Any("reachable", reachable), slog.String("reason", reason))
+	if !ok {
+		d.log.Warn("pager unreachable: open the bot and press Start", slog.Int("operators", len(d.cfg.OperatorIDs)))
+		d.general(ctx, pagerNotice)
+	}
+	return nil
 }
 
 // SetInbox wires the attachment inbox so the daily sweep also deletes old
@@ -302,6 +388,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.checkRights(ctx); err != nil {
 		return err
 	}
+	if err := d.probePager(ctx, "start"); err != nil {
+		return err
+	}
 	initial, err := d.registry.Snapshot(ctx)
 	if err != nil {
 		d.log.Warn("initial agent snapshot failed, will retry", slog.String("err", err.Error()))
@@ -311,6 +400,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	// The dashboard message survives restarts in mapping.json: pin it
+	// again so it is the visible pin, then refresh it after the settle.
+	d.dashboard.Repin(ctx)
+	d.dashboard.Schedule("start")
 
 	loopCtx, cancel := context.WithCancel(ctx)
 	events := make(chan AgentEvent, 256)
@@ -355,12 +448,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	health := d.clock.After(d.HealthInterval)
 	sweep := d.clock.After(sweepInterval)
 	presenceTick := d.clock.After(presenceInterval)
+	dashTick := d.clock.After(dashboardTick)
 	for {
 		select {
 		case <-presenceTick:
 			presenceTick = d.clock.After(presenceInterval)
 			d.presence.Poll(ctx)
 		case quiet := <-d.presence.Changes():
+			d.dashboard.Schedule("presence")
 			if quiet {
 				d.log.Debug("quiet began, topic writes wait for the catch-up")
 				continue
@@ -385,10 +480,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 				}
 			}
 			d.capture.Observe(ev)
+			d.dashboard.Observe(ev)
 			d.bridge.Submit(ev)
 		case err := <-d.bridge.Fatal():
 			d.shutdown()
 			return d.fatal(ctx, err)
+		case <-d.dashboard.Due():
+			if err := d.handleErr(ctx, d.dashboard.Fire(ctx)); err != nil {
+				return err
+			}
+		case <-dashTick:
+			dashTick = d.clock.After(dashboardTick)
+			if err := d.handleErr(ctx, d.dashboard.Tick(ctx)); err != nil {
+				return err
+			}
+		case <-d.probe:
+			if err := d.probePager(ctx, "option"); err != nil {
+				return err
+			}
 		case key := <-d.reconciler.Due():
 			if err := d.reconciler.Fire(ctx, key); err != nil {
 				if err := d.handleErr(ctx, err); err != nil {
@@ -443,7 +552,8 @@ func (d *Daemon) checkRights(ctx context.Context) error {
 	}
 	d.rights = rights
 	d.log.Info("telegram rights", slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin),
-		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages))
+		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages),
+		slog.Bool("pin_messages", rights.CanPinMessages))
 	switch {
 	case !rights.IsForum:
 		d.reconciler.SetReadOnly(true)
@@ -597,6 +707,7 @@ func (d *Daemon) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 	defer cancel()
 	d.general(ctx, fmt.Sprintf("⏹ %s stopping", d.title()))
+	d.dashboard.Stop(ctx)
 	if err := d.reconciler.Flush(ctx); err != nil {
 		d.log.Warn("flush on shutdown failed", slog.String("err", err.Error()))
 	}

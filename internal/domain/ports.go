@@ -298,6 +298,10 @@ type TelegramInspector interface {
 	// SendTest posts text into General with a notification and returns
 	// the message id.
 	SendTest(ctx context.Context, text string) (int, error)
+	// ProbeDirect checks whether the bot may write to the user's private
+	// chat without sending anything visible; a closed chat is
+	// ErrForbidden.
+	ProbeDirect(ctx context.Context, userID int64) error
 }
 
 // HerdrInfo is what the Herdr socket answers to a ping.

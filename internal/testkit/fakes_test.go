@@ -109,6 +109,13 @@ func TestMemMappingStoreCopies(t *testing.T) {
 	if _, ok := loaded.TopicFor(a.Key); !ok || s.SaveCount() != 1 {
 		t.Fatalf("saved copy shared state with the original (saves=%d)", s.SaveCount())
 	}
+	m.Dashboard = 77
+	if err := s.Save(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, _ := s.Load(context.Background()); loaded.Dashboard != 77 || s.Saved().Dashboard != 77 {
+		t.Fatalf("dashboard id not copied: %d / %d", loaded.Dashboard, s.Saved().Dashboard)
+	}
 }
 
 func TestFakeProcessLifecycle(t *testing.T) {

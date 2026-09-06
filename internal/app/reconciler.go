@@ -95,6 +95,19 @@ func (r *Reconciler) Due() <-chan domain.Key { return r.deb.Due() }
 // Mapping exposes the aggregate for status output and tests.
 func (r *Reconciler) Mapping() *domain.Mapping { return r.mapping }
 
+// DashboardID is the message id of the General dashboard, 0 when none.
+func (r *Reconciler) DashboardID() int { return r.mapping.Dashboard }
+
+// SetDashboardID records the dashboard message (0 forgets it) and saves.
+func (r *Reconciler) SetDashboardID(ctx context.Context, id int) {
+	if r.mapping.Dashboard == id {
+		return
+	}
+	r.log.Debug("dashboard id set", slog.Int("message_id", id), slog.Int("previous", r.mapping.Dashboard))
+	r.mapping.Dashboard = id
+	r.save(ctx)
+}
+
 // ReadOnly reports whether writes are paused because the bot lost the
 // "Manage topics" right (the operator's sync switch is a separate reason,
 // see blocked).

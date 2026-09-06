@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -103,7 +101,10 @@ type inbound struct {
 	opts   *Options
 	// presence answers /away, /here and the /status header; nil until
 	// SetPresence, when the commands say quiet mode is unavailable.
-	presence    *Presence
+	presence *Presence
+	// since supplies when each agent entered its status for the /status
+	// durations (the dashboard's record); nil shows no durations.
+	since       func() map[domain.Key]time.Time
 	panel       *panel
 	chatID      int64
 	botUsername string
@@ -678,29 +679,19 @@ func (i *inbound) here(by int64) string {
 // presenceHeader is the /status line about quiet mode, empty when there is
 // nothing to say (quiet off, or away by the automatic verdict).
 func (i *inbound) presenceHeader() string {
-	if i.presence == nil || !i.opts.QuietEnabled() {
-		return ""
-	}
-	st := i.presence.State()
-	switch {
-	case st.ManualAway && st.Until.IsZero():
-		return presenceHeaderOpen
-	case st.ManualAway:
-		return fmt.Sprintf(presenceHeaderManual, i.clockTime(st.Until))
-	case st.Quiet:
-		return presenceHeaderQuiet
-	}
-	return ""
+	return presenceHeaderText(i.presence, i.opts.QuietEnabled(), i.clock)
 }
 
 // clockTime renders an instant as wall-clock time in the daemon clock's
 // location (local time on a real clock).
-func (i *inbound) clockTime(at time.Time) string {
-	return at.In(i.clock.Now().Location()).Format(presenceTimeLayout)
-}
+func (i *inbound) clockTime(at time.Time) string { return wallClock(i.clock, at) }
 
 // SetPresence wires the presence tracker for /away, /here and /status.
 func (i *inbound) SetPresence(p *Presence) { i.presence = p }
+
+// SetSince wires the source of per-agent status start times so /status
+// shows how long each agent has been in its status; nil shows none.
+func (i *inbound) SetSince(fn func() map[domain.Key]time.Time) { i.since = fn }
 
 // PressPanel serves a button of the options panel (callback data with the
 // panel prefix); the bridge routes such presses here.
@@ -709,40 +700,22 @@ func (i *inbound) PressPanel(ctx context.Context, ev domain.ButtonPressed) error
 }
 
 // statusSummary lists the live agents sorted by label, each linked to its
-// topic, as HTML.
+// topic and with its status duration when known, as HTML: the same text
+// as the dashboard without its footer.
 func (i *inbound) statusSummary() string {
-	agents := i.live()
-	live := agents[:0]
-	for _, a := range agents {
-		if a.Status.Live() {
-			live = append(live, a)
-		}
+	v := statusView{
+		agents:   i.live(),
+		topics:   i.topics,
+		icons:    i.opts.StatusIcons(),
+		syncOff:  !i.opts.SyncEnabled(),
+		presence: i.presenceHeader(),
+		chatID:   i.chatID,
+		now:      i.clock.Now(),
 	}
-	header := ""
-	if !i.opts.SyncEnabled() {
-		header = "🔇 Herdr → Telegram sync is off (/options)\n"
+	if i.since != nil {
+		v.since = i.since()
 	}
-	header += i.presenceHeader()
-	if len(live) == 0 {
-		return header + "no agents"
-	}
-	sort.Slice(live, func(a, b int) bool {
-		if live[a].Label() != live[b].Label() {
-			return live[a].Label() < live[b].Label()
-		}
-		return live[a].Key.String() < live[b].Key.String()
-	})
-	icons := i.opts.StatusIcons()
-	lines := make([]string, 0, len(live)+1)
-	lines = append(lines, header+plural(len(live), "agent"))
-	for _, a := range live {
-		label := html.EscapeString(a.Label())
-		if entry, ok := i.topics.Entry(a.Key); ok && entry.Status.Live() {
-			label = fmt.Sprintf(`<a href="%s">%s</a>`, topicLink(i.chatID, entry.ThreadID), label)
-		}
-		lines = append(lines, icons.For(a.Status)+" "+label)
-	}
-	return strings.Join(lines, "\n")
+	return v.render()
 }
 
 // Replies of the inbox.

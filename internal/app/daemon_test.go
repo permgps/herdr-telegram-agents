@@ -33,6 +33,14 @@ type daemonFixture struct {
 
 func newDaemon(t *testing.T) *daemonFixture {
 	t.Helper()
+	return newDaemonSeeded(t)
+}
+
+// newDaemonSeeded builds the fixture with option key/value pairs applied
+// before the daemon exists, so no option hook runs (a hook would queue a
+// pager probe or a dashboard refresh the exact call lists do not expect).
+func newDaemonSeeded(t *testing.T, kv ...string) *daemonFixture {
+	t.Helper()
 	f := &daemonFixture{
 		herdr:   testkit.NewFakeHerdr(nil),
 		tg:      testkit.NewFakeTelegram(nil),
@@ -44,6 +52,17 @@ func newDaemon(t *testing.T) *daemonFixture {
 	f.configs.Set(cfg)
 	registry := app.NewRegistry(f.herdr, f.clock, nil)
 	f.options = testkit.NewMemOptionsStore()
+	// The dashboard and the pager add General and private-chat calls the
+	// older tests do not expect; their own tests switch them on.
+	seed, _ := domain.DefaultOptions().With(domain.OptionSyncDashboard, "false")
+	seed, _ = seed.With(domain.OptionPostsPager, "false")
+	for i := 0; i+1 < len(kv); i += 2 {
+		var err error
+		if seed, err = seed.With(kv[i], kv[i+1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.options.Set(seed)
 	f.opts = app.NewOptions(f.options.Stored(), f.options, func(string) []string { return f.tg.IconPack() }, nil)
 	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.opts, f.clock, nil)
 	f.rec = reconciler
@@ -130,7 +149,7 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 	// A status event flows through registry -> reconciler -> debounce -> edit.
 	idle := agent("p1", "", "", domain.StatusIdle)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
-	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 6 }) // registry tick, health, sweep, capture, debounce
+	waitFor(t, "debounce timer", func() bool { return f.clock.Pending() >= 7 }) // registry tick, health, sweep, capture, presence, dashboard tick, debounce
 	f.clock.Advance(3 * time.Second)
 	f.waitCalls(t, 4)
 	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1, "edit:101:status=idle")
@@ -322,8 +341,8 @@ func TestDaemonBlockedScreenIsPosted(t *testing.T) {
 
 	blocked := agent("p1", "", "", domain.StatusBlocked)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
-	// registry tick, health, capture, edit debounce, screen settle
-	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 7 })
+	// registry tick, health, sweep, capture, presence, dashboard tick, edit debounce, screen settle
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 8 })
 	f.clock.Advance(1500 * time.Millisecond)
 	f.waitCalls(t, 4)
 	sent := f.tg.Sent()
@@ -478,7 +497,7 @@ func TestDaemonStatsWhileRunning(t *testing.T) {
 	if st.Agents != 1 || st.Dropped != 0 || !st.HerdrOK || st.Version != "1.2.3" || !st.Since.Equal(t0) {
 		t.Fatalf("Stats = %+v", st)
 	}
-	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on cleanup=30d quiet=off" {
+	if line := app.StatsLine(st, f.clock.Now()); line != "version=1.2.3 pid=0 uptime=1m30s agents=1 dropped=0 herdr=ok sync=on cleanup=30d quiet=off pager=off" {
 		t.Fatalf("StatsLine = %q", line)
 	}
 	if err := f.stop(t); err != nil {
@@ -803,7 +822,7 @@ func TestDaemonMirrorsAtDeskByDefault(t *testing.T) {
 	f.start(t)
 	f.waitCalls(t, 3)
 	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1)
-	if st := f.daemon.Stats(); st.Quiet != "off" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "quiet=off") {
+	if st := f.daemon.Stats(); st.Quiet != "off" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "quiet=off pager=off") {
 		t.Fatalf("Stats = %+v", st)
 	}
 	if err := f.stop(t); err != nil {
@@ -821,7 +840,7 @@ func TestDaemonQuietDefersUntilOperatorLeaves(t *testing.T) {
 	f.waitCalls(t, 2)
 	// No topic is created while quiet; the started notice still posts.
 	assertCalls(t, f.tg, "rights", started1)
-	if st := f.daemon.Stats(); st.Quiet != "on" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "quiet=on") {
+	if st := f.daemon.Stats(); st.Quiet != "on" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "quiet=on pager=off") {
 		t.Fatalf("Stats = %+v", st)
 	}
 
@@ -829,7 +848,7 @@ func TestDaemonQuietDefersUntilOperatorLeaves(t *testing.T) {
 	blocked := agent("p1", "", "", domain.StatusBlocked)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusBlocked)})
-	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 6 }) // registry tick, health, sweep, capture, presence, settle (no topic, so no edit debounce)
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 7 }) // registry tick, health, sweep, capture, presence, dashboard tick, settle (no topic, so no edit debounce)
 	f.clock.Advance(1500 * time.Millisecond)
 	time.Sleep(20 * time.Millisecond)
 	assertCalls(t, f.tg, "rights", started1)
@@ -936,7 +955,7 @@ func TestDaemonAwayCommandAndQuietOption(t *testing.T) {
 	idle := agent("p1", "", "", domain.StatusIdle)
 	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
-	f.tick(t, "edit debounce", func() bool { return f.clock.Pending() >= 6 })
+	f.tick(t, "edit debounce", func() bool { return f.clock.Pending() >= 7 })
 	time.Sleep(20 * time.Millisecond)
 	if f.hasCall("edit:") {
 		t.Fatalf("edited while quiet: %v", f.tg.Calls())
@@ -948,6 +967,147 @@ func TestDaemonAwayCommandAndQuietOption(t *testing.T) {
 	if st := f.daemon.Stats(); st.Quiet != "off" {
 		t.Fatalf("Stats with quiet disabled = %+v", st)
 	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *daemonFixture) hasCallPrefix(prefix string) bool {
+	for _, c := range f.tg.Calls() {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDaemonDashboardLifecycle(t *testing.T) {
+	f := newDaemonSeeded(t, domain.OptionSyncDashboard, "true")
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.start(t)
+	f.waitCalls(t, 3)
+	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1)
+	// The dashboard follows after its settle: created silently in General,
+	// then pinned.
+	waitFor(t, "dashboard settle", func() bool { return f.clock.Pending() >= 7 })
+	f.clock.Advance(2 * time.Second)
+	f.waitCalls(t, 5)
+	calls := f.tg.Calls()
+	if calls[3] != "send:0:1 agent\n⚡ <a href=\"https://t.me/c/1/101\">reviewer</a>\n\n<i>updated 12:00</i>" || calls[4] != "pin:1001" {
+		t.Fatalf("dashboard calls = %q", calls[3:])
+	}
+	if f.store.Saved().Dashboard != 1001 {
+		t.Fatalf("dashboard id not saved: %+v", f.store.Saved())
+	}
+	// A status change edits the message in place after the settle.
+	idle := agent("p1", "", "", domain.StatusIdle)
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &idle})
+	waitFor(t, "edit and dashboard timers", func() bool { return f.clock.Pending() >= 8 })
+	f.clock.Advance(3 * time.Second)
+	f.waitCalls(t, 7)
+	waitFor(t, "dashboard edit", func() bool { return f.hasCallPrefix("edittext:1001:1 agent\n✅ <a") })
+	// /status shows the same duration once a minute has passed.
+	f.clock.Advance(90 * time.Second)
+	f.tg.Push(domain.GeneralCommand{MessageID: 9, FromID: 1, Text: "/status"})
+	waitFor(t, "status reply", func() bool {
+		for _, s := range f.tg.Sent() {
+			if strings.HasPrefix(s.Text, "1 agent\n✅") {
+				return strings.HasSuffix(s.Text, "reviewer</a> · 1 min")
+			}
+		}
+		return false
+	})
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	calls = f.tg.Calls()
+	last := calls[len(calls)-1]
+	if calls[len(calls)-2] != stopping || !strings.HasPrefix(last, "edittext:1001:") || !strings.HasSuffix(last, "<i>⏹ stopped 12:01</i>:buttons=0") {
+		t.Fatalf("shutdown calls = %q", calls[len(calls)-2:])
+	}
+}
+
+func TestDaemonDashboardRepinsStoredMessage(t *testing.T) {
+	f := newDaemonSeeded(t, domain.OptionSyncDashboard, "true")
+	// A message from an earlier run is known to Telegram and to the mapping.
+	id, err := f.tg.Send(context.Background(), domain.Outgoing{ThreadID: 0, Text: "old board"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.rec.Mapping().Dashboard = id
+	f.tg.Reset()
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.start(t)
+	f.waitCalls(t, 4)
+	assertCalls(t, f.tg, "rights", "create:reviewer:working", "pin:1000", started1)
+	waitFor(t, "dashboard settle", func() bool { return f.clock.Pending() >= 7 })
+	f.clock.Advance(2 * time.Second)
+	f.waitCalls(t, 5)
+	if calls := f.tg.Calls(); !strings.HasPrefix(calls[4], "edittext:1000:1 agent") || f.hasCallPrefix("send:0:1 agent") {
+		t.Fatalf("calls after restart = %q", calls)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonPagerProbeAndFallback(t *testing.T) {
+	f := newDaemonSeeded(t, domain.OptionPostsPager, "true")
+	f.tg.FailNext("probe", domain.ErrForbidden)
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
+	f.start(t)
+	f.waitCalls(t, 4)
+	assertCalls(t, f.tg, "rights", "probe:1", "send:0:⚠️ questions will ring in the topics: the bot cannot write to your private chat (open the bot and press Start)", "create:reviewer:working", started1)
+	if st := f.daemon.Stats(); st.Pager != "unreachable" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "pager=unreachable") {
+		t.Fatalf("Stats = %+v", st)
+	}
+	// The question rings in the topic, nothing goes to the private chat.
+	blocked := agent("p1", "", "", domain.StatusBlocked)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 8 })
+	f.clock.Advance(1500 * time.Millisecond)
+	waitFor(t, "topic post", func() bool { return len(f.tg.Sent()) == 3 })
+	if sent := f.tg.Sent(); !sent[2].Notify || len(f.tg.Direct()) != 0 {
+		t.Fatalf("Sent = %+v, Direct = %+v", sent, f.tg.Direct())
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonPagerRingsInPrivateChat(t *testing.T) {
+	f := newDaemonSeeded(t, domain.OptionPostsPager, "true")
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
+	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
+	f.start(t)
+	f.waitCalls(t, 4)
+	assertCalls(t, f.tg, "rights", "probe:1", "create:reviewer:working", started1)
+	if st := f.daemon.Stats(); st.Pager != "on" {
+		t.Fatalf("Stats = %+v", st)
+	}
+	blocked := agent("p1", "", "", domain.StatusBlocked)
+	f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: "p1", Agent: &blocked})
+	waitFor(t, "settle timer", func() bool { return f.clock.Pending() >= 8 })
+	f.clock.Advance(1500 * time.Millisecond)
+	waitFor(t, "pager", func() bool { return len(f.tg.Direct()) == 1 })
+	sent := f.tg.Sent()
+	if len(sent) != 2 || sent[1].Notify || sent[1].ThreadID != 101 {
+		t.Fatalf("topic post = %+v", sent)
+	}
+	direct := f.tg.Direct()
+	if !direct[0].Notify || !strings.Contains(direct[0].Text, "<b>reviewer</b> is waiting for you") || !strings.Contains(direct[0].Text, "https://t.me/c/1/101/1001") {
+		t.Fatalf("Direct = %+v", direct)
+	}
+	// Switching the pager off and on again probes once more.
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "second probe", func() bool { return countCalls(f.tg.Calls(), "probe:") == 2 })
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)
 	}

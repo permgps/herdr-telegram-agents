@@ -90,6 +90,15 @@ const (
 	// the number and the start of the text.
 	choiceLabelRunes = 60
 
+	// dashboardSettle coalesces dashboard edits after a burst of agent
+	// events; dashboardTick is how often the daemon refreshes it so the
+	// per-agent durations move even when nothing else happens.
+	dashboardSettle = 2 * time.Second
+	dashboardTick   = 60 * time.Second
+	// pagerLines is how many trailing screen lines the pager message in the
+	// bot's private chat carries when the question is not a numbered
+	// dialog; a dialog lists its options instead.
+	pagerLines = 6
 	// typingTimeout is how long a ✏️ wait stays open for the operator's
 	// text before it expires.
 	typingTimeout = 10 * time.Minute

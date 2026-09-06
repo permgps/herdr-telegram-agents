@@ -60,14 +60,17 @@ func (d *Doctor) Run(ctx context.Context) []domain.Check {
 	if cfgCheck.Level == domain.CheckFail {
 		add(domain.Check{Name: "telegram", Level: domain.CheckFail, Detail: "skipped: no config"})
 		add(domain.Check{Name: "group", Level: domain.CheckFail, Detail: "skipped: no config"})
+		add(domain.Check{Name: "operator chat", Level: domain.CheckFail, Detail: "skipped: no config"})
 	} else {
 		insp, err := d.Inspector(cfg)
 		if err != nil {
 			add(domain.Check{Name: "telegram", Level: domain.CheckFail, Detail: "client: " + failureReason(err)})
 			add(domain.Check{Name: "group", Level: domain.CheckFail, Detail: "skipped: no client"})
+			add(domain.Check{Name: "operator chat", Level: domain.CheckFail, Detail: "skipped: no client"})
 		} else {
 			add(d.checkTelegram(ctx, insp))
 			add(d.checkGroup(ctx, insp))
+			add(d.checkOperatorChat(ctx, insp, cfg))
 		}
 	}
 	add(d.checkHerdr(ctx))
@@ -162,8 +165,8 @@ func (d *Doctor) checkGroup(ctx context.Context, insp domain.TelegramInspector) 
 		}
 		return "no"
 	}
-	detail := fmt.Sprintf("%q: forum %s, admin %s, manage topics %s, delete messages %s",
-		g.Title, yes(r.IsForum), yes(r.IsAdmin), yes(r.CanManageTopics), yes(r.CanDeleteMessages))
+	detail := fmt.Sprintf("%q: forum %s, admin %s, manage topics %s, delete messages %s, pin messages %s",
+		g.Title, yes(r.IsForum), yes(r.IsAdmin), yes(r.CanManageTopics), yes(r.CanDeleteMessages), yes(r.CanPinMessages))
 	switch {
 	case !r.IsForum:
 		return domain.Check{Name: "group", Level: domain.CheckFail, Detail: detail + "; enable Topics in the group settings"}
@@ -171,8 +174,39 @@ func (d *Doctor) checkGroup(ctx context.Context, insp domain.TelegramInspector) 
 		return domain.Check{Name: "group", Level: domain.CheckFail, Detail: detail + "; grant the bot the Manage topics right"}
 	case !r.CanDeleteMessages:
 		return domain.Check{Name: "group", Level: domain.CheckWarn, Detail: detail + "; topic cleanup and icon notices need Delete messages"}
+	case !r.CanPinMessages:
+		return domain.Check{Name: "group", Level: domain.CheckWarn, Detail: detail + "; the dashboard in General stays unpinned without Pin messages"}
 	}
 	return domain.Check{Name: "group", Level: domain.CheckOK, Detail: detail}
+}
+
+// checkOperatorChat probes the private chat of every operator: questions
+// ring from there while posts.pager is on, and a chat the bot cannot
+// write to (Start never pressed, or the bot blocked) falls back to the
+// topic ring.
+func (d *Doctor) checkOperatorChat(ctx context.Context, insp domain.TelegramInspector, cfg domain.Config) domain.Check {
+	cctx, cancel := d.bounded(ctx)
+	defer cancel()
+	var closed, failed []string
+	for _, id := range cfg.OperatorIDs {
+		err := insp.ProbeDirect(cctx, id)
+		switch {
+		case err == nil:
+		case errors.Is(err, domain.ErrForbidden):
+			closed = append(closed, fmt.Sprint(id))
+		default:
+			failed = append(failed, fmt.Sprintf("%d: %s", id, failureReason(err)))
+		}
+	}
+	d.Log.Debug("operator chat probed", slog.Int("operators", len(cfg.OperatorIDs)), slog.Int("closed", len(closed)), slog.Int("failed", len(failed)))
+	switch {
+	case len(failed) > 0:
+		return domain.Check{Name: "operator chat", Level: domain.CheckWarn, Detail: "probe failed for " + strings.Join(failed, ", ")}
+	case len(closed) > 0:
+		return domain.Check{Name: "operator chat", Level: domain.CheckWarn,
+			Detail: "the bot cannot write to operator " + strings.Join(closed, ", ") + ": open the bot and press Start, questions ring in the topics meanwhile"}
+	}
+	return domain.Check{Name: "operator chat", Level: domain.CheckOK, Detail: plural(len(cfg.OperatorIDs), "operator") + " reachable, questions can ring from the bot's chat"}
 }
 
 func (d *Doctor) checkHerdr(ctx context.Context) domain.Check {

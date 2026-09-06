@@ -70,7 +70,7 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	log := slog.New(slog.NewJSONHandler(f.logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	// Same wrapping as NewBridge: the fake records what really leaves.
 	tg := newRedactingGateway(f.tg, domain.NewRedactor(testBotToken), f.opts.RedactEnabled, nil)
-	f.out = newOutbound(f.herdr, tg, f.view, lookup, live, f.capture, f.opts, f.replies, f.clock, log)
+	f.out = newOutbound(f.herdr, tg, -1001234567890, []int64{1}, f.view, lookup, live, f.capture, f.opts, f.replies, f.clock, log)
 	f.git = testkit.NewFakeGit()
 	f.inbox = testkit.NewFakeInbox("/state/inbox")
 	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, f.git, f.inbox, -1001234567890, "agents_bot", f.clock, log)
@@ -1261,5 +1261,203 @@ func TestOutboundBlockedDelayCatchUpNeverWaits(t *testing.T) {
 	f.fire(t, 1)
 	if sent := f.tg.Sent(); len(sent) != 2 || len(sent[1].Buttons) != 2 {
 		t.Fatalf("delay off: %+v", sent)
+	}
+}
+
+// pagerOutbound switches the pager on the way the daemon does after a
+// successful start probe.
+func pagerOutbound(f *bridgeFixture) {
+	f.out.SetPagerReachable(true)
+}
+
+func TestOutboundPagerRingsInPrivateChat(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No & more  \n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls := f.tg.Calls()
+	if len(calls) != 2 || !strings.HasPrefix(calls[0], "send:101:") || strings.Contains(calls[0], ":notify") || !strings.HasSuffix(calls[0], ":buttons=2") {
+		t.Fatalf("calls = %q", calls)
+	}
+	want := "direct:1:❓ <b>ws · reviewer</b> is waiting for you\n1. Yes\n2. No &amp; more\n" +
+		`<a href="https://t.me/c/1234567890/101/1000">open the topic</a>:notify`
+	if calls[1] != want {
+		t.Fatalf("direct = %q\nwant     %q", calls[1], want)
+	}
+	if direct := f.tg.Direct(); len(direct) != 1 || !direct[0].HTML || !direct[0].Notify {
+		t.Fatalf("Direct = %+v", direct)
+	}
+	if !f.out.announced[a.Key] {
+		t.Error("paged question not marked announced")
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"pager sent"`) || !strings.Contains(f.logBuf.String(), `"paged":true`) {
+		t.Errorf("log lacks the pager lines:\n%s", f.logBuf.String())
+	}
+	// The topic post keeps its keyboard: the answer goes into the topic.
+	if got := f.tg.Buttons(1000); len(got) != 2 {
+		t.Fatalf("topic buttons = %+v", got)
+	}
+}
+
+func TestOutboundPagerScreenTail(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	lines := make([]string, 0, 10)
+	for i := 1; i <= 10; i++ {
+		lines = append(lines, fmt.Sprintf("line %d <x>", i))
+	}
+	f.herdr.SetScreen("p1", "\n"+strings.Join(lines, "\n")+"\n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	direct := f.tg.Direct()
+	if len(direct) != 1 {
+		t.Fatalf("Direct = %+v", direct)
+	}
+	if !strings.Contains(direct[0].Text, "<pre>line 5 &lt;x&gt;\nline 6 &lt;x&gt;") || strings.Contains(direct[0].Text, "line 4") || !strings.HasSuffix(direct[0].Text, "line 10 &lt;x&gt;</pre>\n<a href=\"https://t.me/c/1234567890/101/1000\">open the topic</a>") {
+		t.Fatalf("pager text = %q", direct[0].Text)
+	}
+}
+
+func TestOutboundPagerOffRingsInTopic(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsPager, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls := f.tg.Calls()
+	if len(calls) != 1 || calls[0] != "send:101:  Allow edit?\n  1. Yes\n  2. No:notify:buttons=2" {
+		t.Fatalf("calls = %q", calls)
+	}
+	if !f.out.announced[a.Key] {
+		t.Error("topic ring not marked announced")
+	}
+}
+
+func TestOutboundPagerUnreachableFallsBackToTopic(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	f.tg.FailNext("direct", domain.ErrForbidden)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls := f.tg.Calls()
+	if len(calls) != 2 || strings.Contains(calls[0], ":notify") || !strings.HasPrefix(calls[1], "direct:1:") {
+		t.Fatalf("calls = %q", calls)
+	}
+	if f.out.announced[a.Key] {
+		t.Error("failed page marked the question announced")
+	}
+	if f.out.PagerReachable() {
+		t.Error("pager still reachable after every send failed")
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"pager failed, ringing in the topic next time"`) {
+		t.Errorf("log lacks the warning:\n%s", f.logBuf.String())
+	}
+	// The next question rings in the topic as before the pager.
+	f.tg.Reset()
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.herdr.SetScreen("p1", "\n  Run tests?  \n  1. Yes  \n  2. No  \n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls = f.tg.Calls()
+	if len(calls) != 2 || calls[0] != "buttons:1000:" || !strings.Contains(calls[1], ":notify") || strings.HasPrefix(calls[1], "direct:") {
+		t.Fatalf("calls after fallback = %q", calls)
+	}
+	if !f.out.announced[a.Key] {
+		t.Error("topic ring not marked announced")
+	}
+}
+
+func TestOutboundPagerOneOperatorReachedIsEnough(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	f.out.operators = []int64{1, 2}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	f.tg.FailNext("direct", domain.ErrForbidden)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls := f.tg.Calls()
+	if len(calls) != 3 || !strings.HasPrefix(calls[1], "direct:1:") || !strings.HasPrefix(calls[2], "direct:2:") || !strings.HasSuffix(calls[2], ":notify") {
+		t.Fatalf("calls = %q", calls)
+	}
+	if !f.out.announced[a.Key] || !f.out.PagerReachable() {
+		t.Errorf("announced=%v reachable=%v", f.out.announced[a.Key], f.out.PagerReachable())
+	}
+}
+
+func TestOutboundPagerQuietSilentSendsNothingDirect(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	quiet := quietOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	*quiet = true
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls := f.tg.Calls()
+	if len(calls) != 1 || strings.Contains(calls[0], ":notify") || len(f.tg.Direct()) != 0 {
+		t.Fatalf("calls while quiet = %q, direct = %+v", calls, f.tg.Direct())
+	}
+	if f.out.announced[a.Key] {
+		t.Error("silent post marked announced")
+	}
+	// Leaving the desk: the catch-up pages once per question.
+	*quiet = false
+	f.tg.Reset()
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	calls = f.tg.Calls()
+	if len(calls) != 3 || calls[0] != "buttons:1000:" || strings.Contains(calls[1], ":notify") || !strings.HasPrefix(calls[2], "direct:1:") || !strings.HasSuffix(calls[2], ":notify") {
+		t.Fatalf("catch-up calls = %q", calls)
+	}
+	if !f.out.announced[a.Key] {
+		t.Error("catch-up page not marked announced")
+	}
+	f.tg.Reset()
+	if err := f.out.CatchUp(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.tg.Calls()) != 0 {
+		t.Fatalf("second catch-up paged again: %q", f.tg.Calls())
+	}
+}
+
+func TestOutboundPagerFatalErrorStopsTheDaemon(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	f.tg.FailNext("direct", domain.ErrBotUnauthorized)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.clock.Advance(screenSettle)
+	key := <-f.out.Due()
+	if err := f.out.Fire(f.ctx, key); !errors.Is(err, domain.ErrBotUnauthorized) {
+		t.Fatalf("Fire = %v, want ErrBotUnauthorized", err)
+	}
+}
+
+func TestPagerText(t *testing.T) {
+	d := domain.Dialog{Choices: []domain.Choice{{Number: 1, Label: "Yes"}, {Number: 2, Label: "No <b>"}}}
+	got := pagerText("ws · a", "ignored", d, "https://t.me/c/1/2/3")
+	want := "❓ <b>ws · a</b> is waiting for you\n1. Yes\n2. No &lt;b&gt;\n<a href=\"https://t.me/c/1/2/3\">open the topic</a>"
+	if got != want {
+		t.Errorf("dialog text = %q, want %q", got, want)
+	}
+	got = pagerText("a", "", domain.Dialog{}, "https://t.me/c/1/2/3")
+	if got != "❓ <b>a</b> is waiting for you\n<a href=\"https://t.me/c/1/2/3\">open the topic</a>" {
+		t.Errorf("empty screen text = %q", got)
+	}
+	if lastLines("a\nb\nc\n\n", 2) != "b\nc" || lastLines("a", 6) != "a" {
+		t.Errorf("lastLines = %q / %q", lastLines("a\nb\nc\n\n", 2), lastLines("a", 6))
 	}
 }
