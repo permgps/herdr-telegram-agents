@@ -161,8 +161,44 @@ func (g *Gateway) onTopicUpdate(ctx context.Context, _ *bot.Bot, u *models.Updat
 		g.log.Debug("telegram topic message", slog.Int("thread_id", thread), slog.Int("message_id", m.ID), slog.Int("len", len(m.Text)))
 		g.emit(ctx, "topic_message", thread, domain.TopicMessage{ThreadID: thread, MessageID: m.ID, FromID: m.From.ID, Text: m.Text})
 	default:
-		g.drop("unsupported_message", m.Chat.ID, m.From.ID)
+		at := attachmentOf(m)
+		if at == nil {
+			g.drop("unsupported_message", m.Chat.ID, m.From.ID)
+			return
+		}
+		g.log.Debug("telegram attachment", slog.Int("thread_id", thread), slog.Int("message_id", m.ID), slog.String("kind", string(at.Kind)),
+			slog.Int64("size", at.Size), slog.String("mime", at.MIME), slog.String("group", at.GroupID), slog.Int("caption_len", len(at.Caption)))
+		g.emit(ctx, "topic_attachment", thread, *at)
 	}
+}
+
+// attachmentOf reads the file an operator attached to a topic message:
+// a document, the largest size of a photo, a voice note, an audio track or
+// a video, with the caption and the media group. Stickers, animations and
+// the rest answer nil.
+func attachmentOf(m *models.Message) *domain.TopicAttachment {
+	at := domain.TopicAttachment{ThreadID: m.MessageThreadID, MessageID: m.ID, FromID: m.From.ID, GroupID: m.MediaGroupID, Caption: m.Caption}
+	switch {
+	case m.Document != nil:
+		at.Kind, at.FileID, at.Name, at.MIME, at.Size = domain.AttachmentDocument, m.Document.FileID, m.Document.FileName, m.Document.MimeType, m.Document.FileSize
+	case len(m.Photo) > 0:
+		best := m.Photo[0]
+		for _, p := range m.Photo[1:] {
+			if p.Width*p.Height >= best.Width*best.Height {
+				best = p
+			}
+		}
+		at.Kind, at.FileID, at.MIME, at.Size = domain.AttachmentPhoto, best.FileID, "image/jpeg", int64(best.FileSize)
+	case m.Voice != nil:
+		at.Kind, at.FileID, at.MIME, at.Size = domain.AttachmentVoice, m.Voice.FileID, m.Voice.MimeType, m.Voice.FileSize
+	case m.Audio != nil:
+		at.Kind, at.FileID, at.Name, at.MIME, at.Size = domain.AttachmentAudio, m.Audio.FileID, m.Audio.FileName, m.Audio.MimeType, m.Audio.FileSize
+	case m.Video != nil:
+		at.Kind, at.FileID, at.Name, at.MIME, at.Size = domain.AttachmentVideo, m.Video.FileID, m.Video.FileName, m.Video.MimeType, m.Video.FileSize
+	default:
+		return nil
+	}
+	return &at
 }
 
 // onCallback translates an operator's button press into a domain event. A

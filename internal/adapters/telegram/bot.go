@@ -117,6 +117,7 @@ var botCommands = []models.BotCommand{
 	{Command: "screen", Description: "Show the agent screen (N: last N lines, all: output since your last message)"},
 	{Command: "keys", Description: "Send raw keys to the agent, e.g. /keys esc"},
 	{Command: "focus", Description: "Bring the agent's pane to the front in Herdr"},
+	{Command: "git", Description: "git status | diff [staged] | log [N] in the agent's directory"},
 	{Command: "stop", Description: "Send esc to the agent: cancel the running turn or dialog"},
 	{Command: "interrupt", Description: "Send ctrl+c to the agent"},
 	{Command: "clear", Description: "Claude Code /clear: start a fresh conversation (idle agents only)"},

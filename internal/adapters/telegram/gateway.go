@@ -22,6 +22,8 @@ import (
 )
 
 const (
+	// forceReplyPlaceholder is the input hint shown with a force_reply.
+	forceReplyPlaceholder = "text for the agent"
 	// downloadTimeout bounds one file download (getFile plus the GET).
 	downloadTimeout = 60 * time.Second
 	// topicNameMax is Telegram's limit for a forum topic name.
@@ -326,9 +328,15 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 			params.ReplyParameters = &models.ReplyParameters{MessageID: out.ReplyTo, AllowSendingWithoutReply: true}
 		}
 		buttons := 0
-		if i == len(parts)-1 && len(out.Buttons) > 0 {
+		switch {
+		case i == len(parts)-1 && len(out.Buttons) > 0:
 			params.ReplyMarkup = inlineKeyboard(out.Buttons)
 			buttons = len(out.Buttons)
+			if out.ForceReply {
+				g.log.Warn("force reply dropped: buttons take the reply markup", slog.Int("thread_id", out.ThreadID))
+			}
+		case i == len(parts)-1 && out.ForceReply:
+			params.ReplyMarkup = &models.ForceReply{ForceReply: true, Selective: true, InputFieldPlaceholder: forceReplyPlaceholder}
 		}
 		id, err := g.sendPart(ctx, params)
 		if err != nil && markdown && isMarkupError(err) {

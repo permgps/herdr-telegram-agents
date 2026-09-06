@@ -420,3 +420,50 @@ func TestInboundCallbackWithoutMessageDropped(t *testing.T) {
 		t.Errorf("drop not logged: %s", h.buf.String())
 	}
 }
+
+func TestInboundAttachmentEvents(t *testing.T) {
+	h := newHarness(t)
+	cases := []struct {
+		name   string
+		mutate func(*models.Message)
+		want   domain.TopicAttachment
+	}{
+		{"document", func(m *models.Message) {
+			m.Document = &models.Document{FileID: "d1", FileName: "report.pdf", MimeType: "application/pdf", FileSize: 1234}
+			m.Caption, m.MediaGroupID = "read this", "g1"
+		}, domain.TopicAttachment{Kind: domain.AttachmentDocument, FileID: "d1", Name: "report.pdf", MIME: "application/pdf", Size: 1234, Caption: "read this", GroupID: "g1"}},
+		{"photo takes the largest size", func(m *models.Message) {
+			m.Photo = []models.PhotoSize{{FileID: "s", Width: 90, Height: 90, FileSize: 100}, {FileID: "l", Width: 1280, Height: 960, FileSize: 90000}, {FileID: "m", Width: 320, Height: 240, FileSize: 9000}}
+		}, domain.TopicAttachment{Kind: domain.AttachmentPhoto, FileID: "l", MIME: "image/jpeg", Size: 90000}},
+		{"voice", func(m *models.Message) {
+			m.Voice = &models.Voice{FileID: "v1", Duration: 3, MimeType: "audio/ogg", FileSize: 5000}
+		}, domain.TopicAttachment{Kind: domain.AttachmentVoice, FileID: "v1", MIME: "audio/ogg", Size: 5000}},
+		{"audio", func(m *models.Message) {
+			m.Audio = &models.Audio{FileID: "a1", FileName: "song.mp3", MimeType: "audio/mpeg", FileSize: 7000}
+		}, domain.TopicAttachment{Kind: domain.AttachmentAudio, FileID: "a1", Name: "song.mp3", MIME: "audio/mpeg", Size: 7000}},
+		{"video", func(m *models.Message) {
+			m.Video = &models.Video{FileID: "vd1", FileName: "clip.mov", MimeType: "video/quicktime", FileSize: 80000}
+		}, domain.TopicAttachment{Kind: domain.AttachmentVideo, FileID: "vd1", Name: "clip.mov", MIME: "video/quicktime", Size: 80000}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := topicMessage(testChatID, testOperator, 42, "")
+			u.Message.ID = 700 + i
+			tc.mutate(u.Message)
+			h.bot.ProcessUpdate(context.Background(), u)
+			got, ok := expectEvent(t, h.gw.Events()).(domain.TopicAttachment)
+			tc.want.ThreadID, tc.want.MessageID, tc.want.FromID = 42, 700+i, testOperator
+			if !ok || got != tc.want {
+				t.Fatalf("event = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+	// A sticker stays unsupported.
+	u := topicMessage(testChatID, testOperator, 42, "")
+	u.Message.Sticker = &models.Sticker{FileID: "st"}
+	h.bot.ProcessUpdate(context.Background(), u)
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "unsupported_message") {
+		t.Fatal("sticker drop not logged")
+	}
+}

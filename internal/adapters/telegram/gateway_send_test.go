@@ -556,3 +556,28 @@ func TestSendMarkdownFenceAcrossParts(t *testing.T) {
 		t.Errorf("last part = %q", calls[len(calls)-1].form.Get("text"))
 	}
 }
+
+func TestSendForceReply(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 7}) })
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "✏️ send the text", ReplyTo: 5, ForceReply: true}); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	markup := calls[0].form.Get("reply_markup")
+	if !strings.Contains(markup, `"force_reply":true`) || !strings.Contains(markup, `"selective":true`) {
+		t.Fatalf("reply_markup = %q", markup)
+	}
+	// Buttons win over a force reply.
+	h.api.calls = nil
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "q", ForceReply: true, Buttons: []domain.Button{{Text: "1", Data: "1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	markup = h.api.callsOf("sendMessage")[0].form.Get("reply_markup")
+	if strings.Contains(markup, "force_reply") || !strings.Contains(markup, "inline_keyboard") {
+		t.Fatalf("reply_markup with buttons = %q", markup)
+	}
+}

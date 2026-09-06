@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,12 +70,35 @@ type fakeAPI struct {
 	calls  []call
 	reply  map[string]func(form url.Values) apiReply
 	server *httptest.Server
+	// files serves the file endpoint: file_path -> body and status.
+	files map[string]servedFile
+	// fileHits counts GETs on the file endpoint.
+	fileHits int
+}
+
+// servedFile is one file the fake file endpoint hands out.
+type servedFile struct {
+	data   []byte
+	status int
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
 	t.Helper()
-	f := &fakeAPI{t: t, reply: map[string]func(url.Values) apiReply{}}
+	f := &fakeAPI{t: t, reply: map[string]func(url.Values) apiReply{}, files: map[string]servedFile{}}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/file/bot"+testToken+"/"); ok {
+			f.mu.Lock()
+			f.fileHits++
+			sf, found := f.files[rest]
+			f.mu.Unlock()
+			if !found {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(sf.status)
+			_, _ = w.Write(sf.data)
+			return
+		}
 		method := path.Base(r.URL.Path)
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			if err := r.ParseForm(); err != nil {
@@ -121,6 +145,20 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	}))
 	t.Cleanup(f.server.Close)
 	return f
+}
+
+// serveFile makes the file endpoint answer filePath with data and status.
+func (f *fakeAPI) serveFile(filePath string, data []byte, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[filePath] = servedFile{data: data, status: status}
+}
+
+// fileRequests returns how many GETs the file endpoint saw.
+func (f *fakeAPI) fileRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fileHits
 }
 
 // on installs the reply for a method.
