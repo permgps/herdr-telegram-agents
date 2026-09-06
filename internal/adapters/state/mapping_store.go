@@ -20,6 +20,9 @@ type mappingFile struct {
 	Version int                         `json:"version"`
 	ChatID  int64                       `json:"chat_id"`
 	Topics  map[string]mappingFileEntry `json:"topics"`
+	// Dashboard is the pinned status message in General; omitted when
+	// none exists so files written before the dashboard stay byte-equal.
+	Dashboard int `json:"dashboard_message_id,omitempty"`
 }
 
 type mappingFileEntry struct {
@@ -93,6 +96,7 @@ func (s *MappingStore) Load(context.Context) (*domain.Mapping, error) {
 	if f.Version != 0 {
 		m.Version = f.Version
 	}
+	m.Dashboard = f.Dashboard
 	for key, e := range f.Topics {
 		m.Topics[key] = &domain.TopicEntry{
 			ThreadID:  e.ThreadID,
@@ -103,13 +107,14 @@ func (s *MappingStore) Load(context.Context) (*domain.Mapping, error) {
 			UpdatedAt: e.UpdatedAt,
 		}
 	}
-	s.log.Debug("mapping loaded", slog.String("path", s.path), slog.Int64("chat_id", m.ChatID), slog.Int("entries", len(m.Topics)))
+	s.log.Debug("mapping loaded", slog.String("path", s.path), slog.Int64("chat_id", m.ChatID),
+		slog.Int("entries", len(m.Topics)), slog.Int("dashboard_message_id", m.Dashboard))
 	return m, nil
 }
 
 // Save writes the mapping atomically with mode 0644.
 func (s *MappingStore) Save(_ context.Context, m *domain.Mapping) error {
-	f := mappingFile{Version: m.Version, ChatID: m.ChatID, Topics: make(map[string]mappingFileEntry, len(m.Topics))}
+	f := mappingFile{Version: m.Version, ChatID: m.ChatID, Topics: make(map[string]mappingFileEntry, len(m.Topics)), Dashboard: m.Dashboard}
 	for key, e := range m.Topics {
 		f.Topics[key] = mappingFileEntry{
 			ThreadID:  e.ThreadID,
@@ -127,6 +132,6 @@ func (s *MappingStore) Save(_ context.Context, m *domain.Mapping) error {
 	if err := writeAtomic(s.path, append(data, '\n'), 0o644); err != nil {
 		return fmt.Errorf("save mapping: %w", err)
 	}
-	s.log.Debug("mapping saved", slog.String("path", s.path), slog.Int("entries", len(m.Topics)))
+	s.log.Debug("mapping saved", slog.String("path", s.path), slog.Int("entries", len(m.Topics)), slog.Int("dashboard_message_id", m.Dashboard))
 	return nil
 }

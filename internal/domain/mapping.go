@@ -32,10 +32,16 @@ func (e *TopicEntry) Label() string {
 // Mapping is the aggregate linking agent keys to forum topics. It is mutated
 // in memory by the reconciler and persisted after every successful Telegram
 // call. Keys are stored as strings (Key.String) so the JSON file stays flat.
+//
+// Dashboard is the id of the pinned status message in General, 0 when none
+// has been created. The field is optional in the file so an older binary
+// loads and saves the mapping without it (leaving one stale pinned message
+// behind after a downgrade).
 type Mapping struct {
-	Version int
-	ChatID  int64
-	Topics  map[string]*TopicEntry
+	Version   int
+	ChatID    int64
+	Topics    map[string]*TopicEntry
+	Dashboard int
 }
 
 // NewMapping returns an empty mapping for the given chat.

@@ -71,7 +71,7 @@ func TestPanelOpenShowsGroupsAndRetiresPrevious(t *testing.T) {
 func TestPanelToggleSync(t *testing.T) {
 	f := newBridgeFixture(t)
 	pressPanel(f, t, 900, dataGroup(0))
-	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "☑ Herdr → Telegram sync|↺ Reset to defaults|‹ Back|✖ Close" {
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "☑ Herdr → Telegram sync|☑ Dashboard in General|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("sync group buttons = %v", got)
 	}
 	if text := f.tg.Text(900); !strings.Contains(text, "<b>Herdr → Telegram sync</b>: Mirror Herdr agents") || !strings.Contains(text, "Current: on") {
@@ -320,7 +320,7 @@ func TestPanelQuietGroup(t *testing.T) {
 func TestPanelPostsGroup(t *testing.T) {
 	f := newBridgeFixture(t)
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
-	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ React to prompts|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("posts buttons = %v", got)
 	}
 	pressPanel(f, t, 900, dataGrid(domain.OptionPostsDone, 0))

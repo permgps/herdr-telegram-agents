@@ -55,6 +55,14 @@ func TestRedactingGatewayMasksEverythingThatLeaves(t *testing.T) {
 		t.Fatalf("EditButtons left %+v", fake.Buttons(id))
 	}
 
+	did, err := tg.SendDirect(ctx, 77, domain.Outgoing{Text: "❓ waiting " + testKey, Notify: true, Buttons: []domain.Button{{Text: "use " + testKey, Data: "1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct := fake.Direct(); len(direct) != 1 || direct[0].Text != "❓ waiting sk-…uvwx" || !direct[0].Notify || fake.Buttons(did)[0].Text != "use sk-…uvwx" {
+		t.Fatalf("Direct = %+v / %+v", fake.Direct(), fake.Buttons(did))
+	}
+
 	on = false
 	if _, err := tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: "raw " + testKey}); err != nil {
 		t.Fatal(err)
@@ -67,8 +75,25 @@ func TestRedactingGatewayMasksEverythingThatLeaves(t *testing.T) {
 func TestRedactingGatewayPassesRightsAndIcons(t *testing.T) {
 	fake := testkit.NewFakeTelegram(nil)
 	tg := newRedactingGateway(fake, nil, nil, nil)
-	if _, err := tg.Rights(context.Background()); err != nil {
+	ctx := context.Background()
+	if _, err := tg.Rights(ctx); err != nil {
 		t.Fatal(err)
+	}
+	id, _ := tg.Send(ctx, domain.Outgoing{Text: "board"})
+	if err := tg.ProbeDirect(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.Pin(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.Unpin(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.DeleteMessage(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fake.Calls(); len(calls) != 6 || calls[2] != "probe:1" || calls[3] != "pin:1000" || calls[4] != "unpin:1000" || calls[5] != "deletemsg:1000" {
+		t.Fatalf("pass-through calls = %v", calls)
 	}
 	tg.SetStatusIcons(domain.StatusIcons{Working: "🔥"})
 	if fake.Icons().Working != "🔥" || len(tg.IconPack()) == 0 {

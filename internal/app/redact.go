@@ -8,10 +8,11 @@ import (
 )
 
 // redactingGateway wraps a TelegramGateway so every text that leaves the
-// daemon (screen posts, documents, button labels, panel edits, notices)
-// passes the domain.Redactor first. It is the single insertion point for
-// the privacy.redact option: the five call sites that build posts never
-// need to know about it. Everything else is passed through untouched.
+// daemon (screen posts, pager messages, documents, button labels, panel
+// edits, notices) passes the domain.Redactor first. It is the single
+// insertion point for the privacy.redact option: the call sites that build
+// posts never need to know about it. Everything else (pins, deletes, the
+// private-chat probe) is passed through untouched.
 type redactingGateway struct {
 	domain.TelegramGateway
 	red     *domain.Redactor
@@ -44,6 +45,17 @@ func (g *redactingGateway) Send(ctx context.Context, out domain.Outgoing) (int, 
 	out.Buttons = g.redactButtons(out.Buttons, stats)
 	g.report(out.ThreadID, "send", stats)
 	return g.TelegramGateway.Send(ctx, out)
+}
+
+func (g *redactingGateway) SendDirect(ctx context.Context, userID int64, out domain.Outgoing) (int, error) {
+	if !g.enabled() {
+		return g.TelegramGateway.SendDirect(ctx, userID, out)
+	}
+	stats := domain.RedactionStats{}
+	out.Text = g.redact(out.Text, stats)
+	out.Buttons = g.redactButtons(out.Buttons, stats)
+	g.report(0, "direct", stats)
+	return g.TelegramGateway.SendDirect(ctx, userID, out)
 }
 
 func (g *redactingGateway) SendDocument(ctx context.Context, doc domain.Document) error {

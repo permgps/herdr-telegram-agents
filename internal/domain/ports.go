@@ -162,6 +162,26 @@ type TelegramGateway interface {
 	// 0; long text is split into several messages. It returns the id of
 	// the last message sent (the one carrying Buttons), 0 on error.
 	Send(ctx context.Context, out Outgoing) (int, error)
+	// SendDirect posts a message into the private chat with the user
+	// (Text, Code, HTML, Markdown, Notify and Buttons as in Send; ThreadID
+	// and ReplyTo are ignored) and returns the id of the last message sent.
+	// A chat the bot may not write to, because the user never pressed
+	// Start or blocked the bot, is ErrForbidden.
+	SendDirect(ctx context.Context, userID int64, out Outgoing) (int, error)
+	// ProbeDirect checks whether the bot may write to the private chat of
+	// the user without sending anything visible (a "typing" chat action);
+	// a closed chat is ErrForbidden.
+	ProbeDirect(ctx context.Context, userID int64) error
+	// Pin pins a message in the group silently; needs the
+	// can_pin_messages right, otherwise ErrForbidden. A message that no
+	// longer exists is ErrMessageGone.
+	Pin(ctx context.Context, messageID int) error
+	// Unpin removes the pin from a message; unpinning a message that is
+	// not pinned is a success.
+	Unpin(ctx context.Context, messageID int) error
+	// DeleteMessage deletes one of the bot's messages; a message that is
+	// already gone is ErrMessageGone.
+	DeleteMessage(ctx context.Context, messageID int) error
 	// EditButtons replaces the inline keyboard of a bot message; an empty
 	// slice removes it.
 	EditButtons(ctx context.Context, messageID int, buttons []Button) error
@@ -234,6 +254,9 @@ type Rights struct {
 	// icon" notices its own edits cause; without it they stay, nothing
 	// else is affected.
 	CanDeleteMessages bool
+	// CanPinMessages lets the daemon pin the dashboard in General; without
+	// it the dashboard is an ordinary message that scrolls away.
+	CanPinMessages bool
 }
 
 // ConfigStore persists the plugin configuration. Load returns

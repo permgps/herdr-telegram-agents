@@ -294,6 +294,24 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 // Notify is set. The first failure stops the remaining parts. The id of
 // the last part is returned so the caller can edit its keyboard later.
 func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
+	return g.send(ctx, g.chatID, out.ThreadID, out)
+}
+
+// SendDirect posts into the private chat with userID: the same splitting,
+// rendering and buttons as Send, addressed by user id with no thread. A
+// chat the user never opened or blocked is ErrForbidden (Telegram's
+// "bot can't initiate conversation with a user" and "bot was blocked by
+// the user" are both 403). The message text stays out of the log above
+// debug, as for every send.
+func (g *Gateway) SendDirect(ctx context.Context, userID int64, out domain.Outgoing) (int, error) {
+	out.ThreadID = 0
+	out.ReplyTo = 0
+	return g.send(ctx, userID, 0, out)
+}
+
+// send is the body shared by Send and SendDirect; chatID is the group or
+// the user, threadID the topic (0 for General and for a private chat).
+func (g *Gateway) send(ctx context.Context, chatID int64, threadID int, out domain.Outgoing) (int, error) {
 	markdown := out.Markdown && !out.Code && !out.HTML
 	var parts []string
 	if markdown {
@@ -318,8 +336,8 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 			body = renderMarkdown(part)
 		}
 		params := &bot.SendMessageParams{
-			ChatID:              g.chatID,
-			MessageThreadID:     out.ThreadID,
+			ChatID:              chatID,
+			MessageThreadID:     threadID,
 			Text:                body,
 			ParseMode:           models.ParseModeHTML,
 			DisableNotification: !out.Notify,
@@ -353,7 +371,7 @@ func (g *Gateway) Send(ctx context.Context, out domain.Outgoing) (int, error) {
 		}
 		lastID = id
 		g.log.Debug("sendMessage",
-			slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
+			slog.Int64("chat_id", chatID), slog.Int("thread_id", threadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
 			slog.Int("reply_to", out.ReplyTo), slog.Bool("notify", out.Notify),
 			slog.Int("runes", utf8.RuneCountInString(part)), slog.Int("buttons", buttons), slog.Int("message_id", lastID))
 	}
@@ -572,6 +590,46 @@ func (g *Gateway) React(ctx context.Context, threadID, messageID int, emoji stri
 	})
 	return g.finish("setMessageReaction", err,
 		slog.Int("thread_id", threadID), slog.Int("message_id", messageID), slog.String("emoji", emoji))
+}
+
+// ProbeDirect sends a "typing" chat action to the user's private chat:
+// nothing visible when it succeeds, ErrForbidden when the user never
+// pressed Start or blocked the bot.
+func (g *Gateway) ProbeDirect(ctx context.Context, userID int64) error {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.SendChatAction(ctx, &bot.SendChatActionParams{ChatID: userID, Action: models.ChatActionTyping})
+		return translate(err)
+	})
+	return g.finish("sendChatAction", err, slog.Int64("user_id", userID), slog.String("action", string(models.ChatActionTyping)))
+}
+
+// Pin pins one of the bot's messages in the group without a notification.
+// Telegram still posts a "pinned a message" service message, which the
+// inbound handler deletes like a topic edit notice.
+func (g *Gateway) Pin(ctx context.Context, messageID int) error {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.PinChatMessage(ctx, &bot.PinChatMessageParams{ChatID: g.chatID, MessageID: messageID, DisableNotification: true})
+		return translate(err)
+	})
+	return g.finish("pinChatMessage", err, slog.Int("message_id", messageID))
+}
+
+// Unpin removes the pin from one message.
+func (g *Gateway) Unpin(ctx context.Context, messageID int) error {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.UnpinChatMessage(ctx, &bot.UnpinChatMessageParams{ChatID: g.chatID, MessageID: messageID})
+		return translate(err)
+	})
+	return g.finish("unpinChatMessage", err, slog.Int("message_id", messageID))
+}
+
+// DeleteMessage deletes one message of the bot in the group.
+func (g *Gateway) DeleteMessage(ctx context.Context, messageID int) error {
+	err := g.queue.Do(ctx, func(ctx context.Context) error {
+		_, err := g.api.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: g.chatID, MessageID: messageID})
+		return translate(err)
+	})
+	return g.finish("deleteMessage", err, slog.Int("message_id", messageID))
 }
 
 // finish logs the outcome of one call and wraps its error with the method

@@ -227,13 +227,7 @@ func TestInboundGeneralHelpUnknownAndEmpty(t *testing.T) {
 	}
 }
 
-func TestTopicLinkAndPlural(t *testing.T) {
-	if got := topicLink(-1001234567890, 42); got != "https://t.me/c/1234567890/42" {
-		t.Errorf("topicLink = %s", got)
-	}
-	if got := topicLink(-1, 7); got != "https://t.me/c/1/7" {
-		t.Errorf("topicLink small id = %s", got)
-	}
+func TestPlural(t *testing.T) {
 	if plural(1, "agent") != "1 agent" || plural(0, "agent") != "0 agents" || plural(2, "agent") != "2 agents" {
 		t.Errorf("plural is wrong")
 	}

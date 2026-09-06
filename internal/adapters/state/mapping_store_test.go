@@ -52,6 +52,43 @@ func TestMappingStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMappingStoreDashboardID(t *testing.T) {
+	dir := t.TempDir()
+	s := state.NewMappingStore(dir, nil)
+	ctx := context.Background()
+
+	// A file written before the dashboard existed loads with no id and is
+	// saved back without the key.
+	old := `{"version": 1, "chat_id": -1001, "topics": {}}` + "\n"
+	if err := os.WriteFile(s.Path(), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.Load(ctx)
+	if err != nil || m.Dashboard != 0 || m.ChatID != -1001 {
+		t.Fatalf("Load old file = %+v, %v", m, err)
+	}
+	if err := s.Save(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(s.Path())
+	if strings.Contains(string(raw), "dashboard_message_id") {
+		t.Fatalf("zero id must be omitted:\n%s", raw)
+	}
+
+	m.Dashboard = 4242
+	if err := s.Save(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(s.Path())
+	if !strings.Contains(string(raw), `"dashboard_message_id": 4242`) {
+		t.Fatalf("file lacks the dashboard id:\n%s", raw)
+	}
+	got, err := s.Load(ctx)
+	if err != nil || got.Dashboard != 4242 {
+		t.Fatalf("Load = dashboard %d, %v", got.Dashboard, err)
+	}
+}
+
 func TestMappingStoreMovesMalformedAside(t *testing.T) {
 	dir := t.TempDir()
 	s := state.NewMappingStore(dir, nil)

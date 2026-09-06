@@ -238,6 +238,78 @@ func TestFakeHerdrRecordsCallsAndFails(t *testing.T) {
 	}
 }
 
+func TestFakeTelegramDirectPinAndDelete(t *testing.T) {
+	tg := testkit.NewFakeTelegram(nil)
+	ctx := context.Background()
+	id, err := tg.SendDirect(ctx, 77, domain.Outgoing{Text: "❓ a is waiting", HTML: true, Notify: true, Buttons: []domain.Button{{Text: "1", Data: "1"}}})
+	if err != nil || id != 1000 {
+		t.Fatalf("SendDirect = %d, %v", id, err)
+	}
+	tg.FailNext("direct", domain.ErrForbidden)
+	if _, err := tg.SendDirect(ctx, 78, domain.Outgoing{Text: "x"}); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("SendDirect after FailNext = %v, want ErrForbidden", err)
+	}
+	if err := tg.ProbeDirect(ctx, 77); err != nil {
+		t.Fatal(err)
+	}
+	tg.FailNext("probe", domain.ErrForbidden)
+	if err := tg.ProbeDirect(ctx, 78); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("ProbeDirect after FailNext = %v", err)
+	}
+	board, err := tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: "board"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.Pin(ctx, board); err != nil || !tg.Pinned(board) {
+		t.Fatalf("Pin = %v, pinned=%v", err, tg.Pinned(board))
+	}
+	if err := tg.Pin(ctx, 5); !errors.Is(err, domain.ErrMessageGone) {
+		t.Fatalf("Pin unknown = %v, want ErrMessageGone", err)
+	}
+	if err := tg.Unpin(ctx, board); err != nil || tg.Pinned(board) {
+		t.Fatalf("Unpin = %v, pinned=%v", err, tg.Pinned(board))
+	}
+	if err := tg.DeleteMessage(ctx, board); err != nil {
+		t.Fatal(err)
+	}
+	if err := tg.DeleteMessage(ctx, board); !errors.Is(err, domain.ErrMessageGone) {
+		t.Fatalf("second DeleteMessage = %v, want ErrMessageGone", err)
+	}
+	if err := tg.EditText(ctx, board, "again", false, nil); !errors.Is(err, domain.ErrMessageGone) {
+		t.Fatalf("EditText of a deleted message = %v, want ErrMessageGone", err)
+	}
+	want := []string{
+		"direct:77:❓ a is waiting:notify:buttons=1",
+		"direct:78:x",
+		"probe:77",
+		"probe:78",
+		"send:0:board",
+		"pin:1001",
+		"pin:5",
+		"unpin:1001",
+		"deletemsg:1001",
+		"deletemsg:1001",
+		"edittext:1001:again:buttons=0",
+	}
+	got := tg.Calls()
+	if len(got) != len(want) {
+		t.Fatalf("Calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Calls[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	direct := tg.Direct()
+	if len(direct) != 1 || !direct[0].Notify || !direct[0].HTML || len(tg.Buttons(id)) != 1 {
+		t.Fatalf("Direct = %+v", direct)
+	}
+	tg.Reset()
+	if len(tg.Direct()) != 0 {
+		t.Fatal("Reset kept direct messages")
+	}
+}
+
 func TestFakeTelegramSendDocument(t *testing.T) {
 	tg := testkit.NewFakeTelegram(nil)
 	ctx := context.Background()

@@ -51,6 +51,13 @@ func (o *Options) Get() domain.Options {
 // SyncEnabled is the Herdr → Telegram mirror switch.
 func (o *Options) SyncEnabled() bool { return o.Get().SyncEnabled() }
 
+// DashboardEnabled reports whether the pinned status message in General is
+// kept.
+func (o *Options) DashboardEnabled() bool { return o.Get().DashboardEnabled() }
+
+// PagerEnabled reports whether questions ring from the bot's private chat.
+func (o *Options) PagerEnabled() bool { return o.Get().PagerEnabled() }
+
 // StatusIcons is the icon table in force.
 func (o *Options) StatusIcons() domain.StatusIcons { return o.Get().StatusIcons() }
 

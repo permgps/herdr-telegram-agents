@@ -21,8 +21,13 @@ var (
 	// mirror skips it; the reconciler uses it to short-circuit and never
 	// returns it to the daemon.
 	ErrTopicMuted = errors.New("topic is muted")
-	// ErrForbidden means the bot was removed from the chat or lost rights.
+	// ErrForbidden means the bot was removed from the chat or lost rights,
+	// or a private chat is closed to it (the user never pressed Start or
+	// blocked the bot).
 	ErrForbidden = errors.New("bot is forbidden in chat")
+	// ErrMessageGone means the bot message to edit or delete no longer
+	// exists; the dashboard recreates its message on it.
+	ErrMessageGone = errors.New("message is gone")
 	// ErrBotUnauthorized means the bot token is invalid or revoked.
 	ErrBotUnauthorized = errors.New("bot token is unauthorized")
 	// ErrPollerConflict means another process is polling the same bot.

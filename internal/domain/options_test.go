@@ -134,6 +134,7 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 	}{
 		{OptionPostsDone, KindChoice, "screen", ChoiceSourceDone},
 		{OptionPostsReactions, KindBool, "true", ""},
+		{OptionPostsPager, KindBool, "true", ""},
 		{OptionPostsBlockedDelay, KindChoice, "0", ChoiceSourceSeconds},
 		{OptionPostsMinSeconds, KindChoice, "0", ChoiceSourceSeconds},
 	}
@@ -146,7 +147,7 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 			t.Errorf("posts option %d = %+v, want %+v", i, got, w)
 		}
 	}
-	if posts[2].Validate == nil || posts[3].Validate == nil {
+	if posts[3].Validate == nil || posts[4].Validate == nil {
 		t.Error("seconds options must carry validateSeconds")
 	}
 	inbox := OptionsInGroup(GroupInbox)
@@ -203,8 +204,16 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 	if got := OptionsInGroup(GroupAppearance); len(got) != 6 || got[0].Key != "icons.working" || got[5].Key != "icons.exited" {
 		t.Errorf("appearance options = %+v", got)
 	}
-	if got := OptionsInGroup(GroupSync); len(got) != 1 || got[0].Kind != KindBool {
+	if got := OptionsInGroup(GroupSync); len(got) != 2 || got[0].Key != OptionSyncEnabled || got[0].Kind != KindBool ||
+		got[1].Key != OptionSyncDashboard || got[1].Kind != KindBool || got[1].Default != "true" {
 		t.Errorf("sync options = %+v", got)
+	}
+	if o := DefaultOptions(); !o.DashboardEnabled() || !o.PagerEnabled() {
+		t.Error("dashboard and pager must default to on")
+	}
+	off, _ := DefaultOptions().With(OptionPostsPager, "false")
+	if off.PagerEnabled() || !off.DashboardEnabled() {
+		t.Error("PagerEnabled must follow posts.pager only")
 	}
 	seen := map[string]bool{}
 	for _, s := range OptionSpecs {

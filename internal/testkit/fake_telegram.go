@@ -25,13 +25,18 @@ import (
 //	edittext:<message>:<text>:buttons=<n>
 //	react:<thread>:<message>:<emoji>
 //	document:<thread>:<name>:<bytes>   (":reply=<id>" appended when set)
+//	direct:<user>:<text>     (":notify" and ":buttons=<n>" appended when set)
+//	probe:<user>
+//	pin:<message>            unpin:<message>          deletemsg:<message>
 //	rights
 //
 // Thread 0 in Send stands for the General topic and is always accepted.
-// Send hands out message ids from 1000 upwards; EditButtons and EditText
-// keep the last keyboard per message id for Buttons, EditText the last text
-// for Text. SetStatusIcons is remembered for Icons; IconPack answers with
-// the slice given to SetIconPack (by default the six defaults plus 🔥 🤖 🧠).
+// Send and SendDirect hand out message ids from 1000 upwards; EditButtons
+// and EditText keep the last keyboard per message id for Buttons, EditText
+// the last text for Text. DeleteMessage forgets the text, so a later
+// EditText of that id is domain.ErrMessageGone. SetStatusIcons is
+// remembered for Icons; IconPack answers with the slice given to
+// SetIconPack (by default the six defaults plus 🔥 🤖 🧠).
 type FakeTelegram struct {
 	mu        sync.Mutex
 	topics    map[int]*domain.Topic
@@ -39,6 +44,8 @@ type FakeTelegram struct {
 	nextMsgID int
 	calls     []string
 	sent      []domain.Outgoing
+	direct    []domain.Outgoing
+	pinned    map[int]bool
 	buttons   map[int][]domain.Button
 	texts     map[int]string
 	icons     domain.StatusIcons
@@ -66,6 +73,7 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 		topics:    map[int]*domain.Topic{},
 		nextID:    100,
 		nextMsgID: 1000,
+		pinned:    map[int]bool{},
 		buttons:   map[int][]domain.Button{},
 		texts:     map[int]string{},
 		icons:     domain.DefaultStatusIcons(),
@@ -79,8 +87,8 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 }
 
 // FailNext makes the next call of method (create, edit, close, reopen,
-// send, document, react, rights, buttons, answer, edittext, download)
-// return err.
+// send, direct, probe, pin, unpin, deletemsg, document, react, rights,
+// buttons, answer, edittext, download) return err.
 // Only one failure is queued per method.
 func (f *FakeTelegram) FailNext(method string, err error) {
 	f.mu.Lock()
@@ -112,6 +120,21 @@ func (f *FakeTelegram) Sent() []domain.Outgoing {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]domain.Outgoing(nil), f.sent...)
+}
+
+// Direct returns every message accepted by SendDirect, in order.
+func (f *FakeTelegram) Direct() []domain.Outgoing {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Outgoing(nil), f.direct...)
+}
+
+// Pinned reports whether the message is pinned after the last Pin or
+// Unpin that touched it.
+func (f *FakeTelegram) Pinned(messageID int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pinned[messageID]
 }
 
 // Buttons returns the keyboard a message carries after the last Send,
@@ -151,13 +174,14 @@ func (f *FakeTelegram) Documents() []domain.Document {
 	return append([]domain.Document(nil), f.docs...)
 }
 
-// Reset forgets the recorded calls, sent messages and documents but keeps
-// the topics.
+// Reset forgets the recorded calls, sent messages, direct messages and
+// documents but keeps the topics.
 func (f *FakeTelegram) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = nil
 	f.sent = nil
+	f.direct = nil
 	f.docs = nil
 }
 
@@ -313,11 +337,92 @@ func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) (int, error)
 	return id, nil
 }
 
+// SendDirect records the message for the user's private chat and hands
+// out a message id like Send. Nothing in the fake models a closed chat;
+// use FailNext("direct", domain.ErrForbidden) for that.
+func (f *FakeTelegram) SendDirect(_ context.Context, userID int64, out domain.Outgoing) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := fmt.Sprintf("direct:%d:%s", userID, out.Text)
+	if out.Notify {
+		call += ":notify"
+	}
+	if len(out.Buttons) > 0 {
+		call += fmt.Sprintf(":buttons=%d", len(out.Buttons))
+	}
+	if err := f.record("direct", call); err != nil {
+		return 0, err
+	}
+	f.direct = append(f.direct, out)
+	id := f.nextMsgID
+	f.nextMsgID++
+	f.texts[id] = out.Text
+	if len(out.Buttons) > 0 {
+		f.buttons[id] = append([]domain.Button(nil), out.Buttons...)
+	}
+	return id, nil
+}
+
+// ProbeDirect records probe:<user>; FailNext("probe", domain.ErrForbidden)
+// stands for a chat the bot may not write to.
+func (f *FakeTelegram) ProbeDirect(_ context.Context, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.record("probe", fmt.Sprintf("probe:%d", userID))
+}
+
+// Pin records pin:<message>; a message the fake never sent is
+// domain.ErrMessageGone.
+func (f *FakeTelegram) Pin(_ context.Context, messageID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.record("pin", fmt.Sprintf("pin:%d", messageID)); err != nil {
+		return err
+	}
+	if _, ok := f.texts[messageID]; !ok {
+		return domain.ErrMessageGone
+	}
+	f.pinned[messageID] = true
+	return nil
+}
+
+// Unpin records unpin:<message>; unpinning an unknown or unpinned message
+// succeeds, as in Telegram.
+func (f *FakeTelegram) Unpin(_ context.Context, messageID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.record("unpin", fmt.Sprintf("unpin:%d", messageID)); err != nil {
+		return err
+	}
+	delete(f.pinned, messageID)
+	return nil
+}
+
+// DeleteMessage records deletemsg:<message> and forgets the message; a
+// message the fake does not know is domain.ErrMessageGone.
+func (f *FakeTelegram) DeleteMessage(_ context.Context, messageID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.record("deletemsg", fmt.Sprintf("deletemsg:%d", messageID)); err != nil {
+		return err
+	}
+	if _, ok := f.texts[messageID]; !ok {
+		return domain.ErrMessageGone
+	}
+	delete(f.texts, messageID)
+	delete(f.buttons, messageID)
+	delete(f.pinned, messageID)
+	return nil
+}
+
 func (f *FakeTelegram) EditText(_ context.Context, messageID int, text string, _ bool, buttons []domain.Button) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.record("edittext", fmt.Sprintf("edittext:%d:%s:buttons=%d", messageID, text, len(buttons))); err != nil {
 		return err
+	}
+	if _, ok := f.texts[messageID]; !ok && messageID >= 1000 && messageID < f.nextMsgID {
+		return domain.ErrMessageGone
 	}
 	f.texts[messageID] = text
 	if len(buttons) == 0 {

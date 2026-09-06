@@ -1099,17 +1099,6 @@ func failureReason(err error) string {
 	return strings.TrimSpace(line)
 }
 
-// topicLink builds the t.me deep link for a topic in a supergroup: the
-// chat id without its -100 prefix, then the thread id.
-func topicLink(chatID int64, threadID int) string {
-	id := chatID
-	if id < 0 {
-		id = -id
-	}
-	s := strings.TrimPrefix(strconv.FormatInt(id, 10), "100")
-	return "https://t.me/c/" + s + "/" + strconv.Itoa(threadID)
-}
-
 func plural(n int, noun string) string {
 	if n == 1 {
 		return "1 " + noun

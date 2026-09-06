@@ -53,6 +53,9 @@ type OptionSpec struct {
 // Option keys and group names referenced from the application layer.
 const (
 	OptionSyncEnabled = "sync.enabled"
+	// OptionSyncDashboard keeps one pinned message in General that lists
+	// every live agent with its status, edited in place and never ringing.
+	OptionSyncDashboard = "sync.dashboard"
 	// OptionRedact switches the secret redaction of every post on or off.
 	OptionRedact = "privacy.redact"
 	// OptionDeleteAfterDays is how long a closed topic of an exited agent
@@ -92,6 +95,10 @@ const (
 	// OptionPostsReactions puts 👀 on the operator's prompt once the agent
 	// took it and ✅ when that turn ends.
 	OptionPostsReactions = "posts.reactions"
+	// OptionPostsPager sends a question from an agent to the bot's private
+	// chat with a sound and a link, and posts it into the topic silently,
+	// so a muted group still rings exactly once per question.
+	OptionPostsPager = "posts.pager"
 	// OptionPostsBlockedDelay is how many seconds a blocked post waits
 	// after the usual settle before a second capture; "0" posts at once.
 	OptionPostsBlockedDelay = "posts.blocked_delay"
@@ -181,6 +188,14 @@ func buildOptionSpecs() []OptionSpec {
 			Default:     "true",
 		},
 		{
+			Key:         OptionSyncDashboard,
+			Group:       GroupSync,
+			Title:       "Dashboard in General",
+			Description: "One pinned message in General, edited in place and never ringing: every live agent with its status, how long it has been in it and a link to its topic. Off unpins and deletes it.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
 			Key:         OptionQuietEnabled,
 			Group:       GroupQuiet,
 			Title:       "Quiet while at the desk",
@@ -237,6 +252,14 @@ func buildOptionSpecs() []OptionSpec {
 			Group:       GroupPosts,
 			Title:       "React to prompts",
 			Description: "👀 on your message once the agent took it, ✅ when that turn ends. Off: no reactions.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionPostsPager,
+			Group:       GroupPosts,
+			Title:       "Questions in the bot's chat",
+			Description: "On: a question from an agent is posted into its topic without a sound and sent to you in the bot's private chat with a sound and a link to the topic. Mute the group in Telegram and only questions ring. Off: the topic post rings, nothing is sent to the private chat.",
 			Kind:        KindBool,
 			Default:     "true",
 		},
@@ -677,6 +700,14 @@ func (o Options) IsDefault(key string) bool {
 
 // SyncEnabled is the Herdr → Telegram mirror switch.
 func (o Options) SyncEnabled() bool { return o.Bool(OptionSyncEnabled) }
+
+// DashboardEnabled reports whether the pinned status message in General
+// is kept.
+func (o Options) DashboardEnabled() bool { return o.Bool(OptionSyncDashboard) }
+
+// PagerEnabled reports whether questions ring from the bot's private chat
+// instead of the topic post.
+func (o Options) PagerEnabled() bool { return o.Bool(OptionPostsPager) }
 
 // RedactEnabled is the secret redaction switch.
 func (o Options) RedactEnabled() bool { return o.Bool(OptionRedact) }
