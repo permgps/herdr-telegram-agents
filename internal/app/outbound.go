@@ -616,14 +616,18 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 // page sends the question to every operator's private chat with a sound:
 // the agent label, the dialog's options or the last pagerLines lines of
 // the screen, and a link to the post in the topic. It reports whether at
-// least one operator was reached; when none was, the pager is switched
-// off for the rest of the run so the next question rings in the topic.
-// A closed private chat (ErrForbidden) is not the group's fault and is
+// least one operator was reached. When every chat is closed (ErrForbidden:
+// the operator blocked the bot or never pressed Start) the pager is
+// switched off for the rest of the run, General is told once, and the
+// next question rings in the topic; a transient failure (network, 5xx,
+// a cancelled context) loses this ring but keeps the pager on for the
+// next question. A closed private chat is not the group's fault and is
 // never fatal here; only a dead bot token or a poller conflict is.
 func (o *outbound) page(ctx context.Context, key domain.Key, agent domain.Agent, threadID, messageID int, text string, dialog domain.Dialog) (bool, error) {
 	out := domain.Outgoing{Text: pagerText(agent.Label(), text, dialog, messageLink(o.chatID, threadID, messageID)), HTML: true, Notify: true}
 	var reached []int64
 	var last error
+	closed := 0
 	for _, op := range o.operators {
 		id, err := o.tg.SendDirect(ctx, op, out)
 		switch {
@@ -633,15 +637,27 @@ func (o *outbound) page(ctx context.Context, key domain.Key, agent domain.Agent,
 		case errors.Is(err, domain.ErrBotUnauthorized), errors.Is(err, domain.ErrPollerConflict):
 			o.log.Error("pager failed with a fatal telegram error", slog.String("key", key.String()), slog.Int64("operator", op), slog.String("err", err.Error()))
 			return len(reached) > 0, err
+		case errors.Is(err, domain.ErrForbidden):
+			closed++
+			last = err
+			o.log.Info("operator chat closed", slog.String("key", key.String()), slog.Int64("operator", op), slog.String("err", err.Error()))
 		default:
 			last = err
 			o.log.Debug("pager send failed", slog.String("key", key.String()), slog.Int64("operator", op), slog.String("err", err.Error()))
 		}
 	}
 	if len(reached) == 0 {
+		if closed < len(o.operators) {
+			o.log.Warn("pager failed, this question rings nowhere", slog.String("key", key.String()),
+				slog.Int("operators", len(o.operators)), slog.Int("closed", closed), slog.String("err", errString(last)))
+			return false, nil
+		}
 		o.pagerReachable.Store(false)
 		o.log.Warn("pager failed, ringing in the topic next time", slog.String("key", key.String()),
 			slog.Int("operators", len(o.operators)), slog.String("err", errString(last)))
+		if _, err := o.tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: pagerNotice}); err != nil {
+			o.log.Warn("pager notice not posted", slog.String("err", err.Error()))
+		}
 		return false, nil
 	}
 	o.log.Info("pager sent", slog.String("key", key.String()), slog.Any("operators", reached), slog.Int("failed", len(o.operators)-len(reached)),

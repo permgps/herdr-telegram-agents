@@ -170,14 +170,15 @@ func (b *Dashboard) Stop(ctx context.Context) {
 // view assembles the renderer from the live state.
 func (b *Dashboard) view() statusView {
 	return statusView{
-		agents:   b.live(),
-		topics:   b.topics,
-		icons:    b.opts.StatusIcons(),
-		syncOff:  !b.opts.SyncEnabled(),
-		presence: presenceHeaderText(b.presence, b.opts.QuietEnabled(), b.clock),
-		chatID:   b.chatID,
-		since:    b.Since(),
-		now:      b.clock.Now(),
+		agents:    b.live(),
+		topics:    b.topics,
+		icons:     b.opts.StatusIcons(),
+		syncOff:   !b.opts.SyncEnabled(),
+		presence:  presenceHeaderText(b.presence, b.opts.QuietEnabled(), b.clock),
+		chatID:    b.chatID,
+		since:     b.Since(),
+		now:       b.clock.Now(),
+		maxAgents: dashboardMaxAgents,
 	}
 }
 
@@ -186,6 +187,9 @@ func (b *Dashboard) view() statusView {
 func (b *Dashboard) refresh(ctx context.Context, reason string) error {
 	id := b.rec.DashboardID()
 	if !b.opts.DashboardEnabled() {
+		if id == 0 {
+			return nil
+		}
 		return b.remove(ctx, id)
 	}
 	v := b.view()
@@ -265,19 +269,33 @@ func (b *Dashboard) Repin(ctx context.Context) {
 	}
 }
 
+// dashboardOffText replaces a dashboard message Telegram refused to delete
+// (a bot may delete its own group messages only within 48 h unless it
+// holds "Delete messages"), so what stays behind is inert.
+const dashboardOffText = "<i>dashboard is off (/options → Sync)</i>"
+
 // remove unpins and deletes the message when the option is off; the id is
-// cleared even when Telegram already lost the message.
+// cleared even when Telegram already lost the message. A message that
+// cannot be deleted is edited to a one-line "off" note before it is
+// forgotten, so switching the option on again never leaves a live-looking
+// orphan behind.
 func (b *Dashboard) remove(ctx context.Context, id int) error {
-	if id == 0 {
-		b.log.Debug("dashboard off, nothing to remove")
-		return nil
-	}
 	if err := b.tg.Unpin(ctx, id); err != nil && !errors.Is(err, domain.ErrMessageGone) {
 		b.log.Debug("dashboard unpin failed", slog.Int("message_id", id), slog.String("err", err.Error()))
 	}
 	if err := b.tg.DeleteMessage(ctx, id); err != nil && !errors.Is(err, domain.ErrMessageGone) {
 		if err := b.failed("dashboard delete failed", id, err); err != nil {
 			return err
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		if err := b.tg.EditText(ctx, id, dashboardOffText, true, nil); err != nil && !errors.Is(err, domain.ErrMessageGone) {
+			if err := b.failed("dashboard off note failed", id, err); err != nil {
+				return err
+			}
+		} else {
+			b.log.Info("dashboard not deleted, marked off instead", slog.Int("message_id", id))
 		}
 	}
 	b.setID(ctx, 0)

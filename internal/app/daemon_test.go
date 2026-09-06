@@ -1072,6 +1072,37 @@ func TestDaemonPagerProbeAndFallback(t *testing.T) {
 	if sent := f.tg.Sent(); !sent[2].Notify || len(f.tg.Direct()) != 0 {
 		t.Fatalf("Sent = %+v, Direct = %+v", sent, f.tg.Direct())
 	}
+	// Switching the option off and on probes again; the chat is still
+	// closed, and General is not told a second time.
+	f.tg.FailNext("probe", domain.ErrForbidden)
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "second probe", func() bool { return countCalls(f.tg.Calls(), "probe:") == 2 })
+	time.Sleep(20 * time.Millisecond)
+	if n := countCalls(f.tg.Calls(), "send:0:⚠️ questions"); n != 1 {
+		t.Fatalf("pager notice posted %d times", n)
+	}
+	// Once the chat opens the pager is back and a later closure is
+	// announced again.
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "third probe", func() bool { return countCalls(f.tg.Calls(), "probe:") == 3 && f.daemon.Stats().Pager == "on" })
+	f.tg.FailNext("probe", domain.ErrForbidden)
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.opts.Set(context.Background(), domain.OptionPostsPager, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "second notice", func() bool { return countCalls(f.tg.Calls(), "send:0:⚠️ questions") == 2 })
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)
 	}

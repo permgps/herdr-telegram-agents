@@ -95,6 +95,10 @@ const (
 	// per-agent durations move even when nothing else happens.
 	dashboardSettle = 2 * time.Second
 	dashboardTick   = 60 * time.Second
+	// dashboardMaxAgents caps the lines of the dashboard so the message
+	// stays one Telegram message (4096 chars) whatever the agent count;
+	// the rest is summed up as "+N more".
+	dashboardMaxAgents = 40
 	// pagerLines is how many trailing screen lines the pager message in the
 	// bot's private chat carries when the question is not a numbered
 	// dialog; a dialog lists its options instead.

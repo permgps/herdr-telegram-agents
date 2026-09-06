@@ -1349,7 +1349,7 @@ func TestOutboundPagerUnreachableFallsBackToTopic(t *testing.T) {
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
 	f.fire(t, 1)
 	calls := f.tg.Calls()
-	if len(calls) != 2 || strings.Contains(calls[0], ":notify") || !strings.HasPrefix(calls[1], "direct:1:") {
+	if len(calls) != 3 || strings.Contains(calls[0], ":notify") || !strings.HasPrefix(calls[1], "direct:1:") || calls[2] != "send:0:"+pagerNotice {
 		t.Fatalf("calls = %q", calls)
 	}
 	if f.out.announced[a.Key] {
@@ -1373,6 +1373,39 @@ func TestOutboundPagerUnreachableFallsBackToTopic(t *testing.T) {
 	}
 	if !f.out.announced[a.Key] {
 		t.Error("topic ring not marked announced")
+	}
+}
+
+func TestOutboundPagerTransientFailureKeepsThePager(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "\n  Allow edit?  \n  1. Yes  \n  2. No  \n\n")
+	f.tg.FailNext("direct", errors.New("502 Bad Gateway"))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls := f.tg.Calls()
+	if len(calls) != 2 || strings.Contains(calls[0], ":notify") || !strings.HasPrefix(calls[1], "direct:1:") {
+		t.Fatalf("calls = %q", calls)
+	}
+	if f.out.announced[a.Key] || !f.out.PagerReachable() {
+		t.Fatalf("announced=%v reachable=%v, want false/true", f.out.announced[a.Key], f.out.PagerReachable())
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"pager failed, this question rings nowhere"`) {
+		t.Errorf("log lacks the transient warning:\n%s", f.logBuf.String())
+	}
+	// The next question tries the private chat again.
+	f.tg.Reset()
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.herdr.SetScreen("p1", "\n  Run tests?  \n  1. Yes  \n  2. No  \n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	calls = f.tg.Calls()
+	if len(calls) != 3 || calls[0] != "buttons:1000:" || strings.Contains(calls[1], ":notify") || !strings.HasSuffix(calls[2], ":notify") || !strings.HasPrefix(calls[2], "direct:1:") {
+		t.Fatalf("calls for the next question = %q", calls)
+	}
+	if !f.out.announced[a.Key] {
+		t.Error("paged question not marked announced")
 	}
 }
 

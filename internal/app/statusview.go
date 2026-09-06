@@ -29,6 +29,9 @@ type statusView struct {
 	since  map[domain.Key]time.Time
 	now    time.Time
 	footer string
+	// maxAgents caps the agent lines; 0 lists every agent. The dashboard
+	// sets it so its message never outgrows one Telegram message.
+	maxAgents int
 }
 
 // render returns the HTML text.
@@ -63,8 +66,13 @@ func (v statusView) body() string {
 		}
 		return live[a].Key.String() < live[b].Key.String()
 	})
-	lines := make([]string, 0, len(live)+1)
-	lines = append(lines, header+plural(len(live), "agent"))
+	more := 0
+	if v.maxAgents > 0 && len(live) > v.maxAgents {
+		more = len(live) - v.maxAgents
+		live = live[:v.maxAgents]
+	}
+	lines := make([]string, 0, len(live)+2)
+	lines = append(lines, header+plural(len(live)+more, "agent"))
 	for _, a := range live {
 		label := html.EscapeString(a.Label())
 		if v.topics != nil {
@@ -79,6 +87,9 @@ func (v statusView) body() string {
 			}
 		}
 		lines = append(lines, line)
+	}
+	if more > 0 {
+		lines = append(lines, fmt.Sprintf("… +%d more", more))
 	}
 	return strings.Join(lines, "\n")
 }

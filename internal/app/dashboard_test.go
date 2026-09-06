@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -117,6 +118,9 @@ func TestDashboardCreatesPinsAndEdits(t *testing.T) {
 	}
 	if f.rec.DashboardID() != 1000 || f.store.Saved().Dashboard != 1000 || !f.tg.Pinned(1000) {
 		t.Fatalf("id=%d saved=%+v pinned=%v", f.rec.DashboardID(), f.store.Saved(), f.tg.Pinned(1000))
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || !sent[0].HTML || sent[0].Notify || sent[0].ThreadID != 0 {
+		t.Fatalf("dashboard message = %+v, want silent HTML in General", sent)
 	}
 	if !strings.Contains(f.logBuf.String(), `"msg":"dashboard created"`) {
 		t.Errorf("log lacks 'dashboard created':\n%s", f.logBuf.String())
@@ -269,6 +273,51 @@ func TestDashboardOptionOffRemovesAndOnRecreates(t *testing.T) {
 	}
 	if got := f.board(); len(got) != 2 || !strings.HasPrefix(got[0], "send:0:") || got[1] != "pin:1001" {
 		t.Fatalf("on calls = %q", got)
+	}
+}
+
+func TestDashboardUndeletableMessageIsMarkedOff(t *testing.T) {
+	f := newDashFixture(t)
+	f.add(t, "p1", "alpha", domain.StatusWorking)
+	f.fire(t, 1)
+	f.tg.Reset()
+	if err := f.opts.Set(f.ctx, domain.OptionSyncDashboard, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.FailNext("deletemsg", errors.New("bad request, Bad Request: message can't be deleted"))
+	if err := f.dash.Enable(f.ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	got := f.board()
+	if len(got) != 3 || got[0] != "unpin:1000" || got[1] != "deletemsg:1000" || got[2] != "edittext:1000:"+dashboardOffText+":buttons=0" {
+		t.Fatalf("calls = %q", got)
+	}
+	if f.rec.DashboardID() != 0 {
+		t.Fatalf("id kept: %d", f.rec.DashboardID())
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"dashboard not deleted, marked off instead"`) {
+		t.Error("log lacks the marked-off line")
+	}
+	// Off with nothing left: the tick is silent.
+	f.logBuf.Reset()
+	if err := f.dash.Tick(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.logBuf.Len() != 0 {
+		t.Fatalf("idle tick logged: %s", f.logBuf.String())
+	}
+}
+
+func TestDashboardCapsTheAgentList(t *testing.T) {
+	f := newDashFixture(t)
+	for i := 0; i < dashboardMaxAgents+3; i++ {
+		f.add(t, fmt.Sprintf("p%02d", i), fmt.Sprintf("a%02d", i), domain.StatusWorking)
+	}
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	text := sent[len(sent)-1].Text
+	if !strings.HasPrefix(text, fmt.Sprintf("%d agents\n", dashboardMaxAgents+3)) || !strings.Contains(text, "\n… +3 more\n") || strings.Contains(text, "a42") || !strings.Contains(text, "a39") {
+		t.Fatalf("capped dashboard = %q", text)
 	}
 }
 

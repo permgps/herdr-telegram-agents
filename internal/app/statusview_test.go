@@ -67,6 +67,11 @@ func TestStatusViewRender(t *testing.T) {
 	if got := (statusView{presence: "🏃 away (manual) until /here\n"}).render(); got != "🏃 away (manual) until /here\nno agents" {
 		t.Errorf("empty view = %q", got)
 	}
+	// A cap keeps the first lines and sums up the rest.
+	capped := statusView{agents: []domain.Agent{a, b}, icons: domain.DefaultStatusIcons(), maxAgents: 1}
+	if got := capped.render(); got != "2 agents\n⚡ ws · alpha &lt;x&gt;\n… +1 more" {
+		t.Errorf("capped = %q", got)
+	}
 	// Without a topic view the label is plain text.
 	if got := (statusView{agents: []domain.Agent{b}, icons: domain.DefaultStatusIcons()}).render(); got != "1 agent\n⚡ ws · alpha &lt;x&gt;" {
 		t.Errorf("no topics = %q", got)

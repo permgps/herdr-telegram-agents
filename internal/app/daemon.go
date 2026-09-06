@@ -53,8 +53,10 @@ type Daemon struct {
 	resync chan struct{}
 	sweep  chan struct{}
 	// probe asks the loop to check the operators' private chats again
-	// (the posts.pager option turned on).
-	probe chan struct{}
+	// (the posts.pager option turned on); pagerNoticed keeps the General
+	// notice at one per unreachable episode.
+	probe        chan struct{}
+	pagerNoticed bool
 	// rights is the bot's last known standing, read by the sweep.
 	rights domain.Rights
 	// inbox is swept with the topics; nil means no inbox in this build.
@@ -305,8 +307,13 @@ func (d *Daemon) probePager(ctx context.Context, reason string) error {
 	ok := len(reachable) > 0
 	d.bridge.SetPagerReachable(ok)
 	d.log.Info("pager reachable", slog.Int("operators", len(d.cfg.OperatorIDs)), slog.Any("reachable", reachable), slog.String("reason", reason))
-	if !ok {
-		d.log.Warn("pager unreachable: open the bot and press Start", slog.Int("operators", len(d.cfg.OperatorIDs)))
+	if ok {
+		d.pagerNoticed = false
+		return nil
+	}
+	d.log.Warn("pager unreachable: open the bot and press Start", slog.Int("operators", len(d.cfg.OperatorIDs)))
+	if !d.pagerNoticed {
+		d.pagerNoticed = true
 		d.general(ctx, pagerNotice)
 	}
 	return nil
@@ -431,6 +438,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// starting statuses so its first transitions are seen as such.
 	for _, ev := range initial {
 		d.capture.Observe(ev)
+		d.dashboard.Observe(ev)
 		d.bridge.Submit(ev)
 	}
 	if !d.opts.RedactEnabled() {
