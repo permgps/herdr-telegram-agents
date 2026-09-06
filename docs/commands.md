@@ -9,8 +9,13 @@ names, icons, exit and resume, the options) are in [behaviour.md](behaviour.md).
 ## What gets posted
 
 When an agent turns **blocked** (a question or an approval dialog) the daemon
-waits 1.5 s and posts the last 25 lines of the screen into its topic with a
-notification. When it turns **done** the topic gets the last 12 lines of the
+waits 1.5 s and posts the last 25 lines of the screen into its topic. With
+`Questions in the bot's chat` on (the default) that post is silent and the
+bot sends you, in your private chat with it, `❓ <agent> is waiting for you`
+with the dialog's options (or the last six screen lines) and a link to the
+post, with a sound; with it off the topic post itself rings. Either way you
+answer in the topic. See [Silence the group](behaviour.md#silence-the-group)
+for why. When it turns **done** the topic gets the last 12 lines of the
 screen, or the agent's last reply when `Done post` in `/options` says so (see
 [Done posts](behaviour.md#done-posts)). A post identical to the previous one
 for that agent is skipped. Agents that
@@ -150,7 +155,7 @@ and the commands appear in Telegram's `/` menu for the group.
 
 | You write | What happens |
 |-----------|--------------|
-| `/status` | every live agent with its status emoji and a link to its topic; the first line says when quiet mode is holding edits (`🔕 …`), when you are away by hand (`🏃 …`) or when sync is off (`🔇 …`) |
+| `/status` | every live agent with its status emoji, a link to its topic and, once known, how long it has been in that status (`· 12 min`); the first line says when quiet mode is holding edits (`🔕 …`), when you are away by hand (`🏃 …`) or when sync is off (`🔇 …`). The same text, with an `updated HH:MM` footer, is the pinned dashboard; see [The dashboard](behaviour.md#the-dashboard) |
 | `/options` | the settings panel: sync, quiet mode, status icons, secret redaction, topic cleanup; see [Options](behaviour.md#options) |
 | `/away`, `/away 2h` | you count as away until `/here`, or for that long (any Go duration from `1m` to `168h`): held topic edits and posts go out at once; see [Quiet while at the desk](behaviour.md#quiet-while-at-the-desk) |
 | `/here` | presence is automatic again; the reply says the current verdict |
@@ -161,10 +166,13 @@ and the commands appear in Telegram's `/` menu for the group.
 hint that they live in an agent's topic.
 
 The daemon also posts silent notices into General when it starts, stops,
-loses or regains the **Manage topics** right, or gives up on the Herdr
-socket.
+loses or regains the **Manage topics** right, gives up on the Herdr socket,
+or cannot write to any operator's private chat while `Questions in the
+bot's chat` is on (`⚠️ questions will ring in the topics …`). Above them
+sits the pinned dashboard: one message, edited in place, with every live
+agent, its status and how long it has been in it.
 
 ## See Also
 
-- [Behaviour](behaviour.md): topic naming and icons, the options panel, quiet mode, secrets, topic cleanup, logs and state
+- [Behaviour](behaviour.md): topic naming and icons, the dashboard, the options panel, silencing the group, quiet mode, secrets, topic cleanup, logs and state
 - [README: Actions](../README.md#actions): start, stop, resync, status, logs, doctor and the test message from Herdr

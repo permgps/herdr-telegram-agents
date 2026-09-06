@@ -31,7 +31,9 @@ in a topic and what gets posted there is in [commands.md](commands.md).
 - Every status change makes Telegram post a "changed the topic icon" notice
   into the topic. The daemon deletes its own notices right away, which needs
   **Delete messages**; without that right they stay and the log says so once.
-  Topic creation notices cannot be deleted and remain.
+  Topic creation notices cannot be deleted and remain. The dashboard in
+  General is pinned with **Pin messages**; without that right it is an
+  ordinary message and the log says so once (see [The dashboard](#the-dashboard)).
 - Rename a topic by hand and the change goes back to Herdr: the tab is
   renamed (`tab.rename`), which is what the Agents panel shows on its first
   line, or the custom agent name when the agent has one (`agent.rename`).
@@ -40,6 +42,44 @@ in a topic and what gets posted there is in [commands.md](commands.md).
 - Close a topic by hand and the mirror goes quiet for that agent: no icon
   edits, no screen posts, until you reopen it. Reopening refreshes name and
   icon; if the agent exited meanwhile the topic gets 🏁 and is closed again.
+
+## The dashboard
+
+One message of the bot in General, pinned, shows the same text as `/status`
+plus how long each agent has been in its status and a footer `updated
+HH:MM`:
+
+```
+2 agents
+⚡ V3Jobs · claude · 12 min
+❓ herdr_tg · claude · 3 min
+
+updated 21:35
+```
+
+- It is created silently on the first refresh after daemon start, pinned
+  silently (the "pinned a message" notice the bot causes is deleted like a
+  topic edit notice) and then only edited in place. An edit of an existing
+  message never notifies anybody, so the dashboard costs no sound.
+- It refreshes 2 s after the last agent event, presence change or option
+  change (a burst of events is one edit), and once a minute while a
+  duration label moved; an edit whose text would be unchanged is skipped.
+  The duration counts from the status change the daemon saw; an agent that
+  was already in its status when the daemon started shows none until it
+  changes. Under a minute there is no label, then `N min`, `N h M min`,
+  `N d M h`.
+- It keeps updating while sync is off, while writes are paused for lost
+  rights and while quiet mode holds topic edits: the edit needs no admin
+  right and rings nothing.
+- On daemon stop the footer becomes `⏹ stopped HH:MM`. At the next start
+  the stored message is pinned again (a no-op when it is still pinned) and
+  refreshed; no second message is made. A message you deleted by hand is
+  recreated on the next refresh.
+- The message id lives in `mapping.json` as `dashboard_message_id`. A
+  binary older than this feature drops the key on its next save and leaves
+  one stale pinned message behind; unpin and delete it by hand.
+- `Dashboard in General` in `/options` → Sync (default on) switches it;
+  off unpins and deletes the message.
 
 ## Questions and buttons
 
@@ -198,6 +238,7 @@ The options today:
 | Option | Group | What it does |
 |--------|-------|--------------|
 | `Herdr → Telegram sync` | Sync | Default on. Off: the daemon creates, edits and closes no topic and posts no screen until it is on again. Messages, keys, `/screen`, `/status` and presses on existing question buttons keep working, the screen capture keeps running, daemon notices keep posting. Back on: a full resync, like the `resync` action. A daemon that starts with sync off says so in its started notice, in the `/status` header (`🔇 …`), in the `status` action line (`sync=off`) and in the log. |
+| `Dashboard in General` | Sync | Default on. One pinned message in General, edited in place and never ringing: every live agent with its status, how long it has been in it and a link to its topic, `updated HH:MM` at the bottom. Off unpins and deletes it. See [The dashboard](#the-dashboard). |
 | `Quiet while at the desk` | Quiet | Default off: every topic edit and screen post goes out at once, sounds included, so a fresh install shows the plugin at work. On: while you are at the desk, topic edits wait and screen posts are silent; everything catches up when you leave. Off means no presence check at all; `/away` and `/here` then answer that quiet mode is off. See [Quiet while at the desk](#quiet-while-at-the-desk). |
 | `Away after` | Quiet | Default 3 min. Minutes without keyboard or mouse input on this machine before you count as away. A value outside the picker's list (say `45`) can be typed into `options.json` by hand. |
 | `Hold topic edits` | Quiet | Default on. While at the desk no topic is created, renamed, closed, reopened or given a new icon; each of those is a Telegram service message that rings the phone. Off keeps topic edits live while at the desk. |
@@ -205,6 +246,7 @@ The options today:
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
 | `Done post` | Posts | Default `Screen`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. Falls back to `Screen` for non-Claude agents or when no reply is found, see [Done posts](#done-posts). |
 | `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, 👌 when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
+| `Questions in the bot's chat` | Posts | Default on. A question from an agent is posted into its topic without a sound and sent to you in the private chat with the bot with a sound: the agent's name, the dialog's options or the last six screen lines, and a link to the post. Mute the group in Telegram and only questions ring. Off: the topic post rings, nothing goes to the private chat. Needs a private chat the bot may write to; see [Silence the group](#silence-the-group). |
 | `Question delay` | Posts | Default `Off`. With `5s` … `120s`: after the usual 1.5 s capture the blocked post waits that long more, is dropped when the agent left blocked meanwhile, starts over when a newer question arrived, and otherwise posts the better of the two captures (more options recognised, then the longer text). `Off` posts the first capture at 1.5 s. Any integer of seconds up to 3600 can be typed into `options.json`. See [Questions and buttons](#questions-and-buttons). |
 | `Skip short done posts` | Posts | Default `Off`. With `5s` … `120s`: the done post of a turn shorter than that is skipped (blocked time included; a turn whose start the daemon never saw posts). Blocked posts and reactions are unaffected. Any integer of seconds up to 3600 can be typed into `options.json`. See [Turns and reactions](#turns-and-reactions). |
 | `Accept files` | Inbox | Default on. Photos, documents, voice notes, audio and video sent to a topic are saved to the inbox and the agent is prompted with the path. Off: such messages answer `⚠️ inbox is off (/options → Inbox)`. See [Inbox](#inbox). |
@@ -215,14 +257,60 @@ The options today:
 | `Delete closed topics after` | Topics | Default 30 days. The topic of an exited agent is deleted once it has been closed for that long, see [Topic cleanup](#topic-cleanup). `Off` keeps every topic. A number outside the picker's list (say `45`) can be typed into `options.json` by hand; the panel shows it without a bracketed button. |
 
 Values are saved in `options.json` next to `config.json` (mode 0600) as
-`{"version": 1, "values": {"sync.enabled": true, "quiet.enabled": true,
-"quiet.idle_minutes": "3", "quiet.posts": "silent", "posts.reactions": true,
+`{"version": 1, "values": {"sync.enabled": true, "sync.dashboard": true,
+"quiet.enabled": true, "quiet.idle_minutes": "3", "quiet.posts": "silent",
+"posts.reactions": true, "posts.pager": true,
 "posts.blocked_delay": "0", "inbox.enabled": true, "inbox.max_mb": "20",
 "inbox.delete_after_days": "7", "icons.working": "⚡", "privacy.redact": true,
 "topics.delete_after_days": "30", …}}`.
 Missing keys take their defaults and unknown keys survive a save. The file
 is read once at daemon start: edit it by hand and restart the daemon, or use
 the panel, which applies a change immediately.
+
+## Silence the group
+
+The topic list shows the exact status of every agent, and every status
+change is a topic edit: a Telegram service message ("X changed the topic
+icon") that rings the phone in a group with sound on. The Bot API has no
+silent form of it and no way to mute a group for you; the daemon deletes
+its own notices after ten seconds, but the push has fired by then. So the
+supported setup is: **mute the group once, in Telegram, by hand**, and let
+the one thing that must ring come from somewhere else.
+
+- **Mute the group**: on the phone open the group, tap its name, then
+  **Mute** (or the 🔔 in the header) and pick **Forever** or **Disable**;
+  on Telegram Desktop right-click the group in the chat list and choose
+  **Mute notifications** → **Disable**. Muting the group mutes every topic
+  in it; a single topic can be muted the same way from its own header.
+- **What still arrives, silently**: the icons keep changing exactly as
+  before, the dashboard in General keeps its lines and durations current,
+  done posts, `/screen` replies and daemon notices land in the topics.
+  Everything is visible as soon as you open the app; nothing makes a sound.
+- **What rings**: a question from an agent. With `Questions in the bot's
+  chat` (the `posts.pager` option, default on) the blocked screen is posted
+  into the topic without a sound and the bot sends you, in your private
+  chat with it, `❓ <agent> is waiting for you`, the dialog's options or the
+  last six lines of the screen, and a link that opens the topic at that
+  post. The private chat is not part of the group, so it rings even though
+  the group is muted, and a question rings exactly once wherever you
+  listen. Answer in the topic as always: the buttons stay under the topic
+  post, and nothing typed into the private chat reaches an agent.
+- **Press Start once**: a bot may write to your private chat only after
+  you opened it and pressed **Start**; setup does that through the
+  `t.me/<bot>?start=setup` link. The daemon checks each operator's chat at
+  start and when the option is switched on (log `pager reachable`); when no
+  operator's chat takes messages it logs `pager unreachable: open the bot
+  and press Start`, posts `⚠️ questions will ring in the topics …` into
+  General and rings in the topics as before, and the `status` action line
+  ends with `pager=unreachable`. The `doctor` action has an `operator chat`
+  line for the same check. When every private-chat send of a question
+  fails the daemon does the same for the rest of the run.
+- **Quiet mode is then optional**: with the group muted there is nothing
+  left for it to silence, and its catch-up rings from the bot's chat too.
+  Keep it if you prefer no edits at all while you are at the desk.
+
+`Questions in the bot's chat` off restores the old behaviour: the topic post
+itself rings, and nothing is sent to the private chat.
 
 ## Quiet while at the desk
 
@@ -231,7 +319,8 @@ that rings the phone in a group with sound on, and the Bot API has no silent
 form of it; the daemon deletes its own notices after ten seconds, but the
 push has fired by then. Quiet mode therefore holds those writes while you
 are at the machine, where you see Herdr anyway, and lets Telegram catch up
-when you leave.
+when you leave. The other answer to the sound is to mute the group, see
+[Silence the group](#silence-the-group).
 
 It is off by default: a fresh install mirrors every change right away, so
 you can see the plugin working. Tick `Quiet while at the desk` in
@@ -252,7 +341,8 @@ you can see the plugin working. Tick `Quiet while at the desk` in
 - **When you leave** (idle passes the threshold, `/away`, or quiet mode is
   switched off in the panel): one reconcile pass creates, renames, closes and
   repaints only the topics that drifted, then every agent still blocked whose
-  question never rang is posted again with a sound. A question rings once:
+  question never rang is posted again with a sound (from the bot's private
+  chat while `Questions in the bot's chat` is on). A question rings once:
   the flag is set by any blocked post with sound and cleared when the agent
   leaves blocked, so touching the mouse for a moment and leaving again rings
   nothing new. With `Re-announce on leaving` off only agents without any post
@@ -330,7 +420,7 @@ are deleted; subdirectories and files of a save in flight are left alone.
 | File | Location | Content |
 |------|----------|---------|
 | `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, log level |
-| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping; entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
+| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping and the dashboard message id (`dashboard_message_id`); entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
 | `options.json` | config dir, mode 0600 | the `/options` choices |
 | `inbox/` | state dir, mode 0700, files 0600 | attachments sent to topics, swept daily after `Delete files after` |
 | `daemon.pid` | state dir | pid of the running daemon |
@@ -342,7 +432,8 @@ are deleted; subdirectories and files of a save in flight are left alone.
 A daemon from an older build that does not answer still receives SIGTERM or
 SIGHUP on Unix and is killed if it answers neither. The `status` action prints
 the daemon's own line: `version=… pid=… uptime=… agents=… dropped=… herdr=ok|failing
-since … sync=on|off cleanup=<n>d|off quiet=on|away|away-manual|off`.
+since … sync=on|off cleanup=<n>d|off quiet=on|away|away-manual|off
+pager=on|off|unreachable`.
 
 `LOG_LEVEL=debug|info|warn|error` in Herdr's environment overrides the level
 saved in `config.json` (default `info`). The daemon writes JSON lines to
@@ -357,5 +448,6 @@ default.
 ## See Also
 
 - [Talking to agents](commands.md): what gets posted and what you can send
+- [Silence the group](#silence-the-group): mute the group once, let questions ring from the bot's chat
 - [README: Actions](../README.md#actions): start, stop, resync, status, logs, doctor and the test message from Herdr
 - [Development](development.md): building from source and the tree layout

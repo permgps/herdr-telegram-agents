@@ -25,9 +25,11 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **Status at a glance**: the topic icon is ⚡ working, ✅ idle, ❓ blocked,
   🏆 done, 👀 unknown, 🏁 exited.
 - **Questions come to you**: when an agent gets blocked on a question or an
-  approval, the screen is posted with a notification and, for a numbered
-  dialog, with one button per option; when it finishes, the tail is posted
-  silently.
+  approval, the screen is posted into its topic and, for a numbered dialog,
+  with one button per option; the bot also sends you the question in its
+  private chat with a sound and a link, so you can mute the group and still
+  hear the one thing that matters. When the agent finishes, the tail is
+  posted silently.
 - **Answers go back**: plain text becomes a prompt, `y` / `n` / `1`..`9` /
   `enter` / `esc` answer dialogs, `/keys` sends raw keys.
 - **Look at the screen** with `/screen`, or `/screen all` for everything the
@@ -35,8 +37,10 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **Claude Code commands** `/clear`, `/compact`, `/usage`, `/model` are typed
   into the agent and the result is posted back.
 - **Rename or close** a topic in Telegram to rename or mute the agent in Herdr.
-- **A control panel** in the General topic: `/status` with links to every
-  agent, `/options`, `/away`, `/here`, `/help`, daemon notices.
+- **A control panel** in the General topic: a pinned dashboard with every
+  agent, its status and how long it has been in it, edited in place;
+  `/status` with the same lines, `/options`, `/away`, `/here`, `/help`,
+  daemon notices.
 - **Quiet while you are at the machine** (opt-in): topic edits wait and
   screen posts go silent while your keyboard or mouse is active; when you
   leave, everything catches up and a question still waiting rings once.
@@ -90,9 +94,14 @@ the install script carry no quarantine attribute.
    a `https://t.me/<bot>?start=setup` link.
 4. Open the link, press **Start** and tap **Choose group**. Telegram lists your
    forum groups and adds the bot to the one you pick as an administrator with
-   **Manage topics** and **Delete messages**. The person who picks the group
-   becomes the operator. Adding the bot to a forum group by hand with those
-   rights works as well.
+   **Manage topics**, **Delete messages** and **Pin messages**. The person
+   who picks the group becomes the operator. Adding the bot to a forum group
+   by hand with those rights works as well. Pressing **Start** also opens the
+   private chat the bot uses to ring you about questions.
+6. Mute the group in Telegram (group name → **Mute** → **Forever**). Every
+   status change is a topic edit that would ring; muted, the icons and the
+   dashboard stay current in silence and a question still rings from the
+   bot's private chat. See [Silence the group](docs/behaviour.md#silence-the-group).
 5. Back in the popup confirm the group. The wizard saves `config.json` and
    starts the daemon. From now on the daemon starts automatically with Herdr
    while a configuration exists.
@@ -127,8 +136,9 @@ button: press it and your next message is typed as the answer. A multi-select
 question keeps its buttons as toggles, redraws the post with the ticks and
 adds `✔ Submit`.
 
-The **General** topic is the control panel: `/status` lists every agent with
-a link to its topic, `/new <workspace> [kind]` starts an agent in a new tab
+The **General** topic is the control panel: a pinned dashboard lists every
+agent with its status and how long it has been in it, `/status` prints the
+same lines with a link to each topic, `/new <workspace> [kind]` starts an agent in a new tab
 of that workspace, `/options` opens the settings panel, `/away [2h]` and
 `/here` override the presence check, `/help` lists the commands, and the
 daemon posts its notices there. Only the configured group and the operators
@@ -145,9 +155,9 @@ Its groups:
 
 | Group | What it holds |
 |-------|---------------|
-| Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working |
+| Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working. `Dashboard in General`: the pinned status message, edited in place |
 | Quiet | quiet mode while you are at the desk: `Away after` (3 min), `Hold topic edits`, `Screen posts` (Silent, Held, Normal), `Re-announce on leaving` |
-| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / 👌 on your message); `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds |
+| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / 👌 on your message); `Questions in the bot's chat` (on): a question is posted silently into the topic and rings from the bot's private chat with a link; `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds |
 | Inbox | `Accept files` (on): files sent to a topic are saved and handed to the agent as a path; `Largest file` (20 MB, Telegram's cap for bots); `Delete files after` (7 days) |
 | Appearance | one topic icon per status, from Telegram's topic-icon pack |
 | Privacy | `Redact secrets`: API keys, tokens, passwords and private keys are masked in every post |
@@ -169,10 +179,10 @@ where files land and when they go: [Inbox](docs/behaviour.md#inbox).
 | `Telegram Agents: start` | Starts the daemon if it is not running |
 | `Telegram Agents: stop` | Asks the daemon to exit (SIGTERM as the Unix fallback, then SIGKILL after 10 s) |
 | `Telegram Agents: restart` | Stop followed by start |
-| `Telegram Agents: status` | Whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs, Herdr socket health, sync, topic cleanup and quiet state |
+| `Telegram Agents: status` | Whether the daemon runs, its pid and uptime, and the daemon's own line: version, live agents, dropped jobs, Herdr socket health, sync, topic cleanup, quiet state and whether the pager reaches your private chat |
 | `Telegram Agents: resync` | Asks the running daemon to re-check every topic against the live agents |
 | `Telegram Agents: logs` | Opens an overlay with the last 100 log lines and follows the file |
-| `Telegram Agents: doctor` | Opens an overlay with one line per check: config, options, bot token, group rights, Herdr socket and version, daemon, mapping file |
+| `Telegram Agents: doctor` | Opens an overlay with one line per check: config, options, bot token, group rights (pin right included), whether the bot can write to each operator's private chat, Herdr socket and version, daemon, mapping file |
 | `Telegram Agents: send test message` | Posts a test message into General straight from the action (the daemon need not run) and reports the outcome |
 
 Every action reports its outcome as a Herdr notification. `stop`, `resync`
@@ -203,7 +213,7 @@ tag, so a checkout runs the binary that tag was built from.
 | Page | What it covers |
 |------|----------------|
 | [docs/commands.md](docs/commands.md) | What gets posted, every command in a topic and in General, the Claude Code commands, `/screen all` |
-| [docs/behaviour.md](docs/behaviour.md) | Topic naming and icons, exit and resume rules, manual rename and close, the options panel, quiet mode, secret redaction, topic cleanup, files and logs |
+| [docs/behaviour.md](docs/behaviour.md) | Topic naming and icons, the dashboard, exit and resume rules, manual rename and close, the options panel, silencing the group, quiet mode, secret redaction, topic cleanup, files and logs |
 | [docs/development.md](docs/development.md) | Building from source, `make` targets, publishing a release, the `dev` subcommand, the tree layout |
 | [docs/testing.md](docs/testing.md) | Automated gates and the manual checklist run before a release |
 
