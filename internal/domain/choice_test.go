@@ -63,13 +63,18 @@ func TestParseDialog(t *testing.T) {
 		want   domain.Dialog
 	}{
 		{"measured dialog", measuredDialog,
-			domain.Dialog{Choices: []domain.Choice{{1, "Красный"}, {2, "Зелёный"}, {3, "Синий"}}, TextEntry: 4, TextLabel: "Type something"}},
+			domain.Dialog{Choices: []domain.Choice{{1, "Красный"}, {2, "Зелёный"}, {3, "Синий"}}, TextEntry: 4, TextLabel: "Type something", Cursor: 1}},
 		{"measured multi-select", measuredMultiDialog,
 			domain.Dialog{Choices: []domain.Choice{{1, "[ ] В Telegram есть кнопки"}, {2, "[ ] В Telegram кнопок нет"}, {3, "[ ] Поста в Telegram нет"}},
-				Multi: true, TextEntry: 4, TextLabel: "Type something"}},
+				Multi: true, TextEntry: 4, TextLabel: "Type something", Cursor: 1, SubmitRow: 5}},
+		{"cursor on the submit row", "  1. [✔] A\n  2. [ ] B\n  3. [ ] Type something\n❯    Submit\n  4. Chat about this\n",
+			domain.Dialog{Choices: []domain.Choice{{1, "[✔] A"}, {2, "[ ] B"}}, Multi: true, TextEntry: 3, TextLabel: "Type something", Cursor: 4, SubmitRow: 4}},
 		{"ascii toggled", "  1. [x] A\n  2. [ ] B\n", domain.Dialog{Choices: []domain.Choice{{1, "[x] A"}, {2, "[ ] B"}}, Multi: true}},
+		{"heavy check toggled", "❯ 1. [✔] A\n  2. [✔\ufe0f] B\n  3. [ ] C\n  4. [ ] Type something\n",
+			domain.Dialog{Choices: []domain.Choice{{1, "[✔] A"}, {2, "[✔\ufe0f] B"}, {3, "[ ] C"}}, Multi: true, TextEntry: 4, TextLabel: "Type something", Cursor: 1}},
+		{"brackets in prose are not a checkbox", "  1. [WIP] fix\n  2. [ ] B\n", domain.Dialog{Choices: []domain.Choice{{1, "[WIP] fix"}, {2, "[ ] B"}}}},
 		{"multi-select", "❯ 1. ☐ Red\n  2. ☑ Green\n  3. ☐ Blue\n\nSpace to toggle · Enter to submit",
-			domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "☑ Green"}, {3, "☐ Blue"}}, Multi: true}},
+			domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "☑ Green"}, {3, "☐ Blue"}}, Multi: true, Cursor: 1}},
 		{"mixed glyphs", "  1. ☐ Red\n  2. Green\n", domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "Green"}}}},
 		{"multi-select with text entry", "  1. ☐ A\n  2. ☐ B\n  3. Type something.\n",
 			domain.Dialog{Choices: []domain.Choice{{1, "☐ A"}, {2, "☐ B"}}, Multi: true, TextEntry: 3, TextLabel: "Type something"}},
@@ -124,6 +129,27 @@ func TestParseChoices(t *testing.T) {
 			got := domain.ParseChoices(tc.screen)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("ParseChoices() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDialogSubmitKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		d    domain.Dialog
+		want []string
+	}{
+		{"enter submits without a Submit row", domain.Dialog{Multi: true, Cursor: 1}, []string{"enter"}},
+		{"walk down from the first option", domain.Dialog{Cursor: 1, SubmitRow: 5}, []string{"down", "down", "down", "down", "enter"}},
+		{"no cursor drawn starts at row one", domain.Dialog{SubmitRow: 3}, []string{"down", "down", "enter"}},
+		{"already on Submit", domain.Dialog{Cursor: 5, SubmitRow: 5}, []string{"enter"}},
+		{"walk up from Chat about this", domain.Dialog{Cursor: 6, SubmitRow: 5}, []string{"up", "enter"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.d.SubmitKeys(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("SubmitKeys = %v, want %v", got, tc.want)
 			}
 		})
 	}

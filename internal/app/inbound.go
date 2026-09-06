@@ -435,6 +435,9 @@ func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
 	if group, ok := strings.CutPrefix(key.PaneID, albumPrefix); ok {
 		return i.fireAlbum(ctx, group)
 	}
+	if pane, ok := strings.CutPrefix(key.PaneID, submitPrefix); ok {
+		return i.fireSubmit(ctx, pane)
+	}
 	f, ok := i.pending[key]
 	if !ok {
 		i.log.Debug("command follow-up without pending", slog.String("key", key.String()))
@@ -752,6 +755,9 @@ const (
 	inboxNoStore    = "⚠️ inbox is not available in this build"
 	// albumPrefix marks the debouncer key of a media group.
 	albumPrefix = "album:"
+	// submitPrefix marks the debouncer key of the enter that follows an
+	// attachment prompt.
+	submitPrefix = "submit:"
 )
 
 // album is a media group being collected.
@@ -777,6 +783,30 @@ type inboxResult struct {
 
 // albumKey is the debouncer key for a media group.
 func albumKey(groupID string) domain.Key { return domain.Key{PaneID: albumPrefix + groupID} }
+
+// submitKey is the debouncer key for the enter after an attachment prompt.
+func submitKey(paneID string) domain.Key { return domain.Key{PaneID: submitPrefix + paneID} }
+
+// fireSubmit presses enter in the pane an attachment prompt went to (see
+// inboxSubmitDelay). A pane that shows a dialog by now is left alone: the
+// enter would answer it.
+func (i *inbound) fireSubmit(ctx context.Context, paneID string) error {
+	screen, err := i.herdr.ReadScreen(ctx, paneID, domain.ScreenDetection, blockedLines)
+	if err != nil {
+		i.log.Warn("inbox submit skipped", slog.String("pane", paneID), slog.String("reason", "screen_read"), slog.String("err", err.Error()))
+		return nil
+	}
+	if d := domain.ParseDialog(trimScreen(screen.Text)); len(d.Choices) > 0 {
+		i.log.Info("inbox submit skipped", slog.String("pane", paneID), slog.String("reason", "dialog_open"), slog.Int("choices", len(d.Choices)))
+		return nil
+	}
+	if err := i.herdr.SendKeys(ctx, paneID, []string{domain.KeyEnter}); err != nil {
+		i.log.Warn("inbox submit failed", slog.String("pane", paneID), slog.String("err", err.Error()))
+		return nil
+	}
+	i.log.Info("inbox prompt submitted", slog.String("pane", paneID), slog.Int64("delay_ms", inboxSubmitDelay.Milliseconds()))
+	return nil
+}
 
 // HandleAttachment takes a file sent to a topic: refused with a notice
 // when the inbox is off or the file too big, collected with its album for
@@ -897,6 +927,7 @@ func (i *inbound) InboxFinished(ctx context.Context, r inboxResult) error {
 	}
 	i.log.Info("inbox delivered", slog.String("key", r.key.String()), slog.Int("message_id", r.messageID), slog.Int("saved", len(r.paths)),
 		slog.Int("failed", len(r.failed)), slog.Int64("elapsed_ms", elapsed))
+	i.deb.ScheduleAfter(submitKey(r.key.PaneID), inboxSubmitDelay)
 	if err := i.out.PromptSent(ctx, r.key, r.threadID, r.messageID); err != nil {
 		return err
 	}

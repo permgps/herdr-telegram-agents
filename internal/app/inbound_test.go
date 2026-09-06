@@ -1217,6 +1217,46 @@ func TestInboundAttachmentSavedAndPrompted(t *testing.T) {
 		t.Fatalf("Prompts = %q", prompts)
 	}
 	assertCallsEqual(t, f.tg, "download:file1:20971520", "react:101:42:👀")
+	// Claude Code drops the enter of a paste with an image path: a second
+	// enter follows after inboxSubmitDelay.
+	if n := len(f.herdr.Keys()); n != 0 {
+		t.Fatalf("enter sent early: %d", n)
+	}
+	f.fireInboundAfter(t, inboxSubmitDelay, 1)
+	if keys := f.herdr.Keys(); len(keys) != 1 || !reflect.DeepEqual(keys[0], testkit.KeysCall{Target: "p1", Keys: []string{"enter"}}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+}
+
+func TestInboundAttachmentSubmitSkipsAnOpenDialog(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.tg.SetFile("file1", []byte("jpegbytes"))
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 42, domain.AttachmentPhoto, "file1", "", "look", 9)); err != nil {
+		t.Fatal(err)
+	}
+	// The agent asked a question meanwhile: the enter would answer it.
+	f.herdr.SetScreen("p1", dialogScreen)
+	f.fireInboundAfter(t, inboxSubmitDelay, 1)
+	if n := len(f.herdr.Keys()); n != 0 {
+		t.Fatalf("enter sent into a dialog: %d", n)
+	}
+}
+
+// fireInboundAfter advances the clock by d and runs every due inbound key.
+func (f *bridgeFixture) fireInboundAfter(t *testing.T, d time.Duration, want int) {
+	t.Helper()
+	f.clock.Advance(d)
+	for i := 0; i < want; i++ {
+		select {
+		case key := <-f.in.Due():
+			if err := f.in.Fire(f.ctx, key); err != nil {
+				t.Fatalf("Fire = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("due inbound key %d did not fire", i+1)
+		}
+	}
 }
 
 func TestInboundAttachmentWithoutCaptionAndDocumentName(t *testing.T) {

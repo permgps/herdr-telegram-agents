@@ -887,8 +887,8 @@ func TestOutboundReactsOnPromptAndDone(t *testing.T) {
 	}
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
 	f.fire(t, 1)
-	// ✅ lands before the done post; the turn is gone.
-	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅", "send:101:recap: all tests pass")
+	// 👌 lands before the done post; the turn is gone.
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌", "send:101:recap: all tests pass")
 	if _, open := f.out.turns[a.Key]; open {
 		t.Fatal("turn still open after done")
 	}
@@ -918,7 +918,7 @@ func TestOutboundIdleEndsTurnAfterSettle(t *testing.T) {
 	// Five seconds of idle end it.
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
 	f.endTurns(t, 1)
-	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅")
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌")
 	if _, open := f.out.turns[a.Key]; open {
 		t.Fatal("turn still open after idle settle")
 	}
@@ -958,8 +958,8 @@ func TestOutboundBlockedKeepsEyes(t *testing.T) {
 		t.Fatal("turn survived the exit")
 	}
 	for _, c := range f.tg.Calls() {
-		if c == "react:101:2:✅" {
-			t.Fatal("✅ on an exited agent")
+		if c == "react:101:2:👌" {
+			t.Fatal("👌 on an exited agent")
 		}
 	}
 }
@@ -1011,8 +1011,8 @@ func TestOutboundNewPromptReplacesTurn(t *testing.T) {
 	}
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
 	f.fire(t, 1)
-	// Only the latest prompt gets the ✅; the first keeps its 👀.
-	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:3:👀", "react:101:3:✅", "send:101:done screen")
+	// Only the latest prompt gets the 👌; the first keeps its 👀.
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:3:👀", "react:101:3:👌", "send:101:done screen")
 }
 
 // shortTurnFixture prepares an idle agent, a prompt and a done screen with
@@ -1062,7 +1062,7 @@ func TestOutboundLongTurnPosts(t *testing.T) {
 	f.clock.Advance(30 * time.Second)
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
 	f.fire(t, 1)
-	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅", "send:101:recap: done")
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌", "send:101:recap: done")
 }
 
 func TestOutboundUnknownTurnPosts(t *testing.T) {
@@ -1092,7 +1092,7 @@ func TestOutboundShortTurnStillReacts(t *testing.T) {
 	f.clock.Advance(2 * time.Second)
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
 	f.fire(t, 1)
-	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:✅")
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌")
 	if _, open := f.out.turns[a.Key]; open {
 		t.Fatal("turn kept after a skipped done post")
 	}

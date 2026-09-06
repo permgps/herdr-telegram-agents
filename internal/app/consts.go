@@ -104,4 +104,10 @@ const (
 	// albumSettle is how long an album waits for more parts after the last
 	// one before it becomes one prompt.
 	albumSettle = 1 * time.Second
+	// inboxSubmitDelay is how long after an attachment prompt the daemon
+	// presses enter once more. Claude Code turns a pasted image path into
+	// an "[Image #N]" attachment asynchronously and drops the enter that
+	// came with the paste (measured 2026-09-06); a second enter submits
+	// the queued line, and on an empty line it does nothing.
+	inboxSubmitDelay = 1500 * time.Millisecond
 )

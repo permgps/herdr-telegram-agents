@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -96,6 +97,11 @@ type keyboard struct {
 	multi     bool
 	textEntry int
 	textLabel string
+	// cursor and submitRow are the dialog rows last seen on screen (see
+	// domain.Dialog); the Submit press re-reads the screen and falls back
+	// to them when the read fails.
+	cursor    int
+	submitRow int
 	waiting   bool
 }
 
@@ -133,10 +139,12 @@ type turn struct {
 	ended bool
 }
 
-// Reactions put on the operator's prompt.
+// Reactions put on the operator's prompt. Both must be in Telegram's
+// fixed set of allowed reactions: ✅ is not (setMessageReaction answers
+// REACTION_INVALID, seen 2026-09-06), 👌 is.
 const (
 	reactionTaken = "👀"
-	reactionDone  = "✅"
+	reactionDone  = "👌"
 )
 
 func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
@@ -357,6 +365,12 @@ func (o *outbound) Observe(ev AgentEvent) {
 		o.log.Debug("screen scheduled", slog.String("key", key.String()), slog.String("status", string(ev.Agent.Status)))
 		o.deb.Schedule(key)
 	default:
+		// A toggle's redraw is pending: the keystroke itself flips the
+		// pane to working for a moment, and the timer must survive it.
+		if _, pending := o.refresh[key]; pending {
+			o.log.Debug("refresh pending, timer kept", slog.String("key", key.String()), slog.String("status", string(ev.Agent.Status)))
+			return
+		}
 		o.deb.Cancel(key)
 	}
 }
@@ -408,6 +422,17 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	if o.paused() {
 		return o.skip(key, "sync_off")
 	}
+	// A toggled multi-select keyboard is redrawn in place from the screen
+	// whatever the status says: the keystroke flips the pane to working
+	// for a few seconds while the dialog stays (seen 2026-09-06). When the
+	// dialog moved on the ordinary post below takes over.
+	if msgID, ok := o.refresh[key]; ok && !force {
+		delete(o.refresh, key)
+		done, err := o.refreshKeyboard(ctx, key, msgID, blockedLines)
+		if done || err != nil {
+			return err
+		}
+	}
 	var lines int
 	switch agent.Status {
 	case domain.StatusBlocked:
@@ -436,17 +461,6 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		return o.skip(key, "exited")
 	case entry.Muted:
 		return o.skip(key, "muted")
-	}
-	// A toggled multi-select keyboard is redrawn in place; when the dialog
-	// moved on the ordinary post below takes over.
-	if msgID, ok := o.refresh[key]; ok && !force {
-		delete(o.refresh, key)
-		if agent.Status == domain.StatusBlocked {
-			done, err := o.refreshKeyboard(ctx, key, msgID, lines)
-			if done || err != nil {
-				return err
-			}
-		}
 	}
 	notify := agent.Status == domain.StatusBlocked
 	if force {
@@ -528,7 +542,8 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	}
 	o.lastPosted[key] = hash
 	if len(out.Buttons) > 0 {
-		o.keyboards[key] = keyboard{messageID: id, choices: dialog.Choices, multi: dialog.Multi, textEntry: dialog.TextEntry, textLabel: dialog.TextLabel}
+		o.keyboards[key] = keyboard{messageID: id, choices: dialog.Choices, multi: dialog.Multi, textEntry: dialog.TextEntry, textLabel: dialog.TextLabel,
+			cursor: dialog.Cursor, submitRow: dialog.SubmitRow}
 	}
 	if notify && agent.Status == domain.StatusBlocked {
 		o.announced[key] = true
@@ -643,13 +658,15 @@ func (o *outbound) logChoices(key domain.Key, d domain.Dialog) {
 		numbers = append(numbers, c.Number)
 	}
 	o.log.Debug("choices parsed", slog.String("key", key.String()), slog.Int("count", len(d.Choices)), slog.Any("numbers", numbers),
-		slog.Bool("multi", d.Multi), slog.Int("text_entry", d.TextEntry))
+		slog.Bool("multi", d.Multi), slog.Int("text_entry", d.TextEntry), slog.Int("cursor", d.Cursor), slog.Int("submit_row", d.SubmitRow))
 }
 
-// refreshKeyboard redraws the keyboard of msgID from the current screen
-// after a toggle press. It reports true when the message was redrawn (or
-// nothing else should happen) and false when the dialog is gone, so the
-// caller posts the new screen as usual.
+// refreshKeyboard redraws the post msgID from the current screen after a
+// toggle press: the text shows the new check marks and the keyboard is
+// rebuilt from it (measured 2026-09-06: the operator wants the "[✔]" in
+// the screen as well as on the button). It reports true when the message
+// was redrawn (or nothing else should happen) and false when the dialog
+// is gone, so the caller posts the new screen as usual.
 func (o *outbound) refreshKeyboard(ctx context.Context, key domain.Key, msgID, lines int) (bool, error) {
 	kb, ok := o.keyboards[key]
 	if !ok || kb.messageID != msgID {
@@ -661,15 +678,63 @@ func (o *outbound) refreshKeyboard(ctx context.Context, key domain.Key, msgID, l
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
 		return true, nil
 	}
-	d := domain.ParseDialog(trimScreen(screen.Text))
+	text := trimScreen(screen.Text)
+	d := domain.ParseDialog(text)
 	if !d.Multi {
 		o.log.Debug("keyboard refresh dropped", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.String("reason", "not_multi"))
 		return false, nil
 	}
 	kb.choices, kb.textEntry, kb.textLabel = d.Choices, d.TextEntry, d.TextLabel
+	kb.cursor, kb.submitRow = d.Cursor, d.SubmitRow
 	o.keyboards[key] = kb
-	o.log.Debug("keyboard refreshed", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.Int("choices", len(d.Choices)))
-	return true, o.absorbEdit(key, o.tg.EditButtons(ctx, msgID, choiceButtons(d)))
+	o.lastPosted[key] = hashText(text)
+	o.log.Debug("keyboard refreshed", slog.String("key", key.String()), slog.Int("message_id", msgID),
+		slog.Int("choices", len(d.Choices)), slog.Int("bytes", len(text)))
+	return true, o.absorbEdit(key, o.tg.EditText(ctx, msgID, preHTML(text), true, choiceButtons(d)))
+}
+
+// submitKeys returns the keys that submit the multi-select dialog under
+// kb: the screen is read once more for the cursor row, since the operator
+// may have moved it at the keyboard; a failed read falls back to the rows
+// seen at posting time.
+func (o *outbound) submitKeys(ctx context.Context, key domain.Key, kb keyboard) []string {
+	d := domain.Dialog{Cursor: kb.cursor, SubmitRow: kb.submitRow}
+	screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, blockedLines)
+	if err != nil {
+		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
+	} else if live := domain.ParseDialog(trimScreen(screen.Text)); live.Multi {
+		d = live
+	}
+	keys := d.SubmitKeys()
+	o.log.Debug("submit keys", slog.String("key", key.String()), slog.Int("cursor", d.Cursor), slog.Int("submit_row", d.SubmitRow), slog.Any("keys", keys))
+	return keys
+}
+
+// dialogStillOpen reports whether a pane Herdr calls working still shows
+// the keyboard's dialog. A keystroke flips the status to working for a
+// few seconds while the question stays on screen (seen 2026-09-06 after
+// a toggle), and a press in that window must not retire the keyboard.
+// Any other status trusts Herdr.
+func (o *outbound) dialogStillOpen(ctx context.Context, key domain.Key, kb keyboard, st domain.Status) bool {
+	if st != domain.StatusWorking {
+		return false
+	}
+	screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, blockedLines)
+	if err != nil {
+		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
+		return false
+	}
+	d := domain.ParseDialog(trimScreen(screen.Text))
+	open := len(d.Choices) > 0 && len(d.Choices) == len(kb.choices) && d.Multi == kb.multi && d.TextEntry == kb.textEntry
+	o.log.Debug("dialog checked while working", slog.String("key", key.String()), slog.Bool("open", open),
+		slog.Int("choices", len(d.Choices)), slog.Bool("multi", d.Multi))
+	return open
+}
+
+// preHTML wraps a screen in the same <pre> block a code post uses, so an
+// edited post keeps the look of the original.
+func preHTML(text string) string {
+	return "<pre>" + html.EscapeString(text) + "</pre>"
 }
 
 // choiceButtons renders a dialog as buttons: one per option (the keycap
@@ -834,15 +899,18 @@ func (o *outbound) Press(ctx context.Context, ev domain.ButtonPressed) error {
 			return err
 		}
 		return o.answer(ctx, ev.CallbackID, "agent has exited")
-	case agent.Status != domain.StatusBlocked:
+	case agent.Status != domain.StatusBlocked && !o.dialogStillOpen(ctx, key, kb, agent.Status):
 		if err := o.retire(ctx, key, "not_blocked"); err != nil {
 			return err
 		}
 		return o.answer(ctx, ev.CallbackID, "agent is not waiting anymore")
 	}
 	keys := []string{ev.Data}
-	if kind == pressText {
+	switch kind {
+	case pressText:
 		keys = []string{strconv.Itoa(n)}
+	case pressSubmit:
+		keys = o.submitKeys(ctx, key, kb)
 	}
 	if err := o.herdr.SendKeys(ctx, key.PaneID, keys); err != nil {
 		o.log.Warn("button send_keys failed", slog.String("key", key.String()), slog.String("data", ev.Data), slog.String("err", err.Error()))

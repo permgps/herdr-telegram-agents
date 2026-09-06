@@ -452,13 +452,25 @@ func TestOutboundMultiSelectToggleAndSubmit(t *testing.T) {
 		t.Fatalf("Keys = %+v", keys)
 	}
 	assertCallsEqual(t, f.tg, "answer:cb1:toggled: 2")
-	// The settle read redraws the same message from the new screen.
+	// The settle read redraws the same message from the new screen: the
+	// text shows the check marks and the keyboard follows it.
 	f.tg.Reset()
 	f.herdr.SetScreen("p1", multiDialogToggled)
 	f.fire(t, 1)
-	assertCallsEqual(t, f.tg, "buttons:1000:1️⃣ ☐ Red|2️⃣ ☑ Green|3️⃣ ☐ Blue|✔ Submit")
+	assertCallsEqual(t, f.tg, "edittext:1000:<pre>"+multiDialogToggled+"</pre>:buttons=4")
+	if kb := f.tg.Buttons(1000); len(kb) != 4 || kb[1].Text != "2️⃣ ☑ Green" || kb[3].Text != "✔ Submit" {
+		t.Fatalf("refreshed keyboard = %+v", kb)
+	}
 	if n := len(f.tg.Sent()); n != 0 {
 		t.Fatalf("toggle posted a new message: %d", n)
+	}
+	// The redrawn screen is now the last posted one: a state change that
+	// shows the same screen does not post it again.
+	f.tg.Reset()
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(f.agents[domain.Key{PaneID: "p1", TerminalID: "t1"}], domain.StatusBlocked)})
+	f.fire(t, 1)
+	if n := len(f.tg.Sent()); n != 0 {
+		t.Fatalf("unchanged screen re-posted after refresh: %d", n)
 	}
 	// Submit sends enter and collapses the keyboard; the follow-up
 	// question is posted with its own buttons.
@@ -479,6 +491,84 @@ func TestOutboundMultiSelectToggleAndSubmit(t *testing.T) {
 	if kb := f.tg.Buttons(1000); len(kb) != 1 || kb[0].Text != "✅ submitted" {
 		t.Fatalf("submitted keyboard changed: %+v", kb)
 	}
+}
+
+// claudeMultiDialog is the Claude Code rendering measured on 2026-09-06: a
+// bare Submit row after the entries, the cursor left on option 1.
+const claudeMultiDialog = `Which colours?
+
+❯ 1. [ ] Red
+  the warm one
+  2. [✔] Green
+  3. [ ] Blue
+  4. [ ] Type something
+     Submit
+────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel`
+
+func TestOutboundSubmitWalksToTheSubmitRow(t *testing.T) {
+	f := newBridgeFixture(t)
+	blockedWithDialog(t, f, claudeMultiDialog)
+	f.tg.Reset()
+	if err := f.out.Press(f.ctx, press(101, 1000, "enter")); err != nil {
+		t.Fatal(err)
+	}
+	want := testkit.KeysCall{Target: "p1", Keys: []string{"down", "down", "down", "down", "enter"}}
+	if keys := f.herdr.Keys(); len(keys) != 1 || !reflect.DeepEqual(keys[0], want) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	assertCallsEqual(t, f.tg, "buttons:1000:✅ submitted", "answer:cb1:submitted")
+}
+
+func TestOutboundSubmitReadsTheCursorAgain(t *testing.T) {
+	f := newBridgeFixture(t)
+	blockedWithDialog(t, f, claudeMultiDialog)
+	// The cursor moved at the keyboard meanwhile: the press reads the
+	// screen again and walks from where it is.
+	f.herdr.SetScreen("p1", strings.Replace(strings.Replace(claudeMultiDialog, "❯ 1.", "  1.", 1), "  5. Chat", "❯ 5. Chat", 1))
+	if err := f.out.Press(f.ctx, press(101, 1000, "enter")); err != nil {
+		t.Fatal(err)
+	}
+	if keys := f.herdr.Keys(); len(keys) != 1 || !reflect.DeepEqual(keys[0].Keys, []string{"up", "enter"}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+}
+
+func TestOutboundMultiSelectToggleWhileHerdrSaysWorking(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := blockedWithDialog(t, f, multiDialog)
+	if err := f.out.Press(f.ctx, press(101, 1000, "2")); err != nil {
+		t.Fatal(err)
+	}
+	// The keystroke flips the pane to working while the dialog stays on
+	// screen: the settle read still redraws the post.
+	f.tg.Reset()
+	f.herdr.SetScreen("p1", multiDialogToggled)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.fire(t, 1)
+	assertCallsEqual(t, f.tg, "edittext:1000:<pre>"+multiDialogToggled+"</pre>:buttons=4")
+	// A second toggle in that window goes to the agent instead of
+	// retiring the keyboard.
+	f.tg.Reset()
+	if err := f.out.Press(f.ctx, press(101, 1000, "3")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "answer:cb1:toggled: 3")
+	if keys := f.herdr.Keys(); len(keys) != 2 || keys[1].Keys[0] != "3" {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	if kb := f.tg.Buttons(1000); len(kb) != 4 {
+		t.Fatalf("keyboard retired: %+v", kb)
+	}
+	// Once the screen shows the agent's reply the press retires as usual.
+	f.tg.Reset()
+	f.herdr.SetScreen("p1", "⏺ thanks, on it\n")
+	if err := f.out.Press(f.ctx, press(101, 1000, "1")); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "buttons:1000:", "answer:cb1:agent is not waiting anymore")
 }
 
 func TestOutboundMultiSelectToggleWhenDialogMovedOn(t *testing.T) {

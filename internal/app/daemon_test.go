@@ -48,13 +48,13 @@ func newDaemon(t *testing.T) *daemonFixture {
 	reconciler := app.NewReconciler(f.tg, f.herdr, f.store, domain.NewMapping(-1), f.opts, f.clock, nil)
 	f.rec = reconciler
 	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
-	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, app.Services{}, f.clock, nil)
+	f.inbox = testkit.NewFakeInbox("/state/inbox")
+	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, app.Services{Inbox: f.inbox}, f.clock, nil)
 	f.idle = testkit.NewFakeIdle(0)
 	f.idle.Unsupported() // quiet mode stays off unless a test sets an idle time
 	f.presence = app.NewPresence(f.idle, f.opts, f.clock, nil)
 	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.opts, f.presence, f.clock, nil)
 	f.daemon.Version = "1.2.3"
-	f.inbox = testkit.NewFakeInbox("/state/inbox")
 	f.daemon.SetInbox(f.inbox)
 	return f
 }
@@ -366,6 +366,28 @@ func TestDaemonTopicMessageAndGeneralStatus(t *testing.T) {
 	last := sent[len(sent)-1]
 	if last.ThreadID != 0 || !last.HTML || last.ReplyTo != 6 || !strings.Contains(last.Text, "1 agent\n✅ <a href=\"https://t.me/c/1/101\">reviewer</a>") {
 		t.Fatalf("status reply = %+v", last)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonAttachmentReachesTheBridge pins the router: a photo posted in
+// a topic is saved to the inbox and prompted (missing until 2026-09-06,
+// when the live check showed "telegram event ignored").
+func TestDaemonAttachmentReachesTheBridge(t *testing.T) {
+	f := newDaemon(t)
+	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
+	f.tg.SetFile("f1", []byte("jpeg"))
+	f.start(t)
+	f.waitCalls(t, 3)
+	f.tg.Push(domain.TopicAttachment{ThreadID: 101, MessageID: 5, FromID: 1, Kind: domain.AttachmentPhoto, FileID: "f1", MIME: "image/jpeg", Size: 4, Caption: "look"})
+	waitFor(t, "prompt", func() bool { return len(f.herdr.Prompts()) == 1 })
+	if p := f.herdr.Prompts()[0]; !strings.HasPrefix(p, "p1: look\n\n/state/inbox/") {
+		t.Fatalf("prompt = %q", p)
+	}
+	if saved := f.inbox.Saved(); len(saved) != 1 {
+		t.Fatalf("saved = %+v", saved)
 	}
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)

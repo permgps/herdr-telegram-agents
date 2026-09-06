@@ -121,10 +121,11 @@ its tail silently. Anything you write in the agent's topic goes back:
 | `/clear`, `/compact`, `/usage`, `/model` | typed into an idle agent as a Claude Code command; the result is posted back |
 | `/status`, `/help` | this agent's status line, the command list |
 
-A prompt gets 👀 once the agent took it and ✅ when that turn ends (`React to
+A prompt gets 👀 once the agent took it and 👌 when that turn ends (`React to
 prompts` in the settings). A question with `Type something.` carries a ✏️
 button: press it and your next message is typed as the answer. A multi-select
-question keeps its buttons as toggles and adds `✔ Submit`.
+question keeps its buttons as toggles, redraws the post with the ticks and
+adds `✔ Submit`.
 
 The **General** topic is the control panel: `/status` lists every agent with
 a link to its topic, `/new <workspace> [kind]` starts an agent in a new tab
@@ -146,7 +147,7 @@ Its groups:
 |-------|---------------|
 | Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working |
 | Quiet | quiet mode while you are at the desk: `Away after` (3 min), `Hold topic edits`, `Screen posts` (Silent, Held, Normal), `Re-announce on leaving` |
-| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / ✅ on your message); `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds |
+| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / 👌 on your message); `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds |
 | Inbox | `Accept files` (on): files sent to a topic are saved and handed to the agent as a path; `Largest file` (20 MB, Telegram's cap for bots); `Delete files after` (7 days) |
 | Appearance | one topic icon per status, from Telegram's topic-icon pack |
 | Privacy | `Redact secrets`: API keys, tokens, passwords and private keys are masked in every post |

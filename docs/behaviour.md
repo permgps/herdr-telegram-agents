@@ -63,15 +63,24 @@ in a topic and what gets posted there is in [commands.md](commands.md).
   newer question is posted for it, or after 10 minutes (`✏️ expired`). No
   screen is read after the press: the text box the agent shows is not a
   question.
-- A multi-select dialog (every option starts with `☐` or `☑`) keeps its
-  buttons as toggles: a press sends the digit, answers `toggled: <n>` and
-  leaves the keyboard in place; 1.5 s later the keyboard of the same
-  message is redrawn from the screen, so the ticks follow what the agent
-  shows. A `✔ Submit` row sends `enter`, collapses the keyboard to `✅
-  submitted` and arms the usual read, so the next question arrives with its
-  own buttons. When the screen no longer shows the multi-select dialog at
-  redraw time (the agent moved on) the new screen is posted as usual and
-  the old keyboard is retired.
+- A multi-select dialog (every option starts with a checkbox: `[ ]`,
+  `[x]`, the `[✔]` Claude Code draws once an option is toggled, or `☐` /
+  `☑`) keeps its buttons as toggles: a press sends the digit, answers
+  `toggled: <n>` and leaves the keyboard in place; 1.5 s later the same
+  message is redrawn from the screen, text and keyboard, so the ticks
+  follow what the agent shows. Herdr may call the pane `working` for a few
+  seconds after the keystroke while the dialog stays on screen; the redraw
+  and further presses check the screen instead of trusting that status. A
+  `✔ Submit` row submits the dialog: Claude Code ends its entries with a
+  bare `Submit` row and, since a digit toggles without moving the cursor
+  and `enter` toggles the row under it, the press reads the screen and
+  sends the arrows from the `❯` cursor to that row followed by `enter`
+  (a renderer without a `Submit` row gets a plain `enter`). The keyboard
+  collapses to `✅ submitted` and the usual read is armed, so Claude Code's
+  `Submit answers` / `Cancel` review arrives with its own buttons. When the
+  screen no longer shows the multi-select dialog at redraw time (the agent
+  moved on) the new screen is posted as usual and the old keyboard is
+  retired.
 - A press sends the option's digit as a key (`agent.send_keys`), answers
   with a short toast, and replaces the keyboard with a single `✅ <n> · <text>`
   button; pressing that one says `already answered`. The daemon then reads
@@ -147,10 +156,10 @@ whose start it never saw (daemon started mid-turn) has no duration.
 Two things hang on it:
 
 - **Reactions** (`React to prompts`, default on). A plain prompt sent from
-  the topic gets 👀 as soon as `agent.prompt` accepted it, and ✅ replaces
+  the topic gets 👀 as soon as `agent.prompt` accepted it, and 👌 replaces
   it when that turn ends. Short replies to a dialog, `/keys`, forwarded
   Claude Code commands and button presses get no reaction. A second prompt
-  while the first turn still runs moves the ✅ to the newer message; the
+  while the first turn still runs moves the 👌 to the newer message; the
   older keeps its 👀. Telegram may notify you of the bot's reaction
   depending on the phone's settings; that is what a week of use measures.
 - **Short turns** (`Skip short done posts`, default `Off`). A done post is
@@ -195,7 +204,7 @@ The options today:
 | `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
 | `Done post` | Posts | Default `Screen`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. Falls back to `Screen` for non-Claude agents or when no reply is found, see [Done posts](#done-posts). |
-| `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, ✅ when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
+| `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, 👌 when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
 | `Question delay` | Posts | Default `Off`. With `5s` … `120s`: after the usual 1.5 s capture the blocked post waits that long more, is dropped when the agent left blocked meanwhile, starts over when a newer question arrived, and otherwise posts the better of the two captures (more options recognised, then the longer text). `Off` posts the first capture at 1.5 s. Any integer of seconds up to 3600 can be typed into `options.json`. See [Questions and buttons](#questions-and-buttons). |
 | `Skip short done posts` | Posts | Default `Off`. With `5s` … `120s`: the done post of a turn shorter than that is skipped (blocked time included; a turn whose start the daemon never saw posts). Blocked posts and reactions are unaffected. Any integer of seconds up to 3600 can be typed into `options.json`. See [Turns and reactions](#turns-and-reactions). |
 | `Accept files` | Inbox | Default on. Photos, documents, voice notes, audio and video sent to a topic are saved to the inbox and the agent is prompted with the path. Off: such messages answer `⚠️ inbox is off (/options → Inbox)`. See [Inbox](#inbox). |
@@ -306,7 +315,12 @@ id>-<safe name>`; what the agent receives and how albums and refusals work
 is described under [Files from the phone](commands.md#files-from-the-phone).
 The download runs on its own goroutine with a 60 s limit and never blocks
 the daemon's message loop; the bytes are capped at `Largest file` even when
-Telegram under-reports the size. Once a day, at daemon start and as soon as
+Telegram under-reports the size. 1.5 s after the prompt the daemon presses
+`enter` once more unless the screen shows a dialog: Claude Code turns a
+pasted image path into an `[Image #N]` attachment asynchronously and drops
+the `enter` that came with the paste (seen 2026-09-06), and on an already
+empty line the extra `enter` does nothing. The log says `inbox prompt
+submitted`. Once a day, at daemon start and as soon as
 `Delete files after` changes, files not modified for longer than that age
 are deleted; subdirectories and files of a save in flight are left alone.
 `Off` keeps every file. The sweep logs `inbox sweep deleted=<n>`.

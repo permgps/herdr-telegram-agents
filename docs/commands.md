@@ -29,7 +29,8 @@ it arrives with its own buttons. Buttons that no longer apply (you answered in
 Herdr, the agent moved on, an older question) show a short notice instead of
 acting. Claude Code's `Type something.` and `Chat about this` entries get no
 button: reply with text, or with their digit, instead. In a multi-select
-dialog a press toggles the option; send `enter` to submit. The button rules
+dialog a press toggles the option and the post is redrawn with the ticks;
+`✔ Submit` submits it. The button rules
 in full are under [Questions and buttons](behaviour.md#questions-and-buttons).
 
 While you are at the machine, quiet mode changes the sound of these posts or
@@ -59,7 +60,7 @@ Anything you write in a topic reaches the agent:
 | `/help` | the command list |
 
 A prompt gets no reply: the message gets 👀 once `agent.prompt` accepted it
-and ✅ when that turn ends (done, or idle for 5 s), and the topic icon turns
+and 👌 when that turn ends (done, or idle for 5 s), and the topic icon turns
 ⚡ meanwhile. Short replies, `/keys` and button presses get no reaction;
 `React to prompts` in `/options` switches the reactions off. A quoted `⚠️
 ...` reply explains why a message did not
@@ -129,7 +130,7 @@ or `file.<ext>` when there is none; a taken name gets `-2`, `-3` …) and the
 agent is prompted with the caption, a blank line and the absolute path. An
 album (several photos sent together) is collected for a second after its
 last part and becomes one prompt with one path per line; the first caption
-wins. The message gets the same 👀 / ✅ reactions as a typed prompt. While
+wins. The message gets the same 👀 / 👌 reactions as a typed prompt. While
 the agent is blocked the path is typed into the dialog like any plain text
 would be.
 

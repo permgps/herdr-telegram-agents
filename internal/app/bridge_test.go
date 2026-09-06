@@ -341,7 +341,7 @@ func TestBridgeTurnTimerFiresThroughRun(t *testing.T) {
 	waitUntil(t, "turn timer armed", func() bool { return r.clock.Pending() == 1 })
 	r.clock.Advance(turnSettle)
 	waitUntil(t, "check mark", func() bool { return len(r.tg.Calls()) == 2 })
-	assertCallsEqual(t, r.tg, "react:101:4:👀", "react:101:4:✅")
+	assertCallsEqual(t, r.tg, "react:101:4:👀", "react:101:4:👌")
 }
 
 func TestBridgeRunsDownloadOffTheLoop(t *testing.T) {
