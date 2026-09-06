@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"html"
 	"strings"
 	"testing"
 	"time"
@@ -217,6 +218,60 @@ func TestPanelStringsAreEnglish(t *testing.T) {
 			}
 		}
 	}
+	// The two rows of this feature render their English title and
+	// description into the group text.
+	f := newBridgeFixture(t)
+	for _, tc := range []struct{ group, key, title string }{
+		{domain.GroupSync, domain.OptionSyncDashboard, "Dashboard in General"},
+		{domain.GroupPosts, domain.OptionPostsPager, "Questions in the bot's chat"},
+	} {
+		pressPanel(f, t, 900, dataGroup(groupIndex(tc.group)))
+		spec, _ := domain.LookupOption(tc.key)
+		text := f.tg.Text(900)
+		if spec.Title != tc.title || !strings.Contains(text, "<b>"+html.EscapeString(tc.title)+"</b>: "+html.EscapeString(spec.Description)) {
+			t.Errorf("%s row not rendered: title %q, text %s", tc.key, spec.Title, text)
+		}
+		for _, r := range text {
+			if r >= 0x0400 && r <= 0x04FF {
+				t.Errorf("%s group text contains Cyrillic: %s", tc.group, text)
+				break
+			}
+		}
+	}
+}
+
+func TestPanelSyncDashboard(t *testing.T) {
+	f := newBridgeFixture(t)
+	var hooked []string
+	f.opts.OnChange(domain.OptionSyncDashboard, func(key string, cur domain.Options) {
+		hooked = append(hooked, key+"="+cur.String(key))
+	})
+	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupSync)))
+	if got := texts(f.tg.Buttons(900)); got[1] != "☑ Dashboard in General" {
+		t.Fatalf("sync buttons = %v", got)
+	}
+	if text := f.tg.Text(900); !strings.Contains(text, "<b>Dashboard in General</b>: One pinned message in General") {
+		t.Errorf("group text = %s", text)
+	}
+	f.tg.Reset()
+	pressPanel(f, t, 900, dataToggle(domain.OptionSyncDashboard))
+	if f.opts.DashboardEnabled() || !f.opts.SyncEnabled() || f.options.Saved() != 1 {
+		t.Fatalf("toggle did not save: dashboard=%v sync=%v saves=%d", f.opts.DashboardEnabled(), f.opts.SyncEnabled(), f.options.Saved())
+	}
+	if len(hooked) != 1 || hooked[0] != "sync.dashboard=false" {
+		t.Fatalf("hooks = %v", hooked)
+	}
+	calls := f.tg.Calls()
+	if len(calls) != 2 || calls[0] != "answer:cb:saved" || !strings.HasPrefix(calls[1], "edittext:900:") {
+		t.Fatalf("calls = %q", calls)
+	}
+	if got := texts(f.tg.Buttons(900)); got[1] != "☐ Dashboard in General" {
+		t.Errorf("button after toggle = %q", got[1])
+	}
+	pressPanel(f, t, 900, dataToggle(domain.OptionSyncDashboard))
+	if !f.opts.DashboardEnabled() || len(hooked) != 2 || hooked[1] != "sync.dashboard=true" {
+		t.Fatalf("second toggle: dashboard=%v hooks=%v", f.opts.DashboardEnabled(), hooked)
+	}
 }
 
 func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
@@ -319,16 +374,35 @@ func TestPanelQuietGroup(t *testing.T) {
 
 func TestPanelPostsGroup(t *testing.T) {
 	f := newBridgeFixture(t)
+	var hooked []string
+	f.opts.OnChange(domain.OptionPostsPager, func(key string, cur domain.Options) {
+		hooked = append(hooked, key+"="+cur.String(key))
+	})
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
 	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("posts buttons = %v", got)
+	}
+	if text := f.tg.Text(900); !strings.Contains(text, "<b>Questions in the bot&#39;s chat</b>: On: a question from an agent is posted into its topic without a sound") {
+		t.Errorf("posts text = %s", text)
+	}
+	// The pager toggle saves, runs its hook and flips the box.
+	pressPanel(f, t, 900, dataToggle(domain.OptionPostsPager))
+	if f.opts.PagerEnabled() || f.options.Saved() != 1 || len(hooked) != 1 || hooked[0] != "posts.pager=false" {
+		t.Fatalf("pager toggle: enabled=%v saves=%d hooks=%v", f.opts.PagerEnabled(), f.options.Saved(), hooked)
+	}
+	if got := texts(f.tg.Buttons(900)); got[2] != "☐ Questions in the bot's chat" {
+		t.Fatalf("buttons after pager toggle = %v", got)
+	}
+	pressPanel(f, t, 900, dataToggle(domain.OptionPostsPager))
+	if !f.opts.PagerEnabled() || len(hooked) != 2 {
+		t.Fatalf("pager toggle back: enabled=%v hooks=%v", f.opts.PagerEnabled(), hooked)
 	}
 	pressPanel(f, t, 900, dataGrid(domain.OptionPostsDone, 0))
 	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "[Screen]|Reply|Formatted|‹ Back" {
 		t.Fatalf("done grid = %v", got)
 	}
 	pressPanel(f, t, 900, dataPick(domain.OptionPostsDone, 2))
-	if f.opts.Get().PostsDone() != domain.DoneFormatted || f.options.Saved() != 1 {
+	if f.opts.Get().PostsDone() != domain.DoneFormatted || f.options.Saved() != 3 {
 		t.Fatalf("pick formatted: mode=%q saves=%d", f.opts.Get().PostsDone(), f.options.Saved())
 	}
 	saved, err := f.options.Load(f.ctx)

@@ -22,6 +22,7 @@ func memberReply(status string, manage bool) apiReply {
 	if status == "administrator" {
 		m["can_manage_topics"] = manage
 		m["can_delete_messages"] = manage
+		m["can_pin_messages"] = manage
 	}
 	return okReply(m)
 }
@@ -33,10 +34,14 @@ func TestGatewayRights(t *testing.T) {
 		member apiReply
 		want   domain.Rights
 	}{
-		{"forum admin with rights", chatReply(true), memberReply("administrator", true), domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}},
+		{"forum admin with rights", chatReply(true), memberReply("administrator", true), domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true}},
 		{"admin without rights", chatReply(true), memberReply("administrator", false), domain.Rights{IsForum: true, IsAdmin: true}},
+		{"admin without pin", chatReply(true), okReply(map[string]any{"status": "administrator", "can_manage_topics": true, "can_delete_messages": true,
+			"user": map[string]any{"id": 42, "is_bot": true, "first_name": "b"}}), domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}},
+		{"owner", chatReply(true), okReply(map[string]any{"status": "creator", "user": map[string]any{"id": 42, "is_bot": true, "first_name": "b"}}),
+			domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true}},
 		{"plain member", chatReply(true), memberReply("member", false), domain.Rights{IsForum: true}},
-		{"not a forum", chatReply(false), memberReply("administrator", true), domain.Rights{IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}},
+		{"not a forum", chatReply(false), memberReply("administrator", true), domain.Rights{IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

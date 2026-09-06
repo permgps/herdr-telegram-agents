@@ -253,7 +253,8 @@ func (g *Gateway) ReopenTopic(ctx context.Context, threadID int) error {
 }
 
 // Rights reports whether the chat is a forum and whether the bot is an
-// administrator allowed to manage topics. Both calls go through the queue.
+// administrator allowed to manage topics, delete messages and pin
+// messages. Both calls go through the queue.
 func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 	var rights domain.Rights
 	err := g.queue.Do(ctx, func(ctx context.Context) error {
@@ -275,11 +276,13 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 		rights.IsAdmin = member.Type == models.ChatMemberTypeAdministrator || member.Type == models.ChatMemberTypeOwner
 		rights.CanManageTopics = canManageTopics(*member) || member.Type == models.ChatMemberTypeOwner
 		rights.CanDeleteMessages = canDeleteMessages(*member) || member.Type == models.ChatMemberTypeOwner
+		rights.CanPinMessages = canPinMessages(*member) || member.Type == models.ChatMemberTypeOwner
 		return nil
 	})
 	return rights, g.finish("getChatMember", err,
 		slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin),
-		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages))
+		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages),
+		slog.Bool("pin_messages", rights.CanPinMessages))
 }
 
 // Send posts one message, split into parts below Telegram's message limit,

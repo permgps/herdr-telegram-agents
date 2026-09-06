@@ -264,6 +264,9 @@ func TestInboundDeletesOwnServiceMessages(t *testing.T) {
 		{"renamed", ownService(12, 42, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{Name: "V3Jobs · claude"} }), 12},
 		{"closed", ownService(13, 42, func(m *models.Message) { m.ForumTopicClosed = &models.ForumTopicClosed{} }), 13},
 		{"reopened", ownService(14, 42, func(m *models.Message) { m.ForumTopicReopened = &models.ForumTopicReopened{} }), 14},
+		{"pinned in General", ownService(17, 0, func(m *models.Message) {
+			m.PinnedMessage = &models.MaybeInaccessibleMessage{Type: models.MaybeInaccessibleMessageTypeMessage, Message: &models.Message{ID: 16}}
+		}), 17},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

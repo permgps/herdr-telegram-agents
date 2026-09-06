@@ -57,9 +57,9 @@ func TestInspectorGroupRights(t *testing.T) {
 		want   domain.Rights
 	}{
 		{"owner", okReply(map[string]any{"status": "creator", "user": map[string]any{"id": 42, "is_bot": true, "first_name": "b"}}),
-			domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}},
-		{"admin with both", memberReply("administrator", true),
-			domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true}},
+			domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true}},
+		{"admin with all", memberReply("administrator", true),
+			domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true}},
 		{"admin without delete", okReply(map[string]any{"status": "administrator", "can_manage_topics": true, "can_delete_messages": false,
 			"user": map[string]any{"id": 42, "is_bot": true, "first_name": "b"}}),
 			domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true}},
@@ -78,6 +78,26 @@ func TestInspectorGroupRights(t *testing.T) {
 				t.Fatalf("getChatMember form = %v", f)
 			}
 		})
+	}
+}
+
+func TestInspectorProbeDirect(t *testing.T) {
+	insp, api := newInspector(t)
+	if err := insp.ProbeDirect(ctxT(t), 7); err != nil {
+		t.Fatal(err)
+	}
+	f := api.callsOf("sendChatAction")[0].form
+	if f.Get("chat_id") != "7" || f.Get("action") != "typing" || f.Has("message_thread_id") {
+		t.Fatalf("sendChatAction form = %v", f)
+	}
+	api.on("sendChatAction", func(url.Values) apiReply {
+		return errReply(403, "Forbidden: bot can't initiate conversation with a user")
+	})
+	if err := insp.ProbeDirect(ctxT(t), 8); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("ProbeDirect closed chat = %v, want ErrForbidden", err)
+	}
+	if got := strings.Join(api.methods(), ","); got != "sendChatAction,sendChatAction" {
+		t.Fatalf("methods = %s", got)
 	}
 }
 

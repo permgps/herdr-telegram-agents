@@ -335,7 +335,7 @@ func TestEditButtonsNotModifiedIsNil(t *testing.T) {
 
 func TestEditButtonsOtherErrorIsReturned(t *testing.T) {
 	h := newHarness(t)
-	h.api.on("editMessageReplyMarkup", func(url.Values) apiReply { return errReply(400, "Bad Request: message to edit not found") })
+	h.api.on("editMessageReplyMarkup", func(url.Values) apiReply { return errReply(400, "Bad Request: message can't be edited") })
 	err := h.gw.EditButtons(h.ctx, 7, nil)
 	var api *telegram.APIError
 	if !errors.As(err, &api) || api.Code != 400 {
@@ -397,7 +397,7 @@ func TestEditTextNotModifiedIsNil(t *testing.T) {
 
 func TestEditTextOtherErrorIsReturned(t *testing.T) {
 	h := newHarness(t)
-	h.api.on("editMessageText", func(url.Values) apiReply { return errReply(400, "Bad Request: message to edit not found") })
+	h.api.on("editMessageText", func(url.Values) apiReply { return errReply(400, "Bad Request: message can't be edited") })
 	err := h.gw.EditText(h.ctx, 7, "x", false, nil)
 	var api *telegram.APIError
 	if !errors.As(err, &api) || api.Code != 400 {

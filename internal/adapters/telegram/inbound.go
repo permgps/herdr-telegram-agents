@@ -26,17 +26,17 @@ func (g *Gateway) registerHandlers() {
 	g.api.RegisterHandlerMatchFunc(g.matchMyChatMember, g.onMyChatMember)
 }
 
-// matchOwnService accepts the notices Telegram posts into a topic when the
-// bot itself edits, closes or reopens it ("X changed the topic icon"). With
-// a status change per agent event they bury the conversation, so they are
-// deleted. Creation notices are excluded: the Bot API refuses to delete
-// them.
+// matchOwnService accepts the notices Telegram posts when the bot itself
+// edits, closes or reopens a topic ("X changed the topic icon") or pins a
+// message (the dashboard in General). With a status change per agent
+// event they bury the conversation, so they are deleted. Creation notices
+// are excluded: the Bot API refuses to delete them.
 func (g *Gateway) matchOwnService(u *models.Update) bool {
 	m := u.Message
 	if m == nil || m.From == nil || g.botID == 0 || m.From.ID != g.botID || m.Chat.ID != g.chatID {
 		return false
 	}
-	return m.ForumTopicEdited != nil || m.ForumTopicClosed != nil || m.ForumTopicReopened != nil
+	return m.ForumTopicEdited != nil || m.ForumTopicClosed != nil || m.ForumTopicReopened != nil || m.PinnedMessage != nil
 }
 
 // matchCallback accepts button presses under the bot's messages in the
@@ -284,6 +284,10 @@ func canManageTopics(m models.ChatMember) bool {
 
 func canDeleteMessages(m models.ChatMember) bool {
 	return m.Type == models.ChatMemberTypeAdministrator && m.Administrator != nil && m.Administrator.CanDeleteMessages
+}
+
+func canPinMessages(m models.ChatMember) bool {
+	return m.Type == models.ChatMemberTypeAdministrator && m.Administrator != nil && m.Administrator.CanPinMessages
 }
 
 // emit hands an event to the application without blocking past the update

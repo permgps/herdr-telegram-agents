@@ -110,6 +110,11 @@ func classify400(err error) error {
 		return fmt.Errorf("%w: %w", ErrTopicNotModified, err)
 	case strings.Contains(lower, "message is not modified"):
 		return fmt.Errorf("%w: %w", ErrMessageNotModified, err)
+	case strings.HasPrefix(lower, "bad request: message to ") && strings.HasSuffix(lower, " not found"):
+		// editMessageText, deleteMessage and pinChatMessage on a message
+		// Telegram no longer has: "message to edit not found", "message to
+		// delete not found", "message to pin not found".
+		return fmt.Errorf("%w: %w", domain.ErrMessageGone, err)
 	}
 	return &APIError{Code: 400, Description: desc, Err: err}
 }
@@ -151,6 +156,7 @@ func isRetryable(err error) bool {
 		errors.Is(err, domain.ErrPollerConflict),
 		errors.Is(err, domain.ErrTopicGone),
 		errors.Is(err, domain.ErrTopicClosed),
+		errors.Is(err, domain.ErrMessageGone),
 		errors.Is(err, domain.ErrChatMigrated):
 		return false
 	}

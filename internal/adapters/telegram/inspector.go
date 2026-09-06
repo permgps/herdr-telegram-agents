@@ -70,9 +70,10 @@ func (i *Inspector) Group(ctx context.Context) (domain.GroupInfo, error) {
 	info.Rights.IsAdmin = member.Type == models.ChatMemberTypeAdministrator || owner
 	info.Rights.CanManageTopics = canManageTopics(*member) || owner
 	info.Rights.CanDeleteMessages = canDeleteMessages(*member) || owner
+	info.Rights.CanPinMessages = canPinMessages(*member) || owner
 	i.log.Info("inspector group", slog.String("title", info.Title), slog.Bool("forum", info.Rights.IsForum),
 		slog.Bool("admin", info.Rights.IsAdmin), slog.Bool("manage_topics", info.Rights.CanManageTopics),
-		slog.Bool("delete_messages", info.Rights.CanDeleteMessages))
+		slog.Bool("delete_messages", info.Rights.CanDeleteMessages), slog.Bool("pin_messages", info.Rights.CanPinMessages))
 	return info, nil
 }
 

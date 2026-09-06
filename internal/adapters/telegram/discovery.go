@@ -151,10 +151,11 @@ func (p *Probe) onPrivate(ctx context.Context, b *bot.Bot, u *models.Update) {
 }
 
 // chooseGroupKeyboard builds the request_chat button. The bot asks for
-// "Manage topics" (the sync itself) and "Delete messages" (removing its own
-// "changed the topic icon" notices). The user rights must be a superset of
-// the bot rights (Bot API rule), and promoting needs the "Add admins"
-// right, so all three are required of the user.
+// "Manage topics" (the sync itself), "Delete messages" (removing its own
+// "changed the topic icon" notices) and "Pin messages" (the dashboard in
+// General). The user rights must be a superset of the bot rights (Bot API
+// rule), and promoting needs the "Add admins" right, so all four are
+// required of the user.
 func chooseGroupKeyboard() models.ReplyMarkup {
 	return &models.ReplyKeyboardMarkup{
 		ResizeKeyboard:  true,
@@ -165,8 +166,8 @@ func chooseGroupKeyboard() models.ReplyMarkup {
 				RequestID:               setupRequestID,
 				ChatIsChannel:           false,
 				ChatIsForum:             true,
-				UserAdministratorRights: &models.ChatAdministratorRights{CanManageTopics: true, CanDeleteMessages: true, CanPromoteMembers: true},
-				BotAdministratorRights:  &models.ChatAdministratorRights{CanManageTopics: true, CanDeleteMessages: true},
+				UserAdministratorRights: &models.ChatAdministratorRights{CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true, CanPromoteMembers: true},
+				BotAdministratorRights:  &models.ChatAdministratorRights{CanManageTopics: true, CanDeleteMessages: true, CanPinMessages: true},
 				RequestTitle:            true,
 			},
 		}}},
