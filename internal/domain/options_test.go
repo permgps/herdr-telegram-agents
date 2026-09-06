@@ -122,7 +122,7 @@ func TestValidateOptionsAgainstSource(t *testing.T) {
 
 func TestOptionGroupsAndSpecs(t *testing.T) {
 	groups := OptionGroups()
-	if len(groups) != 6 || groups[0].Name != GroupSync || groups[1].Name != GroupQuiet || groups[2].Name != GroupPosts || groups[3].Name != GroupAppearance || groups[4].Name != GroupPrivacy || groups[5].Name != GroupTopics {
+	if len(groups) != 7 || groups[0].Name != GroupSync || groups[1].Name != GroupQuiet || groups[2].Name != GroupPosts || groups[3].Name != GroupInbox || groups[4].Name != GroupAppearance || groups[5].Name != GroupPrivacy || groups[6].Name != GroupTopics {
 		t.Fatalf("groups = %+v", groups)
 	}
 	posts := OptionsInGroup(GroupPosts)
@@ -148,6 +148,29 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 	}
 	if posts[2].Validate == nil || posts[3].Validate == nil {
 		t.Error("seconds options must carry validateSeconds")
+	}
+	inbox := OptionsInGroup(GroupInbox)
+	wantInbox := []struct {
+		key     string
+		kind    OptionKind
+		def     string
+		choices string
+	}{
+		{OptionInboxEnabled, KindBool, "true", ""},
+		{OptionInboxMaxMB, KindChoice, "20", ChoiceSourceMegabytes},
+		{OptionInboxDeleteAfterDays, KindChoice, "7", ChoiceSourceDays},
+	}
+	if len(inbox) != len(wantInbox) {
+		t.Fatalf("inbox options = %+v", inbox)
+	}
+	for i, w := range wantInbox {
+		got := inbox[i]
+		if got.Key != w.key || got.Kind != w.kind || got.Default != w.def || got.Choices != w.choices {
+			t.Errorf("inbox option %d = %+v, want %+v", i, got, w)
+		}
+	}
+	if inbox[1].Validate == nil || inbox[2].Validate == nil {
+		t.Error("inbox choice options must carry validators")
 	}
 	quiet := OptionsInGroup(GroupQuiet)
 	wantQuiet := []struct {
@@ -529,5 +552,50 @@ func TestSecondsOptions(t *testing.T) {
 	clean, dropped := SanitizeOptions(dirty, nil)
 	if len(dropped) != 0 || clean.String(OptionPostsBlockedDelay) != "45" {
 		t.Errorf("sanitize kept %q, dropped %v", clean.String(OptionPostsBlockedDelay), dropped)
+	}
+}
+
+func TestInboxOptions(t *testing.T) {
+	spec, _ := LookupOption(OptionInboxMaxMB)
+	for _, bad := range []string{"25", "0", "-1", "x"} {
+		if err := spec.Validate(bad); !errors.Is(err, ErrInvalidOption) {
+			t.Errorf("max_mb %q: %v", bad, err)
+		}
+	}
+	if err := spec.Validate("15"); err != nil {
+		t.Errorf("max_mb 15 from options.json must be accepted: %v", err)
+	}
+	if got := DefaultOptions().InboxMaxBytes(); got != 20*1024*1024 {
+		t.Errorf("InboxMaxBytes default = %d", got)
+	}
+	o, err := DefaultOptions().With(OptionInboxMaxMB, "5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := o.InboxMaxBytes(); got != 5*1024*1024 {
+		t.Errorf("InboxMaxBytes 5 = %d", got)
+	}
+	o, _ = DefaultOptions().With(OptionInboxMaxMB, "garbage")
+	if got := o.InboxMaxBytes(); got != 20*1024*1024 {
+		t.Errorf("InboxMaxBytes garbage = %d", got)
+	}
+	if got := DefaultOptions().InboxDeleteAfter(); got != 7*24*time.Hour {
+		t.Errorf("InboxDeleteAfter default = %v", got)
+	}
+	o, _ = DefaultOptions().With(OptionInboxDeleteAfterDays, "0")
+	if got := o.InboxDeleteAfter(); got != 0 {
+		t.Errorf("InboxDeleteAfter off = %v", got)
+	}
+	if !DefaultOptions().InboxEnabled() {
+		t.Error("inbox must be on by default")
+	}
+	if got, ok := StaticChoices(ChoiceSourceMegabytes); !ok || len(got) != 3 || got[2] != "20" {
+		t.Errorf("StaticChoices(megabytes) = %v, %v", got, ok)
+	}
+	if got := ChoiceLabel(spec, "20"); got != "20 MB" {
+		t.Errorf("ChoiceLabel = %q", got)
+	}
+	if got := ChoiceButton(spec, "5"); got != "5MB" {
+		t.Errorf("ChoiceButton = %q", got)
 	}
 }

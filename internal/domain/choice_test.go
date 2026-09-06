@@ -32,6 +32,36 @@ const measuredDialog = `⏺ Причина найдена. Варианты:
 
 Enter to select · ↑/↓ to navigate · Esc to cancel`
 
+func TestParseDialog(t *testing.T) {
+	cases := []struct {
+		name   string
+		screen string
+		want   domain.Dialog
+	}{
+		{"measured dialog", measuredDialog,
+			domain.Dialog{Choices: []domain.Choice{{1, "Красный"}, {2, "Зелёный"}, {3, "Синий"}}, TextEntry: 4, TextLabel: "Type something"}},
+		{"multi-select", "❯ 1. ☐ Red\n  2. ☑ Green\n  3. ☐ Blue\n\nSpace to toggle · Enter to submit",
+			domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "☑ Green"}, {3, "☐ Blue"}}, Multi: true}},
+		{"mixed glyphs", "  1. ☐ Red\n  2. Green\n", domain.Dialog{Choices: []domain.Choice{{1, "☐ Red"}, {2, "Green"}}}},
+		{"multi-select with text entry", "  1. ☐ A\n  2. ☐ B\n  3. Type something.\n",
+			domain.Dialog{Choices: []domain.Choice{{1, "☐ A"}, {2, "☐ B"}}, Multi: true, TextEntry: 3, TextLabel: "Type something"}},
+		{"chat about this", "  1. A\n  2. B\n  3. Chat about this\n",
+			domain.Dialog{Choices: []domain.Choice{{1, "A"}, {2, "B"}}, TextEntry: 3, TextLabel: "Chat about this"}},
+		{"type something wins over chat", "  1. A\n  2. Chat about this\n  3. B\n  4. Type something.\n",
+			domain.Dialog{Choices: []domain.Choice{{1, "A"}, {3, "B"}}, TextEntry: 4, TextLabel: "Type something"}},
+		{"only service items", "  1. Type something.\n  2. Chat about this\n", domain.Dialog{}},
+		{"no dialog", "just text\n❯ ", domain.Dialog{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := domain.ParseDialog(tc.screen)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ParseDialog() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseChoices(t *testing.T) {
 	colours := []domain.Choice{{1, "Красный"}, {2, "Зелёный"}, {3, "Синий"}}
 	cases := []struct {

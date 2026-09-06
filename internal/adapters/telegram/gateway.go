@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +22,8 @@ import (
 )
 
 const (
+	// downloadTimeout bounds one file download (getFile plus the GET).
+	downloadTimeout = 60 * time.Second
 	// topicNameMax is Telegram's limit for a forum topic name.
 	topicNameMax = 128
 	// eventBuffer bounds inbound events waiting for the application.
@@ -61,6 +66,9 @@ type Gateway struct {
 	events      chan domain.Event
 	stopped     chan struct{}
 	log         *slog.Logger
+	// http fetches file bytes from the file endpoint; downloads bypass
+	// the message queue because they are not Bot API method calls.
+	http *http.Client
 	// noticeDelay is Config.NoticeDelay.
 	noticeDelay time.Duration
 	// deleteWarned is set after the first failed service-message deletion
@@ -92,7 +100,7 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 		events:      make(chan domain.Event, eventBuffer),
 		stopped:     make(chan struct{}),
 		log:         log,
-
+		http:        &http.Client{Timeout: downloadTimeout},
 		noticeDelay: cfg.NoticeDelay,
 	}
 	g.registerHandlers()
@@ -456,8 +464,62 @@ func (g *Gateway) AnswerButton(ctx context.Context, callbackID, text string) err
 	return g.finish("answerCallbackQuery", translate(err), slog.Int("text_len", len(text)))
 }
 
-// React puts one emoji reaction on a message. Telegram addresses reactions
-// by message id alone; threadID only labels the log line.
+// Download fetches the bytes of a file an operator sent: getFile for the
+// path, then a GET on the file endpoint. The size Telegram reports and the
+// bytes actually read are both checked against max, so a file above the
+// cap is refused before the download or cut short during it. The URL
+// carries the bot token and never reaches the log or an error.
+func (g *Gateway) Download(ctx context.Context, fileID string, max int64) ([]byte, error) {
+	start := time.Now()
+	f, err := g.api.GetFile(ctx, &bot.GetFileParams{FileID: fileID})
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "too big") {
+			return nil, domain.ErrFileTooBig
+		}
+		g.log.Warn("getFile failed", slog.String("file_id", fileID), slog.Any("err", translate(err)))
+		return nil, fmt.Errorf("getFile: %w", translate(err))
+	}
+	if f.FileSize > max {
+		g.log.Debug("download refused by size", slog.String("file_id", fileID), slog.Int64("size", f.FileSize), slog.Int64("max", max))
+		return nil, domain.ErrFileTooBig
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.api.FileDownloadLink(f), nil)
+	if err != nil {
+		return nil, fmt.Errorf("download request: %w", err)
+	}
+	resp, err := g.http.Do(req)
+	if err != nil {
+		g.log.Warn("download failed", slog.String("file_id", fileID), slog.String("err", downloadErr(err)))
+		return nil, fmt.Errorf("download: %s", downloadErr(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		g.log.Warn("download failed", slog.String("file_id", fileID), slog.Int("status", resp.StatusCode))
+		return nil, fmt.Errorf("download: status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, fmt.Errorf("download read: %w", err)
+	}
+	if int64(len(data)) > max {
+		g.log.Debug("download cut by size", slog.String("file_id", fileID), slog.Int64("max", max))
+		return nil, domain.ErrFileTooBig
+	}
+	g.log.Debug("file download", slog.String("file_id", fileID), slog.Int("bytes", len(data)),
+		slog.Int64("dur_ms", time.Since(start).Milliseconds()))
+	return data, nil
+}
+
+// downloadErr words a transport error without the URL, which carries the
+// bot token.
+func downloadErr(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err.Error()
+	}
+	return err.Error()
+}
+
 // SendDocument uploads one file as a single silent message. ThreadID 0
 // addresses the General topic. Content type detection is disabled so a
 // .txt stays a plain file instead of being previewed as something else.

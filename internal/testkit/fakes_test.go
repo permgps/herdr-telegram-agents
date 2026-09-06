@@ -359,3 +359,74 @@ func TestFakeHerdrWorkspacesTabsStartsAndCloses(t *testing.T) {
 		t.Fatalf("Closed = %v", closed)
 	}
 }
+
+func TestFakeTelegramDownload(t *testing.T) {
+	tg := testkit.NewFakeTelegram(nil)
+	ctx := context.Background()
+	tg.SetFile("f1", []byte("hello"))
+	data, err := tg.Download(ctx, "f1", 10)
+	if err != nil || string(data) != "hello" {
+		t.Fatalf("Download = %q, %v", data, err)
+	}
+	if _, err := tg.Download(ctx, "f1", 3); !errors.Is(err, domain.ErrFileTooBig) {
+		t.Fatalf("over max: %v", err)
+	}
+	if _, err := tg.Download(ctx, "missing", 10); err == nil {
+		t.Fatal("unscripted id must fail")
+	}
+	tg.FailNext("download", errors.New("boom"))
+	if _, err := tg.Download(ctx, "f1", 10); err == nil || err.Error() != "boom" {
+		t.Fatalf("FailNext: %v", err)
+	}
+	calls := tg.Calls()
+	if calls[0] != "download:f1:10" {
+		t.Fatalf("calls = %v", calls)
+	}
+	if _, err := tg.Send(ctx, domain.Outgoing{Text: "type", ForceReply: true}); err != nil {
+		t.Fatal(err)
+	}
+	if last := tg.Calls()[len(tg.Calls())-1]; last != "send:0:type:forcereply" {
+		t.Fatalf("force reply call = %q", last)
+	}
+}
+
+func TestFakeInbox(t *testing.T) {
+	in := testkit.NewFakeInbox("/state/inbox")
+	ctx := context.Background()
+	path, err := in.Save(ctx, "a.txt", []byte("x"))
+	if err != nil || path != "/state/inbox/a.txt" {
+		t.Fatalf("Save = %q, %v", path, err)
+	}
+	if saved := in.Saved(); len(saved) != 1 || saved[0].Name != "a.txt" || string(saved[0].Data) != "x" {
+		t.Fatalf("Saved = %+v", saved)
+	}
+	in.FailNext("save", errors.New("disk"))
+	if _, err := in.Save(ctx, "b", nil); err == nil {
+		t.Fatal("FailNext save")
+	}
+	in.SetSweepCount(3)
+	if n, err := in.Sweep(ctx, 7*24*time.Hour); err != nil || n != 3 {
+		t.Fatalf("Sweep = %d, %v", n, err)
+	}
+	if sweeps := in.Sweeps(); len(sweeps) != 1 || sweeps[0] != 7*24*time.Hour {
+		t.Fatalf("Sweeps = %v", sweeps)
+	}
+}
+
+func TestFakeGit(t *testing.T) {
+	g := testkit.NewFakeGit()
+	ctx := context.Background()
+	g.SetResult(domain.GitResult{Output: "## main"})
+	r, err := g.Run(ctx, "/repo", []string{"status", "--short"})
+	if err != nil || r.Output != "## main" {
+		t.Fatalf("Run = %+v, %v", r, err)
+	}
+	g.SetError(domain.ErrNotRepository)
+	if _, err := g.Run(ctx, "/tmp", []string{"status"}); !errors.Is(err, domain.ErrNotRepository) {
+		t.Fatalf("SetError: %v", err)
+	}
+	calls := g.Calls()
+	if len(calls) != 2 || calls[0].Dir != "/repo" || calls[0].Args[1] != "--short" {
+		t.Fatalf("Calls = %+v", calls)
+	}
+}

@@ -87,6 +87,15 @@ func (o *Options) BlockedDelay() time.Duration { return o.Get().BlockedDelay() }
 // MinTurn is the shortest turn whose done screen is posted; zero posts all.
 func (o *Options) MinTurn() time.Duration { return o.Get().MinTurn() }
 
+// InboxEnabled mirrors domain.Options.InboxEnabled.
+func (o *Options) InboxEnabled() bool { return o.Get().InboxEnabled() }
+
+// InboxMaxBytes mirrors domain.Options.InboxMaxBytes.
+func (o *Options) InboxMaxBytes() int64 { return o.Get().InboxMaxBytes() }
+
+// InboxDeleteAfter mirrors domain.Options.InboxDeleteAfter.
+func (o *Options) InboxDeleteAfter() time.Duration { return o.Get().InboxDeleteAfter() }
+
 // Choices lists the allowed values of a choice source; nil when unknown.
 // Lists the domain owns (the day counts) are answered without asking the
 // external source.

@@ -43,6 +43,7 @@ type FakeTelegram struct {
 	icons     domain.StatusIcons
 	pack      []string
 	docs      []domain.Document
+	files     map[string][]byte
 	failNext  map[string]error
 	rights    domain.Rights
 	rightErr  error
@@ -64,6 +65,7 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 		buttons:   map[int][]domain.Button{},
 		texts:     map[int]string{},
 		icons:     domain.DefaultStatusIcons(),
+		files:     map[string][]byte{},
 		pack:      []string{"⚡️", "✅", "❓", "🏆", "👀", "🏁", "🔥", "🤖", "🧠"},
 		failNext:  map[string]error{},
 		rights:    domain.Rights{IsForum: true, IsAdmin: true, CanManageTopics: true, CanDeleteMessages: true},
@@ -73,7 +75,8 @@ func NewFakeTelegram(log *slog.Logger) *FakeTelegram {
 }
 
 // FailNext makes the next call of method (create, edit, close, reopen,
-// send, document, react, rights, buttons, answer, edittext) return err.
+// send, document, react, rights, buttons, answer, edittext, download)
+// return err.
 // Only one failure is queued per method.
 func (f *FakeTelegram) FailNext(method string, err error) {
 	f.mu.Lock()
@@ -285,6 +288,9 @@ func (f *FakeTelegram) Send(_ context.Context, out domain.Outgoing) (int, error)
 	if out.Markdown {
 		call += ":markdown"
 	}
+	if out.ForceReply {
+		call += ":forcereply"
+	}
 	if err := f.record("send", call); err != nil {
 		return 0, err
 	}
@@ -372,6 +378,32 @@ func (f *FakeTelegram) SendDocument(_ context.Context, doc domain.Document) erro
 	}
 	f.docs = append(f.docs, doc)
 	return nil
+}
+
+// SetFile scripts the bytes Download answers for fileID.
+func (f *FakeTelegram) SetFile(fileID string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[fileID] = append([]byte(nil), data...)
+}
+
+// Download answers the scripted bytes for fileID, recorded as
+// download:<fileID>:<max>; an unscripted id is an error and a scripted
+// file longer than max is domain.ErrFileTooBig.
+func (f *FakeTelegram) Download(_ context.Context, fileID string, max int64) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.record("download", fmt.Sprintf("download:%s:%d", fileID, max)); err != nil {
+		return nil, err
+	}
+	data, ok := f.files[fileID]
+	if !ok {
+		return nil, fmt.Errorf("download %s: no such file in the fake", fileID)
+	}
+	if int64(len(data)) > max {
+		return nil, domain.ErrFileTooBig
+	}
+	return append([]byte(nil), data...), nil
 }
 
 func (f *FakeTelegram) React(_ context.Context, threadID, messageID int, emoji string) error {

@@ -116,17 +116,20 @@ type Button struct {
 // characters. ReplyTo quotes the operator message with that id when
 // non-zero. Notify sends the message with a sound; everything else is
 // silent. Buttons, when set, are attached to the last message part as an
-// inline keyboard, one button per row.
+// inline keyboard, one button per row. ForceReply asks the operator's
+// client to open the reply box for this message (Telegram's force_reply,
+// selective); it is ignored when Buttons are set.
 type Outgoing struct {
-	ThreadID int
-	Text     string
-	Code     bool
-	HTML     bool
-	Markdown bool
-	MaxParts int
-	ReplyTo  int
-	Notify   bool
-	Buttons  []Button
+	ThreadID   int
+	Text       string
+	Code       bool
+	HTML       bool
+	Markdown   bool
+	MaxParts   int
+	ReplyTo    int
+	Notify     bool
+	Buttons    []Button
+	ForceReply bool
 }
 
 // Document is one file for the forum group, sent silently as a single
@@ -186,10 +189,40 @@ type TelegramGateway interface {
 	// its topics and delete messages; the daemon checks it on start and
 	// after RightsChanged.
 	Rights(ctx context.Context) (Rights, error)
-	// Events streams TopicMessage, ButtonPressed, GeneralCommand,
-	// TopicRenamed, TopicClosed, TopicReopened and RightsChanged values
-	// until the gateway is closed.
+	// Download fetches the bytes of a file an operator sent (getFile and
+	// the file endpoint). A file larger than max, before or during the
+	// download, is ErrFileTooBig. Not subject to the message rate limit.
+	Download(ctx context.Context, fileID string, max int64) ([]byte, error)
+	// Events streams TopicMessage, TopicAttachment, ButtonPressed,
+	// GeneralCommand, TopicRenamed, TopicClosed, TopicReopened and
+	// RightsChanged values until the gateway is closed.
 	Events() <-chan Event
+}
+
+// InboxStore keeps the files operators send to topics on this machine.
+type InboxStore interface {
+	// Save writes data under a file name derived from name (made unique
+	// when taken) and returns the absolute path of the file.
+	Save(ctx context.Context, name string, data []byte) (string, error)
+	// Sweep deletes inbox files not modified for olderThan and returns how
+	// many it removed.
+	Sweep(ctx context.Context, olderThan time.Duration) (int, error)
+}
+
+// GitResult is what a git run printed. Output is stdout with trailing
+// whitespace trimmed; Truncated is set when the runner's cap cut it.
+type GitResult struct {
+	Output    string
+	Truncated bool
+}
+
+// GitRunner runs read-only git commands for /git. Run executes git with
+// args (the argv after "git", from GitSpec) in dir; a directory outside a
+// repository is ErrNotRepository, a missing binary ErrGitMissing, a
+// non-zero exit an error carrying the trimmed stderr, and the runner's
+// timeout surfaces as context.DeadlineExceeded.
+type GitRunner interface {
+	Run(ctx context.Context, dir string, args []string) (GitResult, error)
 }
 
 // Rights is the bot's standing in the configured chat.

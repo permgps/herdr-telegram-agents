@@ -57,6 +57,36 @@ type TopicMessage struct {
 	Text      string
 }
 
+// AttachmentKind names what an operator attached to a topic message.
+type AttachmentKind string
+
+const (
+	AttachmentPhoto    AttachmentKind = "photo"
+	AttachmentDocument AttachmentKind = "document"
+	AttachmentVoice    AttachmentKind = "voice"
+	AttachmentAudio    AttachmentKind = "audio"
+	AttachmentVideo    AttachmentKind = "video"
+)
+
+// TopicAttachment is a photo, document, voice note, audio or video an
+// operator sent into a topic. GroupID is Telegram's media_group_id, set
+// when the message is one part of an album; FileID downloads the file;
+// Name is the sender's file name when Telegram gives one, else empty; MIME
+// is the declared type, may be empty; Size is Telegram's file_size, 0 when
+// unknown; Caption is the text under the file.
+type TopicAttachment struct {
+	ThreadID  int
+	MessageID int
+	FromID    int64
+	GroupID   string
+	Kind      AttachmentKind
+	FileID    string
+	Name      string
+	MIME      string
+	Size      int64
+	Caption   string
+}
+
 // ButtonPressed is emitted when an operator presses an inline button under
 // a bot message in a topic. CallbackID answers the press; MessageID names
 // the message carrying the keyboard; Data is the button's Data.
@@ -97,11 +127,12 @@ type RightsChanged struct {
 	CanManageTopics bool
 }
 
-func (HerdrEvent) isEvent()     {}
-func (TopicMessage) isEvent()   {}
-func (ButtonPressed) isEvent()  {}
-func (GeneralCommand) isEvent() {}
-func (TopicRenamed) isEvent()   {}
-func (TopicClosed) isEvent()    {}
-func (TopicReopened) isEvent()  {}
-func (RightsChanged) isEvent()  {}
+func (HerdrEvent) isEvent()      {}
+func (TopicMessage) isEvent()    {}
+func (TopicAttachment) isEvent() {}
+func (ButtonPressed) isEvent()   {}
+func (GeneralCommand) isEvent()  {}
+func (TopicRenamed) isEvent()    {}
+func (TopicClosed) isEvent()     {}
+func (TopicReopened) isEvent()   {}
+func (RightsChanged) isEvent()   {}

@@ -48,6 +48,9 @@ const (
 	// CmdNew starts an agent in a new tab of a workspace (General only);
 	// Workspace is the label typed after the word and AgentKind the kind.
 	CmdNew CommandKind = "new"
+	// CmdGit runs a read-only git command in the agent's working directory
+	// (/git status | diff [staged] | log [N]).
+	CmdGit CommandKind = "git"
 	// CmdUnknown is a slash word the plugin does not know; Text holds it.
 	CmdUnknown CommandKind = "unknown"
 )
@@ -254,6 +257,65 @@ type Command struct {
 	// AgentKind is the kind /new starts: the last word when it is one of
 	// AgentKinds, else DefaultAgentKind. Empty for a bare /new.
 	AgentKind string
+	// Git is the resolved argv for CmdGit; an empty Sub means the operator
+	// asked for something outside the allow-list and gets GitUsage.
+	Git GitSpec
+}
+
+// GitSpec is one allow-listed git invocation: Sub names the subcommand the
+// operator typed (status, diff, log) and Args is the complete argv after
+// "git", composed here so the runner never builds one from phone input.
+type GitSpec struct {
+	Sub  string
+	Args []string
+}
+
+// Bounds of the /git log count.
+const (
+	GitLogDefault = 10
+	GitLogMax     = 50
+)
+
+// GitUsage is the reply to a /git shape outside the allow-list.
+const GitUsage = "usage: /git status | diff [staged] | log [N]"
+
+// ParseGit maps the words after /git to a GitSpec: "status" → git status
+// --short --branch; "diff" → git diff HEAD; "diff staged" → git diff
+// --cached; "log [N]" → git log --oneline --decorate -n N (default
+// GitLogDefault, clamped to 1..GitLogMax). Anything else is not allowed and
+// answers false; no path or flag from the phone ever reaches git.
+func ParseGit(args []string) (GitSpec, bool) {
+	if len(args) == 0 {
+		return GitSpec{}, false
+	}
+	switch strings.ToLower(args[0]) {
+	case "status":
+		if len(args) == 1 {
+			return GitSpec{Sub: "status", Args: []string{"status", "--short", "--branch"}}, true
+		}
+	case "diff":
+		switch {
+		case len(args) == 1:
+			return GitSpec{Sub: "diff", Args: []string{"diff", "HEAD"}}, true
+		case len(args) == 2 && strings.EqualFold(args[1], "staged"):
+			return GitSpec{Sub: "diff", Args: []string{"diff", "--cached"}}, true
+		}
+	case "log":
+		n := GitLogDefault
+		switch {
+		case len(args) == 1:
+		case len(args) == 2:
+			v, err := strconv.Atoi(args[1])
+			if err != nil {
+				return GitSpec{}, false
+			}
+			n = min(max(v, 1), GitLogMax)
+		default:
+			return GitSpec{}, false
+		}
+		return GitSpec{Sub: "log", Args: []string{"log", "--oneline", "--decorate", "-n", strconv.Itoa(n)}}, true
+	}
+	return GitSpec{}, false
 }
 
 // Bounds of the /away duration argument.
@@ -327,6 +389,9 @@ func ParseCommand(text, botUsername string) Command {
 		return bareCommand(CmdClose, word, args)
 	case "new":
 		return parseNew(args)
+	case "git":
+		spec, _ := ParseGit(args)
+		return Command{Kind: CmdGit, Git: spec}
 	}
 	if rule, ok := forwardRuleFor(word, rest != ""); ok {
 		line := "/" + word

@@ -101,10 +101,21 @@ const (
 	// ChoiceSourceSeconds is the static list of second counts offered by
 	// the panel for the two delay options (see SecondsChoices).
 	ChoiceSourceSeconds = "seconds"
+	// OptionInboxEnabled accepts files sent to topics into the inbox.
+	OptionInboxEnabled = "inbox.enabled"
+	// OptionInboxMaxMB is the largest file the inbox takes, in megabytes.
+	OptionInboxMaxMB = "inbox.max_mb"
+	// OptionInboxDeleteAfterDays is the age at which inbox files are
+	// deleted; 0 keeps them.
+	OptionInboxDeleteAfterDays = "inbox.delete_after_days"
+	// ChoiceSourceMegabytes is the static list of file sizes offered for
+	// OptionInboxMaxMB (see MegabytesChoices).
+	ChoiceSourceMegabytes = "megabytes"
 	// Group names, in the panel's display order.
 	GroupSync       = "sync"
 	GroupQuiet      = "quiet"
 	GroupPosts      = "posts"
+	GroupInbox      = "inbox"
 	GroupAppearance = "appearance"
 	GroupPrivacy    = "privacy"
 	GroupTopics     = "topics"
@@ -146,6 +157,7 @@ var OptionGroupSpecs = []OptionGroup{
 	{Name: GroupSync, Title: "Sync", Description: "What the mirror writes to Telegram."},
 	{Name: GroupQuiet, Title: "Quiet", Description: "Less noise while you are at the machine."},
 	{Name: GroupPosts, Title: "Posts", Description: "What a topic receives from its agent: questions, done posts, reactions."},
+	{Name: GroupInbox, Title: "Inbox", Description: "Files you send to a topic: saved on this machine and handed to the agent as a path."},
 	{Name: GroupAppearance, Title: "Appearance", Description: "How topics and status lines look."},
 	{Name: GroupPrivacy, Title: "Privacy", Description: "What never leaves this machine."},
 	{Name: GroupTopics, Title: "Topics", Description: "Lifecycle of the forum topics."},
@@ -248,6 +260,34 @@ func buildOptionSpecs() []OptionSpec {
 			Choices:     ChoiceSourceSeconds,
 			Validate:    validateSeconds,
 		},
+		{
+			Key:         OptionInboxEnabled,
+			Group:       GroupInbox,
+			Title:       "Accept files",
+			Description: "Photos, documents, voice notes, audio and video sent to a topic are saved to the inbox and the agent is prompted with the path. Off: such messages are refused with a notice.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionInboxMaxMB,
+			Group:       GroupInbox,
+			Title:       "Largest file",
+			Description: "Files above this size are refused. Telegram lets bots download 20 MB at most.",
+			Kind:        KindChoice,
+			Default:     "20",
+			Choices:     ChoiceSourceMegabytes,
+			Validate:    validateMegabytes,
+		},
+		{
+			Key:         OptionInboxDeleteAfterDays,
+			Group:       GroupInbox,
+			Title:       "Delete files after",
+			Description: "Inbox files older than this are deleted once a day. Off keeps them.",
+			Kind:        KindChoice,
+			Default:     "7",
+			Choices:     ChoiceSourceDays,
+			Validate:    validateDays,
+		},
 	}
 	descriptions := map[Status]string{
 		StatusWorking: "Topic icon while the agent is working.",
@@ -338,10 +378,22 @@ const maxSeconds = 3600
 // 30, 60 and 120 seconds.
 func SecondsChoices() []string { return append([]string(nil), secondsChoices...) }
 
+// megabytesChoices is the list the panel offers for OptionInboxMaxMB.
+var megabytesChoices = []string{"5", "10", "20"}
+
+// maxInboxMB is the most a bot may download through the Bot API.
+const maxInboxMB = 20
+
+// MegabytesChoices returns the file sizes the panel offers: 5, 10 and 20
+// MB.
+func MegabytesChoices() []string { return append([]string(nil), megabytesChoices...) }
+
 // StaticChoices answers the choice lists the domain owns itself; the
 // application layer asks it before the external ChoiceSource.
 func StaticChoices(name string) ([]string, bool) {
 	switch name {
+	case ChoiceSourceMegabytes:
+		return MegabytesChoices(), true
 	case ChoiceSourceDays:
 		return DaysChoices(), true
 	case ChoiceSourceMinutes:
@@ -372,6 +424,14 @@ func validateMinutes(value string) error {
 	return nil
 }
 
+func validateMegabytes(value string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 1 || n > maxInboxMB {
+		return fmt.Errorf("%q is not a megabyte count between 1 and %d: %w", value, maxInboxMB, ErrInvalidOption)
+	}
+	return nil
+}
+
 func validateSeconds(value string) error {
 	n, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || n < 0 || n > maxSeconds {
@@ -382,10 +442,16 @@ func validateSeconds(value string) error {
 
 // ChoiceLabel is the human form of a choice value in panel text: days
 // become "Off", "1 day" or "30 days", minutes "1 min" or "3 min", seconds
-// "Off" or "30 s", posts modes "Silent", "Held", "Normal"; other sources
-// show the value itself.
+// "Off" or "30 s", megabytes "20 MB", posts modes "Silent", "Held",
+// "Normal"; other sources show the value itself.
 func ChoiceLabel(spec OptionSpec, value string) string {
 	switch spec.Choices {
+	case ChoiceSourceMegabytes:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return value
+		}
+		return fmt.Sprintf("%d MB", n)
 	case ChoiceSourceDays:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		switch {
@@ -423,9 +489,15 @@ func ChoiceLabel(spec OptionSpec, value string) string {
 }
 
 // ChoiceButton is the short form of a choice value on a button: "Off",
-// "7d", "3m", "30s", "Silent"; other sources show the value itself.
+// "7d", "3m", "30s", "20MB", "Silent"; other sources show the value itself.
 func ChoiceButton(spec OptionSpec, value string) string {
 	switch spec.Choices {
+	case ChoiceSourceMegabytes:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return value
+		}
+		return fmt.Sprintf("%dMB", n)
 	case ChoiceSourceDays:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		switch {
@@ -613,6 +685,29 @@ func (o Options) RedactEnabled() bool { return o.Bool(OptionRedact) }
 // exited agent; zero means the sweep is off (also for an unparsable value).
 func (o Options) DeleteAfter() time.Duration {
 	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionDeleteAfterDays)))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * 24 * time.Hour
+}
+
+// InboxEnabled is the attachment inbox switch.
+func (o Options) InboxEnabled() bool { return o.Bool(OptionInboxEnabled) }
+
+// InboxMaxBytes is the largest attachment the inbox accepts, in bytes; the
+// Bot API cap for an unparsable value.
+func (o Options) InboxMaxBytes() int64 {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionInboxMaxMB)))
+	if err != nil || n < 1 || n > maxInboxMB {
+		n = maxInboxMB
+	}
+	return int64(n) * 1024 * 1024
+}
+
+// InboxDeleteAfter is the age at which the sweep deletes an inbox file;
+// zero means files are kept (also for an unparsable value).
+func (o Options) InboxDeleteAfter() time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionInboxDeleteAfterDays)))
 	if err != nil || n <= 0 {
 		return 0
 	}

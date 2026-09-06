@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +74,17 @@ func TestParseCommand(t *testing.T) {
 		{"new workspace and kind", "/new my project codex", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "my project", AgentKind: "codex"}},
 		{"new kind upper case", "/new Work CODEX", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "Work", AgentKind: "codex"}},
 		{"new kind only", "/new codex", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "", AgentKind: "codex"}},
+		{"git status", "/git status", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "status", Args: []string{"status", "--short", "--branch"}}}},
+		{"git diff", "/git diff", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "diff", Args: []string{"diff", "HEAD"}}}},
+		{"git diff staged", "/git diff staged", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "diff", Args: []string{"diff", "--cached"}}}},
+		{"git diff cached is usage", "/git diff cached", "herdr_bot", domain.Command{Kind: domain.CmdGit}},
+		{"git log", "/git log", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "log", Args: []string{"log", "--oneline", "--decorate", "-n", "10"}}}},
+		{"git log count", "/git log 5", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "log", Args: []string{"log", "--oneline", "--decorate", "-n", "5"}}}},
+		{"git log clamps", "/git log 500", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "log", Args: []string{"log", "--oneline", "--decorate", "-n", "50"}}}},
+		{"git log garbage is usage", "/git log x", "herdr_bot", domain.Command{Kind: domain.CmdGit}},
+		{"git bare is usage", "/git", "herdr_bot", domain.Command{Kind: domain.CmdGit}},
+		{"git push is usage", "/git push", "herdr_bot", domain.Command{Kind: domain.CmdGit}},
+		{"git with bot suffix", "/git@herdr_bot status", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "status", Args: []string{"status", "--short", "--branch"}}}},
 		{"new with suffix", "/new@herdr_bot Work", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "Work", AgentKind: "claude"}},
 		{"new collapses inner spacing", "/new  Big   Site  ", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "Big Site", AgentKind: "claude"}},
 	}
@@ -231,5 +243,33 @@ func TestMatchWorkspace(t *testing.T) {
 	}
 	if got := domain.MatchWorkspaces("x", nil); got != nil {
 		t.Errorf("MatchWorkspaces on nil = %+v", got)
+	}
+}
+
+func TestParseGit(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+		ok   bool
+	}{
+		{[]string{"status"}, "status --short --branch", true},
+		{[]string{"STATUS"}, "status --short --branch", true},
+		{[]string{"status", "-v"}, "", false},
+		{[]string{"diff"}, "diff HEAD", true},
+		{[]string{"diff", "staged"}, "diff --cached", true},
+		{[]string{"diff", "--output=x"}, "", false},
+		{[]string{"log"}, "log --oneline --decorate -n 10", true},
+		{[]string{"log", "0"}, "log --oneline --decorate -n 1", true},
+		{[]string{"log", "50"}, "log --oneline --decorate -n 50", true},
+		{[]string{"log", "51"}, "log --oneline --decorate -n 50", true},
+		{[]string{"log", "3", "x"}, "", false},
+		{[]string{"show"}, "", false},
+		{nil, "", false},
+	}
+	for _, tc := range cases {
+		spec, ok := domain.ParseGit(tc.args)
+		if ok != tc.ok || strings.Join(spec.Args, " ") != tc.want {
+			t.Errorf("ParseGit(%v) = %q, %v; want %q, %v", tc.args, strings.Join(spec.Args, " "), ok, tc.want, tc.ok)
+		}
 	}
 }

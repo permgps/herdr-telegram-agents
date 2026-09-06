@@ -57,6 +57,14 @@ var (
 	// no text after the last prompt. Wrapped with the reason; the caller
 	// falls back to the screen.
 	ErrNoReply = errors.New("no reply available")
+	// ErrFileTooBig means an attachment is larger than the inbox allows or
+	// than Telegram lets a bot download.
+	ErrFileTooBig = errors.New("file is too big")
+	// ErrNotRepository means the agent's working directory is not inside a
+	// git repository.
+	ErrNotRepository = errors.New("not a git repository")
+	// ErrGitMissing means no git binary was found on PATH.
+	ErrGitMissing = errors.New("git is not installed")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a
