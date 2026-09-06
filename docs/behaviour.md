@@ -47,8 +47,31 @@ in a topic and what gets posted there is in [commands.md](commands.md).
   numbered dialog with two to five real options, the post also carries one
   inline button per option, labelled with the option's number and text.
   Claude Code's `Type something.` and `Chat about this` entries are not
-  offered as buttons and do not count towards the five; the other options
-  keep their numbers, so replying with a digit still works as before.
+  option buttons and do not count towards the five; the other options keep
+  their numbers, so replying with a digit still works as before. A dialog
+  that offers `Type something.` (else `Chat about this`) gets a `✏️ Type
+  something` button in its own row.
+- Pressing ✏️ sends that entry's number, turns the keyboard into `✏️ waiting
+  for your text`, answers `now send the text` and posts a quoted `✏️ Type
+  something: send the text as your next message` with Telegram's
+  `force_reply`, so the phone opens the reply box. Your next plain message
+  in that topic is then typed into the agent whatever it looks like (`y`,
+  `2` and `enter` included, which would otherwise be key presses), the
+  button becomes `✅ ✏️ · <start of the text>` and the message gets 👀 like
+  a prompt. The wait ends with that message, with any slash command (which
+  runs as usual and leaves `✏️ cancelled`), when the agent exits, when a
+  newer question is posted for it, or after 10 minutes (`✏️ expired`). No
+  screen is read after the press: the text box the agent shows is not a
+  question.
+- A multi-select dialog (every option starts with `☐` or `☑`) keeps its
+  buttons as toggles: a press sends the digit, answers `toggled: <n>` and
+  leaves the keyboard in place; 1.5 s later the keyboard of the same
+  message is redrawn from the screen, so the ticks follow what the agent
+  shows. A `✔ Submit` row sends `enter`, collapses the keyboard to `✅
+  submitted` and arms the usual read, so the next question arrives with its
+  own buttons. When the screen no longer shows the multi-select dialog at
+  redraw time (the agent moved on) the new screen is posted as usual and
+  the old keyboard is retired.
 - A press sends the option's digit as a key (`agent.send_keys`), answers
   with a short toast, and replaces the keyboard with a single `✅ <n> · <text>`
   button; pressing that one says `already answered`. The daemon then reads
@@ -58,9 +81,10 @@ in a topic and what gets posted there is in [commands.md](commands.md).
   agent, when the agent exits, or when a press arrives for an agent that is
   no longer blocked, has exited, or for a message that is not the latest
   question. Such a press does nothing but show a notice.
-- Known limit: in a multi-select dialog a press toggles the option; the
-  operator submits with `enter`. Only operators can press; anyone else gets
-  `not allowed`.
+- Only operators can press; anyone else gets `not allowed`. Pressing
+  `Submit` under a single-select question, or ✏️ under a question that
+  offers no free-text entry, answers `unknown button` and strips the
+  keyboard.
 - `/close` posts its own two-button question (`Yes, close` / `No`, callback
   data `c:y` / `c:n`). One question per agent is active: a newer `/close`
   strips the buttons of the older one, which then answers `not the latest
@@ -145,8 +169,8 @@ keyboard, `✖ Close` leaves a one-line-per-option summary behind. The buttons
 carry everything they need, so a panel still works after the daemon was
 restarted.
 
-- **Level 1** lists the groups (Sync, Quiet, Posts, Appearance, Privacy, Topics)
-  with a description each.
+- **Level 1** lists the groups (Sync, Quiet, Posts, Inbox, Appearance,
+  Privacy, Topics) with a description each.
 - **Level 2** lists the options of a group: a checkbox toggles on the spot
   (`☑` / `☐`), a choice shows its current value and opens the picker,
   `↺ Reset to defaults` restores the whole group, `‹ Back` and `✖ Close`
@@ -158,7 +182,7 @@ restarted.
   `Off 7d 14d 30d 60d 90d`; for the quiet threshold `1m 2m 3m 5m 10m 15m`;
   for the posts mode `Silent Held Normal`; for the done post `Screen Reply
   Formatted`; for the question delay and the short-turn threshold `Off 5s
-  10s 30s 60s 120s`.
+  10s 30s 60s 120s`; for the largest inbox file `5MB 10MB 20MB`.
 
 The options today:
 
@@ -174,6 +198,9 @@ The options today:
 | `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, ✅ when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
 | `Question delay` | Posts | Default `Off`. With `5s` … `120s`: after the usual 1.5 s capture the blocked post waits that long more, is dropped when the agent left blocked meanwhile, starts over when a newer question arrived, and otherwise posts the better of the two captures (more options recognised, then the longer text). `Off` posts the first capture at 1.5 s. Any integer of seconds up to 3600 can be typed into `options.json`. See [Questions and buttons](#questions-and-buttons). |
 | `Skip short done posts` | Posts | Default `Off`. With `5s` … `120s`: the done post of a turn shorter than that is skipped (blocked time included; a turn whose start the daemon never saw posts). Blocked posts and reactions are unaffected. Any integer of seconds up to 3600 can be typed into `options.json`. See [Turns and reactions](#turns-and-reactions). |
+| `Accept files` | Inbox | Default on. Photos, documents, voice notes, audio and video sent to a topic are saved to the inbox and the agent is prompted with the path. Off: such messages answer `⚠️ inbox is off (/options → Inbox)`. See [Inbox](#inbox). |
+| `Largest file` | Inbox | Default 20 MB, the most Telegram lets a bot download. A larger file answers `⚠️ file too big: <size> > <max>` before any download. Any integer of megabytes from 1 to 20 can be typed into `options.json`. |
+| `Delete files after` | Inbox | Default 7 days. Inbox files older than that are deleted once a day, at daemon start and when the option changes. `Off` keeps them. Any integer of days can be typed into `options.json`. |
 | `working` … `exited` | Appearance | The topic icon of each status and the emoji `/status` prints. Picking an emoji another status already uses answers `used by <status>` and changes nothing. A pick repaints every live topic at once (a `resync`), or when sync comes back on. |
 | `Redact secrets` | Privacy | Default on. Every text the daemon posts passes the redaction step described under [Secrets in posts](#secrets-in-posts). Off: raw text. A change applies to the next post. |
 | `Delete closed topics after` | Topics | Default 30 days. The topic of an exited agent is deleted once it has been closed for that long, see [Topic cleanup](#topic-cleanup). `Off` keeps every topic. A number outside the picker's list (say `45`) can be typed into `options.json` by hand; the panel shows it without a bracketed button. |
@@ -181,7 +208,8 @@ The options today:
 Values are saved in `options.json` next to `config.json` (mode 0600) as
 `{"version": 1, "values": {"sync.enabled": true, "quiet.enabled": true,
 "quiet.idle_minutes": "3", "quiet.posts": "silent", "posts.reactions": true,
-"posts.blocked_delay": "0", "icons.working": "⚡", "privacy.redact": true,
+"posts.blocked_delay": "0", "inbox.enabled": true, "inbox.max_mb": "20",
+"inbox.delete_after_days": "7", "icons.working": "⚡", "privacy.redact": true,
 "topics.delete_after_days": "30", …}}`.
 Missing keys take their defaults and unknown keys survive a save. The file
 is read once at daemon start: edit it by hand and restart the daemon, or use
@@ -270,6 +298,19 @@ says so in the log (once per run for the missing right). `Off` disables it;
 than 500, when the oldest exited ones are dropped without touching Telegram
 (as before the cleanup existed).
 
+## Inbox
+
+Files sent to a topic land in `inbox/` under the plugin state dir
+(directory mode 0700, files 0600), named `<yyyymmdd-hhmmss>-<message
+id>-<safe name>`; what the agent receives and how albums and refusals work
+is described under [Files from the phone](commands.md#files-from-the-phone).
+The download runs on its own goroutine with a 60 s limit and never blocks
+the daemon's message loop; the bytes are capped at `Largest file` even when
+Telegram under-reports the size. Once a day, at daemon start and as soon as
+`Delete files after` changes, files not modified for longer than that age
+are deleted; subdirectories and files of a save in flight are left alone.
+`Off` keeps every file. The sweep logs `inbox sweep deleted=<n>`.
+
 ## Files, logs and state
 
 | File | Location | Content |
@@ -277,6 +318,7 @@ than 500, when the oldest exited ones are dropped without touching Telegram
 | `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, log level |
 | `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping; entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
 | `options.json` | config dir, mode 0600 | the `/options` choices |
+| `inbox/` | state dir, mode 0700, files 0600 | attachments sent to topics, swept daily after `Delete files after` |
 | `daemon.pid` | state dir | pid of the running daemon |
 | `daemon.log`, `daemon.log.1`, `daemon.log.2` | state dir | JSON log, rotated at 5 MiB |
 | `daemon.err.log` | state dir | stderr of the last daemon start |

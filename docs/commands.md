@@ -48,6 +48,7 @@ Anything you write in a topic reaches the agent:
 | `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200) |
 | `/screen all` | everything the agent printed since your last message (typed in Herdr or sent here); long output arrives as a `.txt` file |
 | `/focus` | the pane is brought to the front in Herdr |
+| `/git status`, `/git diff`, `/git diff staged`, `/git log [N]` | `git status --short --branch`, `git diff HEAD`, `git diff --cached` or `git log --oneline --decorate -n N` (default 10, at most 50) run by the daemon in the agent's working directory (`cwd` from `agent.list`), colour and pager off, 10 s timeout. Up to 3600 characters come back as a quoted code block; longer output as a `<repo>-<sub>-<hhmmss>.patch` (diff) or `.txt` file with a caption naming the argv and the line count (5 MB cap, `truncated` when cut). Empty output answers `clean`, `no changes` or `no commits`. Anything else after `/git` (a path, a flag, another subcommand) answers `usage: /git status \| diff [staged] \| log [N]`; nothing typed on the phone reaches git. Failures: `⚠️ not a git repository: <cwd>`, `⚠️ git is not installed`, `⚠️ git timed out`, `⚠️ Herdr reports no working directory`. Secret redaction applies to the output like to any post |
 | `/stop` | `esc` through `agent.send_keys`, in any status: Claude Code cancels the running turn or dismisses the open dialog; the reply is `⏹ sent esc` |
 | `/interrupt` | `ctrl+c` through `agent.send_keys`, in any status: a hard interrupt; the reply is `⛔ sent ctrl+c` |
 | `/close` | the question `Close <label>? The pane and its tab go away.` with `Yes, close` / `No` buttons; `Yes` closes the pane through `pane.close` (the tab goes with it when it held nothing else) and the topic gets 🏁 through the usual exit path; `No` keeps everything. Only the latest question of an agent acts; see [Questions and buttons](behaviour.md#questions-and-buttons) |
@@ -117,6 +118,30 @@ already working does not move the mark, and neither does a pause shorter than
 while an agent runs a tool). Output that fits in three messages is
 posted as code blocks, anything longer as one `.txt` document.
 
+## Files from the phone
+
+A photo, document, voice note, audio track or video sent into a topic is
+downloaded (off the daemon's message loop, so other messages keep flowing),
+saved under the plugin state dir as `inbox/<yyyymmdd-hhmmss>-<message
+id>-<name>` (the sender's file name reduced to letters, digits, dots,
+hyphens and underscores; `photo.jpg`, `voice.ogg`, `audio.mp3`, `video.mp4`
+or `file.<ext>` when there is none; a taken name gets `-2`, `-3` …) and the
+agent is prompted with the caption, a blank line and the absolute path. An
+album (several photos sent together) is collected for a second after its
+last part and becomes one prompt with one path per line; the first caption
+wins. The message gets the same 👀 / ✅ reactions as a typed prompt. While
+the agent is blocked the path is typed into the dialog like any plain text
+would be.
+
+Refusals are quoted replies: `⚠️ inbox is off (/options → Inbox)`, `⚠️ file
+too big: 25 MB > 20 MB` (the `Largest file` option; Telegram lets bots
+download 20 MB at most), `⚠️ download failed: <reason>`. When one part of an
+album fails the others are still delivered, followed by `⚠️ 1 of 3 files
+failed: <reason>`. An agent that exits during the download gets nothing; the
+reply says where the file was kept. Stickers, animations, locations and
+contacts are ignored. Files older than `Delete files after` (7 days by
+default) are deleted once a day; see [Inbox](behaviour.md#inbox).
+
 ## The General topic
 
 The **General** topic is the control panel. Other messages there are ignored,
@@ -130,6 +155,9 @@ and the commands appear in Telegram's `/` menu for the group.
 | `/here` | presence is automatic again; the reply says the current verdict |
 | `/new <workspace> [kind]` | opens an unfocused tab in that workspace (`tab.create`, Herdr's default directory and label) and starts an agent in its root pane (`agent.start`). The workspace is matched by label, case-insensitive: an exact match wins, else a unique prefix (`/new wor` for `Work`); labels may contain spaces. The last word is the kind only when Herdr knows it (`pi`, `claude`, `codex`, `gemini`, `cursor`, `devin`, `agy`, `cline`, `omp`, `mastracode`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `kilo`, `qodercli`, `maki`), default `claude`; no arguments reach the agent. The first reply is `starting <kind> in <workspace> …`, the second, up to a minute later, `started <kind> in <workspace> (pane <id>)` or `⚠️ <kind> did not start in <workspace>: <reason>`; the topic appears through the ordinary sync. A bare `/new`, an unknown or an ambiguous label answer with the workspace list |
 | `/help` | the command list |
+
+`/git`, `/stop`, `/interrupt` and `/close` written in General answer with a
+hint that they live in an agent's topic.
 
 The daemon also posts silent notices into General when it starts, stops,
 loses or regains the **Manage topics** right, or gives up on the Herdr
