@@ -2,7 +2,7 @@ package testkit
 
 import (
 	"context"
-	"path/filepath"
+	"path"
 	"sync"
 	"time"
 
@@ -78,7 +78,7 @@ func (f *FakeInbox) Save(_ context.Context, name string, data []byte) (string, e
 	if err := f.take("save"); err != nil {
 		return "", err
 	}
-	path := filepath.Join(f.dir, name)
+	path := path.Join(f.dir, name)
 	f.saved = append(f.saved, SavedFile{Name: name, Path: path, Data: append([]byte(nil), data...)})
 	return path, nil
 }
