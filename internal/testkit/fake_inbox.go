@@ -78,9 +78,9 @@ func (f *FakeInbox) Save(_ context.Context, name string, data []byte) (string, e
 	if err := f.take("save"); err != nil {
 		return "", err
 	}
-	path := path.Join(f.dir, name)
-	f.saved = append(f.saved, SavedFile{Name: name, Path: path, Data: append([]byte(nil), data...)})
-	return path, nil
+	saved := path.Join(f.dir, name)
+	f.saved = append(f.saved, SavedFile{Name: name, Path: saved, Data: append([]byte(nil), data...)})
+	return saved, nil
 }
 
 // Sweep implements domain.InboxStore.
