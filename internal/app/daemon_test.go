@@ -26,6 +26,7 @@ type daemonFixture struct {
 	idle     *testkit.FakeIdle
 	presence *app.Presence
 	daemon   *app.Daemon
+	inbox    *testkit.FakeInbox
 	done     chan error
 	cancel   context.CancelCauseFunc
 }
@@ -53,6 +54,8 @@ func newDaemon(t *testing.T) *daemonFixture {
 	f.presence = app.NewPresence(f.idle, f.opts, f.clock, nil)
 	f.daemon = app.NewDaemon(cfg, f.herdr, f.tg, registry, reconciler, bridge, f.capture, f.configs, f.opts, f.presence, f.clock, nil)
 	f.daemon.Version = "1.2.3"
+	f.inbox = testkit.NewFakeInbox("/state/inbox")
+	f.daemon.SetInbox(f.inbox)
 	return f
 }
 
@@ -689,6 +692,39 @@ func TestDaemonSweepsAtStartDailyAndOnOptionChange(t *testing.T) {
 	}
 	if len(f.rec.Mapping().Topics) != 0 {
 		t.Fatalf("entries left: %v", f.rec.Mapping().Keys())
+	}
+}
+
+func TestDaemonSweepsInboxDailyAndOnOptionChange(t *testing.T) {
+	f := newDaemon(t)
+	f.start(t)
+	f.waitCalls(t, 2)
+	waitFor(t, "start sweep", func() bool { return len(f.inbox.Sweeps()) == 1 })
+	if sweeps := f.inbox.Sweeps(); sweeps[0] != 7*day {
+		t.Fatalf("start sweep = %v", sweeps)
+	}
+	waitFor(t, "timers", func() bool { return f.clock.Pending() >= 5 })
+	f.clock.Advance(app.SweepIntervalForTest)
+	waitFor(t, "daily sweep", func() bool { return len(f.inbox.Sweeps()) == 2 })
+
+	if err := f.opts.Set(context.Background(), domain.OptionInboxDeleteAfterDays, "14", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "option sweep", func() bool { return len(f.inbox.Sweeps()) == 3 })
+	if sweeps := f.inbox.Sweeps(); sweeps[2] != 14*day {
+		t.Fatalf("sweeps = %v", sweeps)
+	}
+	// Off: the next pass skips the inbox.
+	if err := f.opts.Set(context.Background(), domain.OptionInboxDeleteAfterDays, "0", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.daemon.SweepNow()
+	time.Sleep(50 * time.Millisecond)
+	if n := len(f.inbox.Sweeps()); n != 3 {
+		t.Fatalf("inbox swept while off: %d", n)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -98,4 +98,10 @@ const (
 	// gitInlineRunes is the longest /git output posted as a message; longer
 	// output goes out as a document.
 	gitInlineRunes = 3600
+	// asyncTimeout bounds one background job of the bridge: an agent start
+	// (its own timeout plus grace) or a file download.
+	asyncTimeout = agentStartTimeout + agentStartGrace
+	// albumSettle is how long an album waits for more parts after the last
+	// one before it becomes one prompt.
+	albumSettle = 1 * time.Second
 )

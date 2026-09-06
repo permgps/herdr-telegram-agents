@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -44,11 +45,14 @@ type FakeTelegram struct {
 	pack      []string
 	docs      []domain.Document
 	files     map[string][]byte
-	failNext  map[string]error
-	rights    domain.Rights
-	rightErr  error
-	events    chan domain.Event
-	log       *slog.Logger
+	// downloadDelay makes Download sleep that long (real time) so tests
+	// can see that a download does not stall the bridge loop.
+	downloadDelay time.Duration
+	failNext      map[string]error
+	rights        domain.Rights
+	rightErr      error
+	events        chan domain.Event
+	log           *slog.Logger
 }
 
 var _ domain.TelegramGateway = (*FakeTelegram)(nil)
@@ -387,10 +391,27 @@ func (f *FakeTelegram) SetFile(fileID string, data []byte) {
 	f.files[fileID] = append([]byte(nil), data...)
 }
 
+// SetDownloadDelay makes every Download sleep d before answering.
+func (f *FakeTelegram) SetDownloadDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.downloadDelay = d
+}
+
 // Download answers the scripted bytes for fileID, recorded as
 // download:<fileID>:<max>; an unscripted id is an error and a scripted
 // file longer than max is domain.ErrFileTooBig.
-func (f *FakeTelegram) Download(_ context.Context, fileID string, max int64) ([]byte, error) {
+func (f *FakeTelegram) Download(ctx context.Context, fileID string, max int64) ([]byte, error) {
+	f.mu.Lock()
+	delay := f.downloadDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.record("download", fmt.Sprintf("download:%s:%d", fileID, max)); err != nil {

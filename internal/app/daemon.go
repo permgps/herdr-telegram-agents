@@ -53,6 +53,8 @@ type Daemon struct {
 	sweep  chan struct{}
 	// rights is the bot's last known standing, read by the sweep.
 	rights domain.Rights
+	// inbox is swept with the topics; nil means no inbox in this build.
+	inbox domain.InboxStore
 
 	// started is when Run began; Stats reports the uptime from it.
 	started time.Time
@@ -209,12 +211,24 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		d.log.Info("sweep requested", slog.Int("max_age_days", days(cur.DeleteAfter())))
 		d.SweepNow()
 	})
+	opts.OnChange(domain.OptionInboxDeleteAfterDays, func(_ string, cur domain.Options) {
+		if cur.InboxDeleteAfter() <= 0 {
+			d.log.Info("inbox cleanup switched off")
+			return
+		}
+		d.log.Info("inbox sweep requested", slog.Int("max_age_days", days(cur.InboxDeleteAfter())))
+		d.SweepNow()
+	})
 	opts.OnChange("quiet.", func(key string, cur domain.Options) {
 		d.log.Info("quiet option changed", slog.String("key", key), slog.String("value", cur.String(key)))
 		d.presence.Recompute()
 	})
 	return d
 }
+
+// SetInbox wires the attachment inbox so the daily sweep also deletes old
+// inbox files (inbox.delete_after_days).
+func (d *Daemon) SetInbox(inbox domain.InboxStore) { d.inbox = inbox }
 
 // SweepNow asks the loop for a stale-topic sweep. It never blocks.
 func (d *Daemon) SweepNow() {
@@ -224,10 +238,33 @@ func (d *Daemon) SweepNow() {
 	}
 }
 
-// runSweep deletes stale topics with the option and rights in force.
+// runSweep deletes stale topics with the option and rights in force, then
+// old inbox files. An inbox failure is logged and never ends the loop.
 func (d *Daemon) runSweep(ctx context.Context) error {
 	_, err := d.reconciler.Sweep(ctx, d.opts.DeleteAfter(), d.rights)
-	return d.handleErr(ctx, err)
+	if err := d.handleErr(ctx, err); err != nil {
+		return err
+	}
+	d.sweepInbox(ctx)
+	return nil
+}
+
+// sweepInbox deletes inbox files older than inbox.delete_after_days.
+func (d *Daemon) sweepInbox(ctx context.Context) {
+	if d.inbox == nil {
+		return
+	}
+	maxAge := d.opts.InboxDeleteAfter()
+	if maxAge <= 0 {
+		d.log.Debug("inbox sweep skipped", slog.String("reason", "off"))
+		return
+	}
+	n, err := d.inbox.Sweep(ctx, maxAge)
+	if err != nil {
+		d.log.Warn("inbox sweep failed", slog.Int("max_age_days", days(maxAge)), slog.String("err", err.Error()))
+		return
+	}
+	d.log.Info("inbox sweep", slog.Int("deleted", n), slog.Int("max_age_days", days(maxAge)))
 }
 
 // Resync asks the loop for a full reconcile. It never blocks.

@@ -124,7 +124,10 @@ type inbound struct {
 	// async runs a slow agent start off the bridge goroutine and delivers
 	// its result to StartFinished; the bridge wires it, tests without a
 	// bridge get the synchronous default.
-	async func(run func(context.Context) startResult)
+	async func(run func(context.Context) any)
+	// albums collects the parts of a media group until albumSettle passes
+	// after the last one; the debouncer key is albumKey(groupID).
+	albums map[string]*album
 }
 
 // followUp is a forwarded command waiting for its settle timer: which
@@ -154,11 +157,24 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 		deb:     newDebouncer(clock, commandSettle, log),
 		pending: map[domain.Key]followUp{},
 		closing: map[domain.Key]int{},
+		albums:  map[string]*album{},
 	}
-	in.async = func(run func(context.Context) startResult) {
-		_ = in.StartFinished(context.Background(), run(context.Background()))
+	in.async = func(run func(context.Context) any) {
+		_ = in.asyncDone(context.Background(), run(context.Background()))
 	}
 	return in
+}
+
+// asyncDone serves the job a background run produced when no bridge
+// routes it (tests without a running bridge).
+func (i *inbound) asyncDone(ctx context.Context, job any) error {
+	switch j := job.(type) {
+	case startResult:
+		return i.StartFinished(ctx, j)
+	case inboxResult:
+		return i.InboxFinished(ctx, j)
+	}
+	return nil
 }
 
 // Due delivers agent keys whose forwarded command has settled; the owner
@@ -416,6 +432,9 @@ func forwardWord(line string) string {
 // commands, send esc. A read failure is reported and the esc still goes
 // out so no overlay is left open. Only fatal Telegram errors are returned.
 func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
+	if group, ok := strings.CutPrefix(key.PaneID, albumPrefix); ok {
+		return i.fireAlbum(ctx, group)
+	}
 	f, ok := i.pending[key]
 	if !ok {
 		i.log.Debug("command follow-up without pending", slog.String("key", key.String()))
@@ -534,7 +553,7 @@ func (i *inbound) startAgent(ctx context.Context, cmd domain.GeneralCommand, par
 		return err
 	}
 	started := i.clock.Now()
-	i.async(func(ctx context.Context) startResult {
+	i.async(func(ctx context.Context) any {
 		agent, err := i.herdr.StartAgent(ctx, name, kind, tab.RootPaneID, agentStartTimeout)
 		return startResult{
 			messageID: cmd.MessageID, workspace: ws.Label, kind: kind, name: name,
@@ -721,6 +740,183 @@ func (i *inbound) statusSummary() string {
 		lines = append(lines, icons.For(a.Status)+" "+label)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// Replies of the inbox.
+const (
+	inboxOff        = "⚠️ inbox is off (/options → Inbox)"
+	inboxTooBigFmt  = "⚠️ file too big: %s > %s"
+	inboxFailedFmt  = "⚠️ download failed: %s"
+	inboxPartialFmt = "⚠️ %d of %d files failed: %s"
+	inboxGoneFmt    = "⚠️ agent has exited, file kept at %s"
+	inboxNoStore    = "⚠️ inbox is not available in this build"
+	// albumPrefix marks the debouncer key of a media group.
+	albumPrefix = "album:"
+)
+
+// album is a media group being collected.
+type album struct {
+	key      domain.Key
+	threadID int
+	parts    []domain.TopicAttachment
+	caption  string
+}
+
+// inboxResult is the job a background download submits: what was saved,
+// what failed and what to tell the agent.
+type inboxResult struct {
+	key       domain.Key
+	threadID  int
+	messageID int
+	caption   string
+	paths     []string
+	failed    []string
+	total     int
+	started   time.Time
+}
+
+// albumKey is the debouncer key for a media group.
+func albumKey(groupID string) domain.Key { return domain.Key{PaneID: albumPrefix + groupID} }
+
+// HandleAttachment takes a file sent to a topic: refused with a notice
+// when the inbox is off or the file too big, collected with its album for
+// albumSettle when it is one part of a media group, else downloaded at
+// once off the bridge goroutine. Only fatal Telegram errors are returned.
+func (i *inbound) HandleAttachment(ctx context.Context, at domain.TopicAttachment) error {
+	key, ok := i.topics.KeyForThread(at.ThreadID)
+	if !ok {
+		i.log.Debug("attachment for unknown thread dropped", slog.Int("thread_id", at.ThreadID), slog.Int("message_id", at.MessageID))
+		return nil
+	}
+	entry, _ := i.topics.Entry(key)
+	_, alive := i.agents(key)
+	if !alive || !entry.Status.Live() {
+		i.log.Info("attachment for exited agent", slog.String("key", key.String()), slog.Int("thread_id", at.ThreadID), slog.Int("message_id", at.MessageID))
+		return i.reply(ctx, at.ThreadID, at.MessageID, "agent has exited")
+	}
+	max := i.opts.InboxMaxBytes()
+	i.log.Info("attachment received", slog.String("key", key.String()), slog.Int("thread_id", at.ThreadID), slog.Int("message_id", at.MessageID),
+		slog.Int64("from_id", at.FromID), slog.String("attachment", string(at.Kind)), slog.Int64("size", at.Size), slog.String("mime", at.MIME),
+		slog.String("group", at.GroupID), slog.Int("caption_len", len(at.Caption)))
+	switch {
+	case i.inbox == nil:
+		return i.reply(ctx, at.ThreadID, at.MessageID, inboxNoStore)
+	case !i.opts.InboxEnabled():
+		i.log.Warn("attachment refused", slog.String("key", key.String()), slog.Int("message_id", at.MessageID), slog.String("reason", "inbox_off"))
+		return i.reply(ctx, at.ThreadID, at.MessageID, inboxOff)
+	case at.Size > max:
+		i.log.Warn("attachment refused", slog.String("key", key.String()), slog.Int("message_id", at.MessageID), slog.String("reason", "too_big"),
+			slog.Int64("size", at.Size), slog.Int64("max", max))
+		return i.reply(ctx, at.ThreadID, at.MessageID, fmt.Sprintf(inboxTooBigFmt, humanBytes(at.Size), humanBytes(max)))
+	}
+	if at.GroupID == "" {
+		i.startDownload(key, at.ThreadID, at.MessageID, at.Caption, []domain.TopicAttachment{at}, max)
+		return nil
+	}
+	a, ok := i.albums[at.GroupID]
+	if !ok {
+		a = &album{key: key, threadID: at.ThreadID}
+		i.albums[at.GroupID] = a
+	}
+	a.parts = append(a.parts, at)
+	if a.caption == "" {
+		a.caption = at.Caption
+	}
+	i.deb.ScheduleAfter(albumKey(at.GroupID), albumSettle)
+	i.log.Debug("album part collected", slog.String("key", key.String()), slog.String("group", at.GroupID), slog.Int("parts", len(a.parts)))
+	return nil
+}
+
+// fireAlbum starts the download of a settled media group.
+func (i *inbound) fireAlbum(_ context.Context, groupID string) error {
+	a, ok := i.albums[groupID]
+	if !ok {
+		i.log.Debug("album settle without parts", slog.String("group", groupID))
+		return nil
+	}
+	delete(i.albums, groupID)
+	i.log.Info("album settled", slog.String("key", a.key.String()), slog.String("group", groupID), slog.Int("parts", len(a.parts)))
+	i.startDownload(a.key, a.threadID, a.parts[0].MessageID, a.caption, a.parts, i.opts.InboxMaxBytes())
+	return nil
+}
+
+// startDownload hands the parts to a background goroutine: each is
+// fetched and saved, and the outcome comes back as an inboxResult job.
+func (i *inbound) startDownload(key domain.Key, threadID, messageID int, caption string, parts []domain.TopicAttachment, max int64) {
+	started := i.clock.Now()
+	i.async(func(ctx context.Context) any {
+		r := inboxResult{key: key, threadID: threadID, messageID: messageID, caption: caption, total: len(parts), started: started}
+		for _, at := range parts {
+			path, err := i.fetch(ctx, key, at, max)
+			if err != nil {
+				r.failed = append(r.failed, failureReason(err))
+				continue
+			}
+			r.paths = append(r.paths, path)
+		}
+		return r
+	})
+}
+
+// fetch downloads one attachment and saves it to the inbox.
+func (i *inbound) fetch(ctx context.Context, key domain.Key, at domain.TopicAttachment, max int64) (string, error) {
+	start := time.Now()
+	data, err := i.tg.Download(ctx, at.FileID, max)
+	if err != nil {
+		i.log.Warn("attachment download failed", slog.String("key", key.String()), slog.Int("message_id", at.MessageID),
+			slog.String("attachment", string(at.Kind)), slog.String("err", err.Error()))
+		return "", err
+	}
+	name := domain.SafeFileName(at.Name, domain.DefaultAttachmentName(at.Kind, at.MIME))
+	path, err := i.inbox.Save(ctx, domain.InboxFileName(i.clock.Now(), at.MessageID, name), data)
+	if err != nil {
+		i.log.Warn("attachment save failed", slog.String("key", key.String()), slog.Int("message_id", at.MessageID), slog.String("err", err.Error()))
+		return "", err
+	}
+	i.log.Info("attachment saved", slog.String("key", key.String()), slog.Int("message_id", at.MessageID), slog.String("attachment", string(at.Kind)),
+		slog.String("path", path), slog.Int("bytes", len(data)), slog.Int64("dur_ms", time.Since(start).Milliseconds()))
+	return path, nil
+}
+
+// InboxFinished prompts the agent with the saved paths and tells the
+// operator about failures. Only fatal Telegram errors are returned.
+func (i *inbound) InboxFinished(ctx context.Context, r inboxResult) error {
+	msg := domain.TopicMessage{ThreadID: r.threadID, MessageID: r.messageID}
+	elapsed := i.clock.Now().Sub(r.started).Milliseconds()
+	if len(r.paths) == 0 {
+		i.log.Warn("inbox delivery failed", slog.String("key", r.key.String()), slog.Int("message_id", r.messageID), slog.Int("total", r.total), slog.Int64("elapsed_ms", elapsed))
+		return i.reply(ctx, r.threadID, r.messageID, fmt.Sprintf(inboxFailedFmt, r.failed[0]))
+	}
+	entry, hasTopic := i.topics.Entry(r.key)
+	if _, alive := i.agents(r.key); !alive || !hasTopic || !entry.Status.Live() {
+		i.log.Info("inbox delivery to exited agent", slog.String("key", r.key.String()), slog.Int("message_id", r.messageID))
+		return i.reply(ctx, r.threadID, r.messageID, fmt.Sprintf(inboxGoneFmt, strings.Join(r.paths, ", ")))
+	}
+	if err := i.herdr.Prompt(ctx, r.key.PaneID, domain.AttachmentPrompt(r.caption, r.paths)); err != nil {
+		return i.failed(ctx, msg, r.key, "prompt", err)
+	}
+	i.log.Info("inbox delivered", slog.String("key", r.key.String()), slog.Int("message_id", r.messageID), slog.Int("saved", len(r.paths)),
+		slog.Int("failed", len(r.failed)), slog.Int64("elapsed_ms", elapsed))
+	if err := i.out.PromptSent(ctx, r.key, r.threadID, r.messageID); err != nil {
+		return err
+	}
+	if len(r.failed) > 0 {
+		return i.reply(ctx, r.threadID, r.messageID, fmt.Sprintf(inboxPartialFmt, len(r.failed), r.total, r.failed[0]))
+	}
+	return nil
+}
+
+// humanBytes words a size for a notice: whole megabytes above 10 MB, one
+// decimal above 1 MB, kilobytes below.
+func humanBytes(n int64) string {
+	const mb = 1024 * 1024
+	switch {
+	case n >= 10*mb:
+		return fmt.Sprintf("%.0f MB", float64(n)/mb)
+	case n >= mb:
+		return fmt.Sprintf("%.1f MB", float64(n)/mb)
+	}
+	return fmt.Sprintf("%d KB", (n+1023)/1024)
 }
 
 // Replies of /git.

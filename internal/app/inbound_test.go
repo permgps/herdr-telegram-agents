@@ -1197,3 +1197,164 @@ func TestInboundGitInGeneralHints(t *testing.T) {
 		t.Fatal("help does not mention /git")
 	}
 }
+
+func attachment(thread, id int, kind domain.AttachmentKind, fileID, name, caption string, size int64) domain.TopicAttachment {
+	return domain.TopicAttachment{ThreadID: thread, MessageID: id, FromID: 1, Kind: kind, FileID: fileID, Name: name, Caption: caption, Size: size, MIME: "image/jpeg"}
+}
+
+func TestInboundAttachmentSavedAndPrompted(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.tg.SetFile("file1", []byte("jpegbytes"))
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 42, domain.AttachmentPhoto, "file1", "", "look", 9)); err != nil {
+		t.Fatal(err)
+	}
+	saved := f.inbox.Saved()
+	if len(saved) != 1 || saved[0].Name != "20260902-120000-42-photo.jpg" || string(saved[0].Data) != "jpegbytes" {
+		t.Fatalf("Saved = %+v", saved)
+	}
+	if prompts := f.herdr.Prompts(); len(prompts) != 1 || prompts[0] != "p1: look\n\n/state/inbox/20260902-120000-42-photo.jpg" {
+		t.Fatalf("Prompts = %q", prompts)
+	}
+	assertCallsEqual(t, f.tg, "download:file1:20971520", "react:101:42:👀")
+}
+
+func TestInboundAttachmentWithoutCaptionAndDocumentName(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.tg.SetFile("doc1", []byte("%PDF"))
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 43, domain.AttachmentDocument, "doc1", "Quarterly report (final).pdf", "", 4)); err != nil {
+		t.Fatal(err)
+	}
+	if prompts := f.herdr.Prompts(); len(prompts) != 1 || prompts[0] != "p1: /state/inbox/20260902-120000-43-Quarterly-report-final-.pdf" {
+		t.Fatalf("Prompts = %q", prompts)
+	}
+}
+
+func TestInboundAlbumIsOnePrompt(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	for i, id := range []string{"a1", "a2", "a3"} {
+		f.tg.SetFile(id, []byte("x"))
+		at := attachment(101, 50+i, domain.AttachmentPhoto, id, "", "", 1)
+		at.GroupID = "g1"
+		if i == 1 {
+			at.Caption = "three shots"
+		}
+		if err := f.in.HandleAttachment(f.ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(f.herdr.Prompts()); n != 0 {
+		t.Fatalf("prompted before the album settled: %d", n)
+	}
+	f.clock.Advance(albumSettle)
+	select {
+	case key := <-f.in.Due():
+		if err := f.in.Fire(f.ctx, key); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("album did not settle")
+	}
+	prompts := f.herdr.Prompts()
+	want := "p1: three shots\n\n/state/inbox/20260902-120001-50-photo.jpg\n/state/inbox/20260902-120001-51-photo.jpg\n/state/inbox/20260902-120001-52-photo.jpg"
+	if len(prompts) != 1 || prompts[0] != want {
+		t.Fatalf("Prompts = %q, want %q", prompts, want)
+	}
+	if calls := f.tg.Calls(); calls[len(calls)-1] != "react:101:50:👀" {
+		t.Fatalf("Calls = %q", calls)
+	}
+}
+
+func TestInboundAttachmentRefusals(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 60, domain.AttachmentVideo, "v1", "", "", 25*1024*1024)); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ file too big: 25 MB > 20 MB:reply=60")
+	if err := f.opts.Set(f.ctx, domain.OptionInboxEnabled, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 61, domain.AttachmentPhoto, "p", "", "", 1)); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ inbox is off (/options → Inbox):reply=61")
+	if n := len(f.inbox.Saved()) + len(f.herdr.Prompts()); n != 0 {
+		t.Fatalf("refused attachment saved or prompted: %d", n)
+	}
+	f.in.inbox = nil
+	f.tg.Reset()
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 62, domain.AttachmentPhoto, "p", "", "", 1)); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "send:101:⚠️ inbox is not available in this build:reply=62")
+}
+
+func TestInboundAttachmentDownloadFails(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.tg.FailNext("download", errors.New("download: status 502"))
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 70, domain.AttachmentPhoto, "p1", "", "", 1)); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "download:p1:20971520", "send:101:⚠️ download failed: download: status 502:reply=70")
+	if n := len(f.herdr.Prompts()); n != 0 {
+		t.Fatalf("prompted after a failed download: %d", n)
+	}
+	// One part of an album failing still delivers the others.
+	f.tg.Reset()
+	f.tg.SetFile("ok", []byte("x"))
+	f.tg.FailNext("download", errors.New("boom"))
+	for i, id := range []string{"bad", "ok"} {
+		at := attachment(101, 80+i, domain.AttachmentPhoto, id, "", "", 1)
+		at.GroupID = "g2"
+		if err := f.in.HandleAttachment(f.ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.clock.Advance(albumSettle)
+	key := <-f.in.Due()
+	if err := f.in.Fire(f.ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if prompts := f.herdr.Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0], "-81-photo.jpg") {
+		t.Fatalf("Prompts = %q", prompts)
+	}
+	assertCallsEqual(t, f.tg, "download:bad:20971520", "download:ok:20971520", "react:101:80:👀", "send:101:⚠️ 1 of 2 files failed: boom:reply=80")
+}
+
+func TestInboundAttachmentAgentGoneAfterDownload(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	f.tg.SetFile("p", []byte("x"))
+	// The agent disappears while the download runs.
+	f.in.async = func(run func(context.Context) any) {
+		delete(f.agents, a.Key)
+		_ = f.in.asyncDone(f.ctx, run(f.ctx))
+	}
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 90, domain.AttachmentPhoto, "p", "", "", 1)); err != nil {
+		t.Fatal(err)
+	}
+	assertCallsEqual(t, f.tg, "download:p:20971520", "send:101:⚠️ agent has exited, file kept at /state/inbox/20260902-120000-90-photo.jpg:reply=90")
+	if n := len(f.herdr.Prompts()); n != 0 {
+		t.Fatalf("prompted an exited agent: %d", n)
+	}
+}
+
+func TestInboundAttachmentWhileBlockedIsStillPrompt(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
+	f.tg.SetFile("p", []byte("x"))
+	if err := f.in.HandleAttachment(f.ctx, attachment(101, 91, domain.AttachmentVoice, "p", "", "y", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if prompts := f.herdr.Prompts(); len(prompts) != 1 || !strings.HasPrefix(prompts[0], "p1: y\n\n") {
+		t.Fatalf("Prompts = %q", prompts)
+	}
+	if n := len(f.herdr.Keys()); n != 0 {
+		t.Fatalf("caption sent as keys: %d", n)
+	}
+}

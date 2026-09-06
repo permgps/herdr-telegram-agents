@@ -69,9 +69,10 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		log:         log,
 		CallTimeout: bridgeCallTimeout,
 	}
-	// A slow agent.start runs off the loop and reports back as a job, so
-	// the bridge stays the only writer to Telegram.
-	in.async = func(run func(context.Context) startResult) {
+	// Slow work (agent.start, a file download) runs off the loop and
+	// reports back as a job, so the bridge stays the only writer to
+	// Telegram.
+	in.async = func(run func(context.Context) any) {
 		b.spawn(func(ctx context.Context) { b.Submit(run(ctx)) })
 	}
 	return b
@@ -90,8 +91,8 @@ type startResult struct {
 	started   time.Time
 }
 
-// spawn runs fn on its own goroutine with a context bound to Run and the
-// start timeout plus grace; Run waits for every spawned goroutine.
+// spawn runs fn on its own goroutine with a context bound to Run and
+// asyncTimeout; Run waits for every spawned goroutine.
 func (b *Bridge) spawn(fn func(context.Context)) {
 	parent := b.runCtx
 	if parent == nil {
@@ -100,7 +101,7 @@ func (b *Bridge) spawn(fn func(context.Context)) {
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
-		ctx, cancel := context.WithTimeout(parent, agentStartTimeout+agentStartGrace)
+		ctx, cancel := context.WithTimeout(parent, asyncTimeout)
 		defer cancel()
 		fn(ctx)
 	}()
@@ -130,12 +131,12 @@ func (b *Bridge) SetSettle(d time.Duration) {
 func (b *Bridge) Fatal() <-chan error { return b.fatal }
 
 // Submit queues a job without blocking: an AgentEvent, a TopicMessage, a
-// ButtonPressed or a GeneralCommand. When the buffer is full the job is dropped and counted;
+// TopicAttachment, a ButtonPressed or a GeneralCommand. When the buffer is full the job is dropped and counted;
 // the daemon reports the count at most once per dropReportInterval and the
 // next event or a resync brings the state back.
 func (b *Bridge) Submit(job any) {
 	switch job.(type) {
-	case AgentEvent, domain.TopicMessage, domain.ButtonPressed, domain.GeneralCommand, presenceAway, startResult:
+	case AgentEvent, domain.TopicMessage, domain.TopicAttachment, domain.ButtonPressed, domain.GeneralCommand, presenceAway, startResult, inboxResult:
 	default:
 		b.log.Warn("bridge job of unknown type dropped", slog.String("type", fmt.Sprintf("%T", job)))
 		return
@@ -198,6 +199,13 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 	case domain.TopicMessage:
 		b.log.Debug("bridge job", slog.String("kind", "topic_message"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID))
 		b.run(ctx, "topic_message", func(ctx context.Context) error { return b.in.HandleTopic(ctx, j) })
+	case domain.TopicAttachment:
+		b.log.Debug("bridge job", slog.String("kind", "topic_attachment"), slog.Int("thread_id", j.ThreadID), slog.Int("message_id", j.MessageID),
+			slog.String("attachment", string(j.Kind)), slog.Int64("size", j.Size), slog.String("group", j.GroupID))
+		b.run(ctx, "topic_attachment", func(ctx context.Context) error { return b.in.HandleAttachment(ctx, j) })
+	case inboxResult:
+		b.log.Debug("bridge job", slog.String("kind", "inbox_result"), slog.Int("message_id", j.messageID), slog.Int("saved", len(j.paths)), slog.Int("failed", len(j.failed)))
+		b.run(ctx, "inbox_result", func(ctx context.Context) error { return b.in.InboxFinished(ctx, j) })
 	case domain.GeneralCommand:
 		b.log.Debug("bridge job", slog.String("kind", "general_command"), slog.Int("message_id", j.MessageID))
 		b.run(ctx, "general_command", func(ctx context.Context) error { return b.in.HandleGeneral(ctx, j) })

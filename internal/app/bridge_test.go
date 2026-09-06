@@ -343,3 +343,20 @@ func TestBridgeTurnTimerFiresThroughRun(t *testing.T) {
 	waitUntil(t, "check mark", func() bool { return len(r.tg.Calls()) == 2 })
 	assertCallsEqual(t, r.tg, "react:101:4:👀", "react:101:4:✅")
 }
+
+func TestBridgeRunsDownloadOffTheLoop(t *testing.T) {
+	r := newRunningBridge(t)
+	r.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	r.tg.SetFile("slow", []byte("x"))
+	r.tg.SetDownloadDelay(300 * time.Millisecond)
+	r.bridge.Submit(attachment(101, 1, domain.AttachmentPhoto, "slow", "", "pic", 1))
+	r.bridge.Submit(topicMsg(101, 2, "meanwhile"))
+	waitUntil(t, "prompt during download", func() bool { return len(r.herdr.Prompts()) == 1 })
+	if p := r.herdr.Prompts(); p[0] != "p1: meanwhile" {
+		t.Fatalf("first prompt = %q, the download blocked the loop", p[0])
+	}
+	waitUntil(t, "attachment prompt", func() bool { return len(r.herdr.Prompts()) == 2 })
+	if p := r.herdr.Prompts(); !strings.HasPrefix(p[1], "p1: pic\n\n") {
+		t.Fatalf("attachment prompt = %q", p[1])
+	}
+}
