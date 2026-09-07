@@ -208,13 +208,17 @@ whose start it never saw (daemon started mid-turn) has no duration.
 
 Two things hang on it:
 
-- **Reactions** (`React to prompts`, default on). A plain prompt sent from
-  the topic gets 👀 as soon as `agent.prompt` accepted it, and 👌 replaces
-  it when that turn ends. Short replies to a dialog, `/keys`, forwarded
-  Claude Code commands and button presses get no reaction. A second prompt
-  while the first turn still runs moves the 👌 to the newer message; the
-  older keeps its 👀. Telegram may notify you of the bot's reaction
-  depending on the phone's settings; that is what a week of use measures.
+- **Reactions** (`React to prompts`, default off since 0.9.1). Switched
+  on, a plain prompt sent from the topic gets 👀 as soon as `agent.prompt`
+  accepted it, and 👌 replaces it when that turn ends. Short replies to a
+  dialog, `/keys`, forwarded Claude Code commands and button presses get no
+  reaction. A second prompt while the first turn still runs moves the 👌 to
+  the newer message; the older keeps its 👀. Telegram notifies you of the
+  bot's reaction on most phones, so in a group with sound on every prompt
+  rang twice more; a week of use showed the noise outweighs the
+  acknowledgement, hence the default. The log says `reaction skipped
+  reason="posts.reactions off"` at debug level for every prompt while the
+  option is off.
 - **Short turns** (`Skip short done posts`, default `Off`). A done post is
   skipped when the turn lasted less than N seconds, measured from the turn
   start to the done status, blocked time included; the log says `screen
@@ -260,7 +264,7 @@ The options today:
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
 | `Done post` | Posts | Default `Screen`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. Falls back to `Screen` for non-Claude agents or when no reply is found, see [Done posts](#done-posts). |
 | `Trim the input frame` | Posts | Default on. Every screen post (done and blocked screens, `/screen`, `/screen all`, the tails of the Claude Code commands, the pager's six lines) loses Claude Code's input frame at the bottom: the `─` rule, the empty `❯` row, the second rule, the status line (`… │ main ✓ │ 14%: …`) and the mode hint (`⏵⏵ auto mode on (shift+tab to cycle)` or `? for shortcuts`). The cut walks up from the bottom and stops at the first line that is none of these, so a dialog and its options are never touched, a `❯` row with typed text is left alone and a screen without the frame (Codex, any other agent) passes through unchanged. The duplicate check runs after the cut, so a screen that differs only in the status line's clock is not posted twice. Off posts the screen as captured. |
-| `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, 👌 when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
+| `React to prompts` | Posts | Default off: prompts are delivered silently. On: 👀 on your message once the agent took the prompt, 👌 when that turn ends (done, or 5 s of idle). Telegram may ring for each reaction, which is why it is off. See [Turns and reactions](#turns-and-reactions). |
 | `Questions in the bot's chat` | Posts | Default on. A question from an agent is posted into its topic without a sound and sent to you in the private chat with the bot with a sound: the agent's name, the dialog's options or the last six screen lines, and a link to the post. Mute the group in Telegram and only questions ring. Off: the topic post rings, nothing goes to the private chat. Needs a private chat the bot may write to; see [Silence the group](#silence-the-group). |
 | `Question delay` | Posts | Default `Off`. With `5s` … `120s`: after the usual 1.5 s capture the blocked post waits that long more, is dropped when the agent left blocked meanwhile, starts over when a newer question arrived, and otherwise posts the better of the two captures (more options recognised, then the longer text). `Off` posts the first capture at 1.5 s. Any integer of seconds up to 3600 can be typed into `options.json`. See [Questions and buttons](#questions-and-buttons). |
 | `Skip short done posts` | Posts | Default `Off`. With `5s` … `120s`: the done post of a turn shorter than that is skipped (blocked time included; a turn whose start the daemon never saw posts). Blocked posts and reactions are unaffected. Any integer of seconds up to 3600 can be typed into `options.json`. See [Turns and reactions](#turns-and-reactions). |
@@ -275,7 +279,7 @@ The options today:
 Values are saved in `options.json` next to `config.json` (mode 0600) as
 `{"version": 1, "values": {"sync.enabled": true, "sync.dashboard": true,
 "quiet.enabled": true, "quiet.idle_minutes": "3", "quiet.posts": "silent",
-"posts.chrome": true, "posts.reactions": true, "posts.pager": true,
+"posts.chrome": true, "posts.reactions": false, "posts.pager": true,
 "posts.blocked_delay": "0", "inbox.enabled": true, "inbox.max_mb": "20",
 "inbox.delete_after_days": "7", "icons.working": "⚡", "privacy.redact": true,
 "topics.delete_after_days": "30", "topics.notice_delay": "20", …}}`.

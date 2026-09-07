@@ -396,7 +396,7 @@ func TestPanelPostsGroup(t *testing.T) {
 		hooked = append(hooked, key+"="+cur.String(key))
 	})
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
-	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ Trim the input frame|☑ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ Trim the input frame|☐ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("posts buttons = %v", got)
 	}
 	if text := f.tg.Text(900); !strings.Contains(text, "<b>Questions in the bot&#39;s chat</b>: On: a question from an agent is posted into its topic without a sound") {

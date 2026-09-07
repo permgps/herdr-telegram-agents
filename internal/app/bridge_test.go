@@ -18,6 +18,13 @@ type runningBridge struct {
 	done   chan struct{}
 }
 
+// reactionsOn switches the prompt reactions on for the running bridge,
+// which is built without an options registry.
+func (r *runningBridge) reactionsOn(t *testing.T) {
+	t.Helper()
+	r.bridge.out.reactions = func() bool { return true }
+}
+
 // newRunningBridge builds a Bridge over the fixture's fakes with a real
 // registry and reconciler, and runs it until the test ends.
 func newRunningBridge(t *testing.T) *runningBridge {
@@ -61,6 +68,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 
 func TestBridgeRunsJobsInOrder(t *testing.T) {
 	r := newRunningBridge(t)
+	r.reactionsOn(t)
 	r.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	r.bridge.Submit(topicMsg(101, 1, "first"))
 	r.bridge.Submit(topicMsg(101, 2, "second"))
@@ -333,6 +341,7 @@ func TestBridgeRunWaitsForSpawnedStarts(t *testing.T) {
 
 func TestBridgeTurnTimerFiresThroughRun(t *testing.T) {
 	r := newRunningBridge(t)
+	r.reactionsOn(t)
 	a := r.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	r.bridge.Submit(topicMsg(101, 4, "go"))
 	waitUntil(t, "eyes", func() bool { return len(r.tg.Calls()) == 1 })

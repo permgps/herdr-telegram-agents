@@ -42,6 +42,15 @@ type bridgeFixture struct {
 // testBotToken is the exact secret the fixture's redactor knows.
 const testBotToken = "1234567890:" + "AAHf3kJd9sLq2mN8pR4tV6wX0yZ1bC3dE5f" // built from parts so secret scanners ignore it
 
+// reactionsOn switches the prompt reactions on: off by default since
+// 0.9.1, so a test that expects 👀 / 👌 asks for them.
+func (f *bridgeFixture) reactionsOn(t *testing.T) {
+	t.Helper()
+	if err := f.opts.Set(f.ctx, domain.OptionPostsReactions, "true", 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newBridgeFixture(t *testing.T) *bridgeFixture {
 	t.Helper()
 	f := &bridgeFixture{
@@ -876,6 +885,7 @@ func (f *bridgeFixture) endTurns(t *testing.T, want int) {
 
 func TestOutboundReactsOnPromptAndDone(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	f.herdr.SetScreen("p1", "recap: all tests pass")
 	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
@@ -904,6 +914,7 @@ func TestOutboundReactsOnPromptAndDone(t *testing.T) {
 
 func TestOutboundIdleEndsTurnAfterSettle(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
 	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
 		t.Fatal(err)
@@ -942,6 +953,7 @@ func TestOutboundIdleEndsTurnAfterSettle(t *testing.T) {
 
 func TestOutboundBlockedKeepsEyes(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	f.herdr.SetScreen("p1", "Allow?\n1. Yes\n2. No")
 	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
@@ -1005,6 +1017,7 @@ func TestOutboundReactionsOff(t *testing.T) {
 
 func TestOutboundNewPromptReplacesTurn(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	f.herdr.SetScreen("p1", "done screen")
 	if err := f.out.PromptSent(f.ctx, a.Key, 101, 2); err != nil {
@@ -1025,6 +1038,7 @@ func TestOutboundNewPromptReplacesTurn(t *testing.T) {
 func shortTurnFixture(t *testing.T, seconds string) (*bridgeFixture, domain.Agent) {
 	t.Helper()
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	f.herdr.SetScreen("p1", "recap: done")
 	if err := f.opts.Set(f.ctx, domain.OptionPostsMinSeconds, seconds, 1); err != nil {

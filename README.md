@@ -52,7 +52,7 @@ open topic shows a Claude Code question you can answer from the phone.*
 - **A daemon that looks after itself**: starts with Herdr, exits when Herdr
   is gone, heals topic drift on start and on `resync`.
 
-Version `0.9.0`. macOS and Linux are verified end to end; Windows is built and
+Version `0.9.1`. macOS and Linux are verified end to end; Windows is built and
 unit-tested on every change but has not been run against a real Herdr yet.
 
 ## Requirements
@@ -130,8 +130,9 @@ its tail silently. Anything you write in the agent's topic goes back:
 | `/clear`, `/compact`, `/usage`, `/model` | typed into an idle agent as a Claude Code command; the result is posted back |
 | `/status`, `/help` | this agent's status line, the command list |
 
-A prompt gets 👀 once the agent took it and 👌 when that turn ends (`React to
-prompts` in the settings). A question with `Type something.` carries a ✏️
+Prompts are delivered silently; tick `React to prompts` in the settings and
+a prompt gets 👀 once the agent took it and 👌 when that turn ends. A
+question with `Type something.` carries a ✏️
 button: press it and your next message is typed as the answer. A multi-select
 question keeps its buttons as toggles, redraws the post with the ticks and
 adds `✔ Submit`.
@@ -152,6 +153,21 @@ Timings, buttons, how the Claude Code commands are forwarded, how `/screen
 all` collects its history and what `/status` shows in General are in
 [docs/commands.md](docs/commands.md).
 
+## Too many notifications?
+
+A group with sound on rings for every topic edit, every screen post and every
+daemon notice, and a few agents produce dozens of those an hour. Mute the
+group in Telegram (group name → **Mute** → **Forever**) and keep it muted:
+the topic icons, the pinned dashboard, the done posts and `/screen` replies
+all keep arriving, silently, ready when you open the app. Nothing important
+gets lost, because the one thing that needs you, a question from an agent,
+is relayed by the bot: it posts the question into the topic and sends it to
+you in your private chat with the bot, with a sound and a link that opens the
+topic at that post. Answer there as always. That relay is `Questions in the
+bot's chat` in the settings, on by default; the details and the one-time
+**Start** it needs are under
+[Silence the group](docs/behaviour.md#silence-the-group).
+
 ## Settings
 
 `/options` in General opens a panel of buttons, one message edited in place.
@@ -161,7 +177,7 @@ Its groups:
 |-------|---------------|
 | Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working. `Dashboard in General`: the pinned status message, edited in place |
 | Quiet | quiet mode while you are at the desk: `Away after` (3 min), `Hold topic edits`, `Screen posts` (Silent, Held, Normal), `Re-announce on leaving` |
-| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / 👌 on your message); `Questions in the bot's chat` (on): a question is posted silently into the topic and rings from the bot's private chat with a link; `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds; `Trim the input frame` (on): Claude Code's input box, status line and mode hint are cut from the bottom of every screen post |
+| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (off): 👀 / 👌 on your message once the agent took it and when the turn ends; `Questions in the bot's chat` (on): a question is posted silently into the topic and rings from the bot's private chat with a link; `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds; `Trim the input frame` (on): Claude Code's input box, status line and mode hint are cut from the bottom of every screen post |
 | Inbox | `Accept files` (on): files sent to a topic are saved and handed to the agent as a path; `Largest file` (20 MB, Telegram's cap for bots); `Delete files after` (7 days) |
 | Appearance | one topic icon per status, from Telegram's topic-icon pack |
 | Privacy | `Redact secrets`: API keys, tokens, passwords and private keys are masked in every post |

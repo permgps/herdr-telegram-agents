@@ -103,7 +103,8 @@ const (
 	// ChoiceSourceDone is the static list of DoneMode values.
 	ChoiceSourceDone = "done"
 	// OptionPostsReactions puts 👀 on the operator's prompt once the agent
-	// took it and ✅ when that turn ends.
+	// took it and 👌 when that turn ends. Off by default since 0.9.1: the
+	// reactions were one more notification in a group that already rings.
 	OptionPostsReactions = "posts.reactions"
 	// OptionPostsPager sends a question from an agent to the bot's private
 	// chat with a sound and a link, and posts it into the topic silently,
@@ -269,9 +270,9 @@ func buildOptionSpecs() []OptionSpec {
 			Key:         OptionPostsReactions,
 			Group:       GroupPosts,
 			Title:       "React to prompts",
-			Description: "👀 on your message once the agent took it, ✅ when that turn ends. Off: no reactions.",
+			Description: "👀 on your message once the agent took it, 👌 when that turn ends. Off (default): no reactions.",
 			Kind:        KindBool,
-			Default:     "true",
+			Default:     "false",
 		},
 		{
 			Key:         OptionPostsPager,

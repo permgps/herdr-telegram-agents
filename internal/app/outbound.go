@@ -171,7 +171,7 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 	}
 	paused := func() bool { return false }
 	doneMode := func() domain.DoneMode { return domain.DoneScreen }
-	reactions := func() bool { return true }
+	reactions := func() bool { return false }
 	minTurn := func() time.Duration { return 0 }
 	blockedDelay := func() time.Duration { return 0 }
 	pager := func() bool { return false }
@@ -263,6 +263,9 @@ func (o *outbound) PromptSent(ctx context.Context, key domain.Key, threadID, mes
 			return err
 		}
 		t.reacted = true
+	} else {
+		o.log.Debug("[FIX] reaction skipped", slog.String("key", key.String()), slog.Int("message_id", messageID),
+			slog.String("reason", "posts.reactions off"))
 	}
 	o.turns[key] = t
 	o.log.Debug("turn opened", slog.String("key", key.String()), slog.Int("message_id", messageID),

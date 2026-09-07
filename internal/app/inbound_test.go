@@ -27,6 +27,7 @@ func assertCallsEqual(t *testing.T, tg *testkit.FakeTelegram, want ...string) {
 
 func TestInboundPromptAndShortReply(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	a := f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "fix the tests")); err != nil {
@@ -58,6 +59,7 @@ func TestInboundPromptAndShortReply(t *testing.T) {
 
 func TestInboundPromptReacts(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 2, "hello")); err != nil {
 		t.Fatal(err)
@@ -1030,6 +1032,7 @@ func TestInboundNewStartFails(t *testing.T) {
 
 func TestInboundTypedTextAfterTextEntry(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	blockedWithDialog(t, f, dialogScreen)
 	if err := f.out.Press(f.ctx, press(101, 1000, "t:4")); err != nil {
 		t.Fatal(err)
@@ -1225,6 +1228,7 @@ func attachment(thread, id int, kind domain.AttachmentKind, fileID, name, captio
 
 func TestInboundAttachmentSavedAndPrompted(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	f.tg.SetFile("file1", []byte("jpegbytes"))
 	if err := f.in.HandleAttachment(f.ctx, attachment(101, 42, domain.AttachmentPhoto, "file1", "", "look", 9)); err != nil {
@@ -1294,6 +1298,7 @@ func TestInboundAttachmentWithoutCaptionAndDocumentName(t *testing.T) {
 
 func TestInboundAlbumIsOnePrompt(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	for i, id := range []string{"a1", "a2", "a3"} {
 		f.tg.SetFile(id, []byte("x"))
@@ -1356,6 +1361,7 @@ func TestInboundAttachmentRefusals(t *testing.T) {
 
 func TestInboundAttachmentDownloadFails(t *testing.T) {
 	f := newBridgeFixture(t)
+	f.reactionsOn(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
 	f.tg.FailNext("download", errors.New("download: status 502"))
 	if err := f.in.HandleAttachment(f.ctx, attachment(101, 70, domain.AttachmentPhoto, "p1", "", "", 1)); err != nil {

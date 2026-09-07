@@ -69,10 +69,10 @@ Anything you write in a topic reaches the agent:
 | `/away`, `/here`, `/new`, `/observers` | a hint: these commands live in General |
 | `/help` | the command list |
 
-A prompt gets no reply: the message gets 👀 once `agent.prompt` accepted it
-and 👌 when that turn ends (done, or idle for 5 s), and the topic icon turns
-⚡ meanwhile. Short replies, `/keys` and button presses get no reaction;
-`React to prompts` in `/options` switches the reactions off. A quoted `⚠️
+A prompt gets no reply; the topic icon turns ⚡ meanwhile. With `React to
+prompts` ticked in `/options` (off by default) the message gets 👀 once
+`agent.prompt` accepted it and 👌 when that turn ends (done, or idle for
+5 s); short replies, `/keys` and button presses get no reaction. A quoted `⚠️
 ...` reply explains why a message did not
 get through (agent gone, socket down). Messages in the topic of an
 exited agent get `agent has exited`. Only the configured group and the operator
@@ -140,7 +140,8 @@ or `file.<ext>` when there is none; a taken name gets `-2`, `-3` …) and the
 agent is prompted with the caption, a blank line and the absolute path. An
 album (several photos sent together) is collected for a second after its
 last part and becomes one prompt with one path per line; the first caption
-wins. The message gets the same 👀 / 👌 reactions as a typed prompt. While
+wins. The message gets the same 👀 / 👌 reactions as a typed prompt when
+`React to prompts` is on. While
 the agent is blocked the path is typed into the dialog like any plain text
 would be.
 

@@ -376,7 +376,7 @@ func TestDaemonBlockedScreenIsPosted(t *testing.T) {
 }
 
 func TestDaemonTopicMessageAndGeneralStatus(t *testing.T) {
-	f := newDaemon(t)
+	f := newDaemonSeeded(t, domain.OptionPostsReactions, "true")
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusIdle)})
 	f.start(t)
 	f.waitCalls(t, 3)

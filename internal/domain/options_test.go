@@ -134,7 +134,7 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 	}{
 		{OptionPostsDone, KindChoice, "screen", ChoiceSourceDone},
 		{OptionPostsChrome, KindBool, "true", ""},
-		{OptionPostsReactions, KindBool, "true", ""},
+		{OptionPostsReactions, KindBool, "false", ""},
 		{OptionPostsPager, KindBool, "true", ""},
 		{OptionPostsBlockedDelay, KindChoice, "0", ChoiceSourceSeconds},
 		{OptionPostsMinSeconds, KindChoice, "0", ChoiceSourceSeconds},
@@ -504,11 +504,11 @@ func indexOf(key string) int {
 
 func TestSecondsOptions(t *testing.T) {
 	o := DefaultOptions()
-	if !o.PostsReactions() {
-		t.Error("reactions should default to on")
+	if o.PostsReactions() {
+		t.Error("reactions should default to off")
 	}
-	if off, _ := o.With(OptionPostsReactions, "false"); off.PostsReactions() {
-		t.Error("reactions still on after With")
+	if on, _ := o.With(OptionPostsReactions, "true"); !on.PostsReactions() {
+		t.Error("reactions still off after With")
 	}
 	if o.BlockedDelay() != 0 || o.MinTurn() != 0 {
 		t.Errorf("defaults: delay %v, min turn %v", o.BlockedDelay(), o.MinTurn())
