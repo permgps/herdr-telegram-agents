@@ -140,9 +140,13 @@ The **General** topic is the control panel: a pinned dashboard lists every
 agent with its status and how long it has been in it, `/status` prints the
 same lines with a link to each topic, `/new <workspace> [kind]` starts an agent in a new tab
 of that workspace, `/options` opens the settings panel, `/away [2h]` and
-`/here` override the presence check, `/help` lists the commands, and the
-daemon posts its notices there. Only the configured group and the operators
-from setup are accepted.
+`/here` override the presence check, `/observers [add|remove <id>]` manages
+who may watch, `/help` lists the commands, and the daemon posts its notices
+there. Only the configured group is accepted; in it, the operators from
+setup drive the agents, observers added with `/observers` may read the group
+and use `/status` and `/help` in General, and anyone else is ignored and
+logged with their id (see
+[Operators and observers](docs/behaviour.md#operators-and-observers)).
 
 Timings, buttons, how the Claude Code commands are forwarded, how `/screen
 all` collects its history and what `/status` shows in General are in
@@ -157,11 +161,11 @@ Its groups:
 |-------|---------------|
 | Sync | `Herdr → Telegram sync`: untick to pause topic edits and screen posts; what you send keeps working. `Dashboard in General`: the pinned status message, edited in place |
 | Quiet | quiet mode while you are at the desk: `Away after` (3 min), `Hold topic edits`, `Screen posts` (Silent, Held, Normal), `Re-announce on leaving` |
-| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / 👌 on your message); `Questions in the bot's chat` (on): a question is posted silently into the topic and rings from the bot's private chat with a link; `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds |
+| Posts | `Done post`: what a finished agent posts, the screen tail (default), its last reply from the Claude Code transcript, or that reply rendered with bold, lists, links and code; `React to prompts` (👀 / 👌 on your message); `Questions in the bot's chat` (on): a question is posted silently into the topic and rings from the bot's private chat with a link; `Question delay`: wait up to 120 s for a second capture and stay silent when the question was answered in Herdr meanwhile; `Skip short done posts`: no done post for a turn shorter than N seconds; `Trim the input frame` (on): Claude Code's input box, status line and mode hint are cut from the bottom of every screen post |
 | Inbox | `Accept files` (on): files sent to a topic are saved and handed to the agent as a path; `Largest file` (20 MB, Telegram's cap for bots); `Delete files after` (7 days) |
 | Appearance | one topic icon per status, from Telegram's topic-icon pack |
 | Privacy | `Redact secrets`: API keys, tokens, passwords and private keys are masked in every post |
-| Topics | `Delete closed topics after`: the topics of exited agents go after 30 days by default |
+| Topics | `Delete closed topics after`: the topics of exited agents go after 30 days by default; `Keep icon notices for` (20 s): how long the "changed the topic icon" notices stay before the daemon deletes them, `Keep` leaves them |
 
 The choices are saved in `options.json` and survive restarts. Every option,
 its default and what it does: [Options](docs/behaviour.md#options); how

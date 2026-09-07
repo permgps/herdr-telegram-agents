@@ -17,8 +17,13 @@ post, with a sound; with it off the topic post itself rings. Either way you
 answer in the topic. See [Silence the group](behaviour.md#silence-the-group)
 for why. When it turns **done** the topic gets the last 12 lines of the
 screen, or the agent's last reply when `Done post` in `/options` says so (see
-[Done posts](behaviour.md#done-posts)). A post identical to the previous one
-for that agent is skipped. Agents that
+[Done posts](behaviour.md#done-posts)). Every screen post ends on the agent's
+last line: Claude Code's input frame at the bottom (the `─` rules with the
+empty `❯` row, the status line and the mode hint) is cut while `Trim the
+input frame` in `/options` → Posts is on, which is the default; a dialog and
+its options are never cut, and a screen without the frame passes through
+unchanged (see [Done posts](behaviour.md#done-posts)). A post identical to
+the previous one for that agent is skipped. Agents that
 are already blocked when the daemon starts are posted too. Two options of
 the Posts group trim this: `Question delay` waits N more seconds and posts
 the better of two captures, or nothing when you answered in Herdr meanwhile;
@@ -51,7 +56,7 @@ Anything you write in a topic reaches the agent:
 | plain text | typed as a prompt and submitted (`agent.prompt`) |
 | `y`, `n`, `yes`, `no`, `1`..`9`, `enter`, `ok`, `esc` while the agent is blocked | the matching key (`agent.send_keys`); in any other status these are prompts. Pressing a button under the question sends its number the same way |
 | `/keys esc enter` | raw key names |
-| `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200) |
+| `/screen` or `/screen 40` | the visible screen, or its last 40 lines (max 200); the input frame is cut afterwards, so an idle Claude Code pane may answer with fewer than 40 lines |
 | `/screen all` | everything the agent printed since your last message (typed in Herdr or sent here); long output arrives as a `.txt` file |
 | `/focus` | the pane is brought to the front in Herdr |
 | `/git status`, `/git diff`, `/git diff staged`, `/git log [N]` | `git status --short --branch`, `git diff HEAD`, `git diff --cached` or `git log --oneline --decorate -n N` (default 10, at most 50) run by the daemon in the agent's working directory (`cwd` from `agent.list`), colour and pager off, 10 s timeout. Up to 3600 characters come back as a quoted code block; longer output as a `<repo>-<sub>-<hhmmss>.patch` (diff) or `.txt` file with a caption naming the argv and the line count (5 MB cap, `truncated` when cut). Empty output answers `clean`, `no changes` or `no commits`. Anything else after `/git` (a path, a flag, another subcommand) answers `usage: /git status \| diff [staged] \| log [N]`; nothing typed on the phone reaches git. Failures: `⚠️ not a git repository: <cwd>`, `⚠️ git is not installed`, `⚠️ git timed out`, `⚠️ Herdr reports no working directory`. Secret redaction applies to the output like to any post |
@@ -61,7 +66,7 @@ Anything you write in a topic reaches the agent:
 | `/clear`, `/compact [instructions]`, `/usage`, `/model [name]` | typed into the agent as its own Claude Code command; two seconds later the screen is posted as a quoted reply (`/usage` and a bare `/model` are closed with `esc` for you); only while the agent is idle |
 | `/status` | `<emoji> <status> · <label> · pane <id>` |
 | `/options` | a hint: the settings panel lives in General |
-| `/away`, `/here`, `/new` | a hint: these commands live in General |
+| `/away`, `/here`, `/new`, `/observers` | a hint: these commands live in General |
 | `/help` | the command list |
 
 A prompt gets no reply: the message gets 👀 once `agent.prompt` accepted it
@@ -160,6 +165,7 @@ and the commands appear in Telegram's `/` menu for the group.
 | `/away`, `/away 2h` | you count as away until `/here`, or for that long (any Go duration from `1m` to `168h`): held topic edits and posts go out at once; see [Quiet while at the desk](behaviour.md#quiet-while-at-the-desk) |
 | `/here` | presence is automatic again; the reply says the current verdict |
 | `/new <workspace> [kind]` | opens an unfocused tab in that workspace (`tab.create`, Herdr's default directory and label) and starts an agent in its root pane (`agent.start`). The workspace is matched by label, case-insensitive: an exact match wins, else a unique prefix (`/new wor` for `Work`); labels may contain spaces. The last word is the kind only when Herdr knows it (`pi`, `claude`, `codex`, `gemini`, `cursor`, `devin`, `agy`, `cline`, `omp`, `mastracode`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `kilo`, `qodercli`, `maki`), default `claude`; no arguments reach the agent. The first reply is `starting <kind> in <workspace> …`, the second, up to a minute later, `started <kind> in <workspace> (pane <id>)` or `⚠️ <kind> did not start in <workspace>: <reason>`; the topic appears through the ordinary sync. A bare `/new`, an unknown or an ambiguous label answer with the workspace list |
+| `/observers`, `/observers add <id>`, `/observers remove <id>` | the operator and observer lists plus the unknown accounts seen recently (name, `@username`, id, when and where); add or remove an observer, saved to `config.json` and applied at once. An observer may use `/status` and `/help` here and nothing else; see [Operators and observers](behaviour.md#operators-and-observers) |
 | `/help` | the command list |
 
 `/git`, `/stop`, `/interrupt` and `/close` written in General answer with a
@@ -174,5 +180,5 @@ agent, its status and how long it has been in it.
 
 ## See Also
 
-- [Behaviour](behaviour.md): topic naming and icons, the dashboard, the options panel, silencing the group, quiet mode, secrets, topic cleanup, logs and state
+- [Behaviour](behaviour.md): topic naming and icons, the dashboard, the options panel, silencing the group, quiet mode, secrets, operators and observers, topic cleanup, logs and state
 - [README: Actions](../README.md#actions): start, stop, resync, status, logs, doctor and the test message from Herdr

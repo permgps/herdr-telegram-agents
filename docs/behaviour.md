@@ -29,9 +29,13 @@ in a topic and what gets posted there is in [commands.md](commands.md).
   bot is removed from the group. Losing **Manage topics** only pauses edits
   until the right is granted again.
 - Every status change makes Telegram post a "changed the topic icon" notice
-  into the topic. The daemon deletes its own notices right away, which needs
-  **Delete messages**; without that right they stay and the log says so once.
-  Topic creation notices cannot be deleted and remain. The dashboard in
+  into the topic. Clients learn the new icon from that notice, so the daemon
+  leaves it for 20 s by default (`Keep icon notices for` in the Topics group
+  of `/options`: `Keep` never deletes them, `10s` … `120s` waits that long)
+  and then deletes it, which needs **Delete messages**; without that right
+  the notices stay and the log says so once. A client that was asleep when
+  the notice was deleted keeps drawing the old icon until it next opens the
+  topic. Topic creation notices cannot be deleted and remain. The dashboard in
   General is pinned with **Pin messages**; without that right it is an
   ordinary message and the log says so once (see [The dashboard](#the-dashboard)).
 - Rename a topic by hand and the change goes back to Herdr: the tab is
@@ -90,7 +94,10 @@ updated 21:35
   option buttons and do not count towards the five; the other options keep
   their numbers, so replying with a digit still works as before. A dialog
   that offers `Type something.` (else `Chat about this`) gets a `✏️ Type
-  something` button in its own row.
+  something` button in its own row. With `Trim the input frame` on (the
+  default) the status line and the mode hint Claude Code draws under the
+  dialog are cut from the post; the dialog's own lines never are, so the
+  buttons are found as before.
 - Pressing ✏️ sends that entry's number, turns the keyboard into `✏️ waiting
   for your text`, answers `now send the text` and posts a quoted `✏️ Type
   something: send the text as your next message` with Telegram's
@@ -156,9 +163,15 @@ updated 21:35
 When an agent turns 🏆 done the topic gets one silent post. What it holds is
 the `Done post` option of the Posts group:
 
-- **Screen** (default): the last 12 lines of the terminal, as a code block.
-  This is what every other post uses too (blocked screens, `/screen`), and it
-  works for any agent Herdr detects.
+- **Screen** (default): the last 12 lines of the terminal, as a code block,
+  without Claude Code's input frame at the bottom (the two `─` rules with the
+  empty `❯` row between them, the status line and the mode hint) while
+  `Trim the input frame` in the Posts group is on, so the post ends on the
+  agent's last line. This is what every other post uses too (blocked
+  screens, `/screen`), and it works for any agent Herdr detects: a screen
+  without that frame passes through unchanged. Because the cut happens
+  after the read, a `/screen N` on an idle Claude Code pane may come back
+  with fewer than N lines.
 - **Reply**: the agent's own last message, taken from the transcript Claude
   Code writes for itself. Herdr does not say which session a pane runs, so
   the daemon takes the pane's working directory, maps it to
@@ -231,7 +244,8 @@ restarted.
   `Off 7d 14d 30d 60d 90d`; for the quiet threshold `1m 2m 3m 5m 10m 15m`;
   for the posts mode `Silent Held Normal`; for the done post `Screen Reply
   Formatted`; for the question delay and the short-turn threshold `Off 5s
-  10s 30s 60s 120s`; for the largest inbox file `5MB 10MB 20MB`.
+  10s 30s 60s 120s`; for the notice delay `Keep 10s 20s 30s 60s 120s`; for
+  the largest inbox file `5MB 10MB 20MB`.
 
 The options today:
 
@@ -245,6 +259,7 @@ The options today:
 | `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
 | `Done post` | Posts | Default `Screen`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. Falls back to `Screen` for non-Claude agents or when no reply is found, see [Done posts](#done-posts). |
+| `Trim the input frame` | Posts | Default on. Every screen post (done and blocked screens, `/screen`, `/screen all`, the tails of the Claude Code commands, the pager's six lines) loses Claude Code's input frame at the bottom: the `─` rule, the empty `❯` row, the second rule, the status line (`… │ main ✓ │ 14%: …`) and the mode hint (`⏵⏵ auto mode on (shift+tab to cycle)` or `? for shortcuts`). The cut walks up from the bottom and stops at the first line that is none of these, so a dialog and its options are never touched, a `❯` row with typed text is left alone and a screen without the frame (Codex, any other agent) passes through unchanged. The duplicate check runs after the cut, so a screen that differs only in the status line's clock is not posted twice. Off posts the screen as captured. |
 | `React to prompts` | Posts | Default on. 👀 on your message once the agent took the prompt, 👌 when that turn ends (done, or 5 s of idle). Off: no reactions, prompts are delivered silently. See [Turns and reactions](#turns-and-reactions). |
 | `Questions in the bot's chat` | Posts | Default on. A question from an agent is posted into its topic without a sound and sent to you in the private chat with the bot with a sound: the agent's name, the dialog's options or the last six screen lines, and a link to the post. Mute the group in Telegram and only questions ring. Off: the topic post rings, nothing goes to the private chat. Needs a private chat the bot may write to; see [Silence the group](#silence-the-group). |
 | `Question delay` | Posts | Default `Off`. With `5s` … `120s`: after the usual 1.5 s capture the blocked post waits that long more, is dropped when the agent left blocked meanwhile, starts over when a newer question arrived, and otherwise posts the better of the two captures (more options recognised, then the longer text). `Off` posts the first capture at 1.5 s. Any integer of seconds up to 3600 can be typed into `options.json`. See [Questions and buttons](#questions-and-buttons). |
@@ -255,14 +270,15 @@ The options today:
 | `working` … `exited` | Appearance | The topic icon of each status and the emoji `/status` prints. Picking an emoji another status already uses answers `used by <status>` and changes nothing. A pick repaints every live topic at once (a `resync`), or when sync comes back on. |
 | `Redact secrets` | Privacy | Default on. Every text the daemon posts passes the redaction step described under [Secrets in posts](#secrets-in-posts). Off: raw text. A change applies to the next post. |
 | `Delete closed topics after` | Topics | Default 30 days. The topic of an exited agent is deleted once it has been closed for that long, see [Topic cleanup](#topic-cleanup). `Off` keeps every topic. A number outside the picker's list (say `45`) can be typed into `options.json` by hand; the panel shows it without a bracketed button. |
+| `Keep icon notices for` | Topics | Default `20 s`. How long the bot's own topic notices ("changed the topic icon", a rename, close, reopen, the dashboard pin) stay before the daemon deletes them. Clients apply the new icon from that notice; a client that was asleep when it was deleted keeps drawing the old icon until it next opens the topic, which is why 10 s was not enough on Telegram Desktop (2026-09-06). `Keep` leaves every notice in place. A change applies to notices that arrive after it; one already waiting keeps its delay. Any integer of seconds up to 3600 can be typed into `options.json`. See [Topics and statuses](#topics-and-statuses). |
 
 Values are saved in `options.json` next to `config.json` (mode 0600) as
 `{"version": 1, "values": {"sync.enabled": true, "sync.dashboard": true,
 "quiet.enabled": true, "quiet.idle_minutes": "3", "quiet.posts": "silent",
-"posts.reactions": true, "posts.pager": true,
+"posts.chrome": true, "posts.reactions": true, "posts.pager": true,
 "posts.blocked_delay": "0", "inbox.enabled": true, "inbox.max_mb": "20",
 "inbox.delete_after_days": "7", "icons.working": "⚡", "privacy.redact": true,
-"topics.delete_after_days": "30", …}}`.
+"topics.delete_after_days": "30", "topics.notice_delay": "20", …}}`.
 Missing keys take their defaults and unknown keys survive a save. The file
 is read once at daemon start: edit it by hand and restart the daemon, or use
 the panel, which applies a change immediately.
@@ -273,7 +289,7 @@ The topic list shows the exact status of every agent, and every status
 change is a topic edit: a Telegram service message ("X changed the topic
 icon") that rings the phone in a group with sound on. The Bot API has no
 silent form of it and no way to mute a group for you; the daemon deletes
-its own notices after ten seconds, but the push has fired by then. So the
+its own notices after 20 seconds by default, but the push has fired by then. So the
 supported setup is: **mute the group once, in Telegram, by hand**, and let
 the one thing that must ring come from somewhere else.
 
@@ -316,8 +332,8 @@ itself rings, and nothing is sent to the private chat.
 
 Every topic edit is a Telegram service message ("X changed the topic icon")
 that rings the phone in a group with sound on, and the Bot API has no silent
-form of it; the daemon deletes its own notices after ten seconds, but the
-push has fired by then. Quiet mode therefore holds those writes while you
+form of it; the daemon deletes its own notices after 20 seconds by default,
+but the push has fired by then. Quiet mode therefore holds those writes while you
 are at the machine, where you see Herdr anyway, and lets Telegram catch up
 when you leave. The other answer to the sound is to mute the group, see
 [Silence the group](#silence-the-group).
@@ -415,11 +431,46 @@ submitted`. Once a day, at daemon start and as soon as
 are deleted; subdirectories and files of a save in flight are left alone.
 `Off` keeps every file. The sweep logs `inbox sweep deleted=<n>`.
 
+## Operators and observers
+
+Two kinds of Telegram accounts may talk to the bot, both listed by user id
+in `config.json`:
+
+- **Operators** (`operator_ids`) drive the agents: everything in
+  [Talking to agents](commands.md) is theirs. The setup wizard records the
+  account that ran it as the only operator; more ids are added by editing
+  the file with the daemon stopped. Questions ring in the operators' private
+  chats with the bot (`Questions in the bot's chat`); observers are never
+  paged.
+- **Observers** (`observer_ids`) see the group like any member and may use
+  `/status` and `/help` in General, nothing else: a message in a topic, a
+  plain message in General, a button press or any other command is dropped
+  without a reply and logged at debug with `reason=observer` (a press still
+  answers `not allowed` so the phone stops spinning). The list is managed
+  from General without a restart:
+
+  | You write | What happens |
+  |-----------|--------------|
+  | `/observers` | operators, observers and the accounts seen recently that are neither, newest first (name, `@username`, the id, when and where), followed by `add one with /observers add <id>` |
+  | `/observers add <id>` | saves the id to `observer_ids`, tells the daemon at once and answers `👁 <id> is an observer now: sees the group, may use /status and /help in General`; an operator id, a duplicate or an id that is not a positive number is refused with `⚠️ <reason>` |
+  | `/observers remove <id>` | the reverse; an id that is not an observer answers `⚠️ <id> is not an observer` |
+
+  A failed save answers `⚠️ config not saved: <reason>` and changes nothing.
+  An id on both lists is an operator.
+- **Strangers**, anyone else, are ignored. The first message, button press
+  or command from an unknown account within ten minutes is logged at info as
+  `unknown sender from_id=<id> name=… username=… thread_id=…`, which is where
+  the id for `/observers add` comes from; the same accounts appear under
+  `Seen recently, not allowed` in `/observers` (the last ten, kept in memory
+  until the daemon restarts). Later messages from the same account within
+  the window are dropped at debug only. `doctor` counts both lists in its
+  config line (`1 operator, 2 observers`).
+
 ## Files, logs and state
 
 | File | Location | Content |
 |------|----------|---------|
-| `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, log level |
+| `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, observer ids (`observer_ids`, written by `/observers`), log level |
 | `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping and the dashboard message id (`dashboard_message_id`); entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
 | `options.json` | config dir, mode 0600 | the `/options` choices |
 | `inbox/` | state dir, mode 0700, files 0600 | attachments sent to topics, swept daily after `Delete files after` |
@@ -449,5 +500,6 @@ default.
 
 - [Talking to agents](commands.md): what gets posted and what you can send
 - [Silence the group](#silence-the-group): mute the group once, let questions ring from the bot's chat
+- [Operators and observers](#operators-and-observers): who may drive the agents, who may only watch, and how strangers show up
 - [README: Actions](../README.md#actions): start, stop, resync, status, logs, doctor and the test message from Herdr
 - [Development](development.md): building from source and the tree layout
