@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -191,6 +192,42 @@ func TestLastReplyInBudget(t *testing.T) {
 	}
 	if turn.complete || !turn.started.IsZero() || turn.ended.IsZero() || turn.model != "claude-fable-5-1" || turn.outputTokens != 9 {
 		t.Errorf("partial turn = %+v", turn)
+	}
+}
+
+// failingReader serves data but fails every read that touches an offset
+// below failBelow, like a transcript whose head sits on a bad block.
+type failingReader struct {
+	data      []byte
+	failBelow int64
+}
+
+func (r failingReader) ReadAt(p []byte, off int64) (int, error) {
+	if off < r.failBelow {
+		return 0, errors.New("input/output error")
+	}
+	return bytes.NewReader(r.data).ReadAt(p, off)
+}
+
+func TestLastReplyFromReadErrorKeepsText(t *testing.T) {
+	// The reply sits on the last line; the prompt and a large tool result
+	// lie across an unreadable block. The text must survive with partial
+	// stats, as it does when the budget runs out.
+	src := `{"type":"user","message":{"content":"q"}}` + "\n" +
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"` + strings.Repeat("x", 3*blockSize) + `"}]}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-09-07T10:04:00Z","requestId":"r","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"Survivor"}],"usage":{"output_tokens":3}}}` + "\n"
+	r := failingReader{data: []byte(src), failBelow: int64(len(src)) - 2*blockSize}
+	text, turn, stats, err := lastReplyFrom(r, int64(len(src)), defaultMaxScan)
+	if err != nil || text != "Survivor" {
+		t.Fatalf("text = %q, err = %v", text, err)
+	}
+	if turn.complete || turn.model != "claude-fable-5-1" || turn.outputTokens != 3 || stats.bytes == 0 {
+		t.Errorf("partial turn = %+v, stats = %+v", turn, stats)
+	}
+	// Without any text before the bad block the error still surfaces.
+	r.failBelow = int64(len(src))
+	if _, _, _, err := lastReplyFrom(r, int64(len(src)), defaultMaxScan); !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), "read transcript") {
+		t.Errorf("err = %v", err)
 	}
 }
 

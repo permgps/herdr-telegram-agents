@@ -77,6 +77,7 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	f.options = testkit.NewMemOptionsStore()
 	f.opts = NewOptions(domain.DefaultOptions(), f.options, func(name string) []string { return f.tg.IconPack() }, nil)
 	f.replies = testkit.NewFakeReplies()
+	f.replies.SetNow(f.clock.Now)
 	f.logBuf = &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(f.logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	// Same wrapping as NewBridge: the fake records what really leaves.

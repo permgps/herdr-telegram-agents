@@ -13,6 +13,7 @@ import (
 // scripted per agent key and every lookup is recorded.
 type FakeReplies struct {
 	mu      sync.Mutex
+	now     func() time.Time
 	replies map[domain.Key]string
 	metas   map[domain.Key]fakeMeta
 	errs    map[domain.Key]error
@@ -28,7 +29,16 @@ type fakeMeta struct {
 // NewFakeReplies returns an empty source; unscripted keys answer
 // domain.ErrNoReply.
 func NewFakeReplies() *FakeReplies {
-	return &FakeReplies{replies: map[domain.Key]string{}, metas: map[domain.Key]fakeMeta{}, errs: map[domain.Key]error{}}
+	return &FakeReplies{now: time.Now, replies: map[domain.Key]string{}, metas: map[domain.Key]fakeMeta{}, errs: map[domain.Key]error{}}
+}
+
+// SetNow replaces the clock behind the default Written of a reply scripted
+// with Set alone; wire the test's fake clock so the reply is never older
+// than a turn the same clock started.
+func (f *FakeReplies) SetNow(now func() time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = now
 }
 
 // Set scripts the reply text for key and clears any scripted failure.
@@ -73,7 +83,7 @@ func (f *FakeReplies) LastReply(_ context.Context, agent domain.Agent) (domain.R
 		return domain.Reply{}, err
 	}
 	if text, ok := f.replies[agent.Key]; ok {
-		r := domain.Reply{Text: text, Source: "fake:" + agent.Key.String(), Age: time.Second, Written: time.Now().Add(-time.Second)}
+		r := domain.Reply{Text: text, Source: "fake:" + agent.Key.String(), Age: time.Second, Written: f.now().Add(-time.Second)}
 		if m, ok := f.metas[agent.Key]; ok {
 			r.Meta = m.meta
 			r.Written = m.written

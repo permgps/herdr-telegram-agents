@@ -95,6 +95,10 @@ func (r *Reader) LastReply(ctx context.Context, agent domain.Agent) (domain.Repl
 	if err != nil {
 		return domain.Reply{}, err
 	}
+	if stats.readErr != nil {
+		r.log.Debug("[FIX] transcript read failed after the reply was found, stats are partial",
+			slog.String("chosen", filepath.Base(path)), slog.Int64("bytes", stats.bytes), slog.String("err", stats.readErr.Error()))
+	}
 	return domain.Reply{Text: text, Source: path, Age: age, Written: modTime, Meta: meta}, nil
 }
 

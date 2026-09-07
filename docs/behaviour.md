@@ -212,8 +212,10 @@ Long `Reply` and `Formatted` posts can arrive **folded** (`Fold long
 replies after` in the Posts group, default `20 lines`): every message part
 with more lines than that is wrapped in Telegram's expandable quote, so the
 phone shows the first few lines and an arrow that opens the rest; the
-summary line stays visible under the quote. `Off` never folds. `Screen`
-posts are never folded, whatever the option says.
+summary line stays visible under the quote. The count is lines of the
+reply as the agent wrote it, before rendering and before the phone wraps
+them: a list of 25 short items folds, three long paragraphs do not. `Off`
+never folds. `Screen` posts are never folded, whatever the option says.
 
 Limits worth knowing: two Claude Code panes in the same directory cannot be
 told apart, so the reply of the one that wrote last wins (the stale check

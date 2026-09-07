@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +24,10 @@ type scanStats struct {
 	lines   int
 	bytes   int64
 	skipped int
+	// readErr is a read failure met after the reply text was already
+	// found: the text is returned with partial stats and the error is
+	// kept for the log.
+	readErr error
 }
 
 // record is the slice of a transcript line the reader needs. Claude Code
@@ -186,6 +191,12 @@ func lastReplyIn(path string, budget int64) (string, turnStats, scanStats, error
 	if err != nil {
 		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: stat transcript: %v", domain.ErrNoReply, err)
 	}
+	return lastReplyFrom(f, info.Size(), budget)
+}
+
+// lastReplyFrom is lastReplyIn over an open transcript of size bytes; it
+// takes the reader so a test can inject a read failure mid-file.
+func lastReplyFrom(f io.ReaderAt, size, budget int64) (string, turnStats, scanStats, error) {
 	var stats scanStats
 	var turn turnStats
 	var found string
@@ -225,16 +236,19 @@ func lastReplyIn(path string, budget int64) (string, turnStats, scanStats, error
 		}
 		return nil
 	}
-	bytesRead, err := walkBack(f, info.Size(), budget, visit)
+	bytesRead, err := walkBack(f, size, budget, visit)
 	stats.bytes = bytesRead
 	switch {
 	case errors.Is(err, errStop):
 		return found, turn, stats, nil
+	case haveText:
+		// The prompt is beyond the budget, the file start or a read
+		// failure: the text found is worth more than the missing stats.
+		stats.readErr = err
+		return found, turn, stats, nil
 	case err != nil:
 		return "", turnStats{}, stats, err
-	case haveText:
-		return found, turn, stats, nil // the prompt is beyond the budget or the file start
-	case bytesRead >= budget && info.Size() > budget:
+	case bytesRead >= budget && size > budget:
 		return "", turnStats{}, stats, fmt.Errorf("%w: no prompt within the last %d bytes", domain.ErrNoReply, budget)
 	}
 	return "", turnStats{}, stats, fmt.Errorf("%w: transcript has no reply", domain.ErrNoReply)
@@ -303,7 +317,7 @@ func lastText(raw json.RawMessage) (string, bool) {
 // complete line, newest first, until visit returns an error, the file is
 // exhausted, or budget bytes have been read. It returns the bytes read
 // and the error visit stopped with, if any.
-func walkBack(f *os.File, size, budget int64, visit func(line []byte) error) (int64, error) {
+func walkBack(f io.ReaderAt, size, budget int64, visit func(line []byte) error) (int64, error) {
 	pos := size
 	var read int64
 	var carry []byte // the head of a line that continues in the earlier block
