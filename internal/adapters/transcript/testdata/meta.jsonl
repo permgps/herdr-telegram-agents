@@ -1,0 +1,18 @@
+{"type":"user","timestamp":"2026-09-07T10:00:00.000Z","message":{"role":"user","content":"do the thing"}}
+{"type":"assistant","timestamp":"2026-09-07T10:00:05.000Z","requestId":"req-1","message":{"model":"claude-fable-5-1","content":[{"type":"thinking","thinking":"plan"}],"usage":{"output_tokens":530}}}
+{"type":"assistant","timestamp":"2026-09-07T10:00:05.000Z","requestId":"req-1","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"Working on it."}],"usage":{"output_tokens":530}}}
+{"type":"assistant","timestamp":"2026-09-07T10:00:05.000Z","requestId":"req-1","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/p/a.go","old_string":"x","new_string":"y"}}],"usage":{"output_tokens":530}}}
+{"type":"user","timestamp":"2026-09-07T10:00:06.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-09-07T10:01:00.000Z","requestId":"req-3","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"t2","name":"Write","input":{"file_path":"/p/b.go","content":"package p"}}]}}
+{"type":"user","timestamp":"2026-09-07T10:01:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-09-07T10:01:30.000Z","requestId":"req-4","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/p/a.go","old_string":"y","new_string":"z"}}]}}
+{"type":"user","timestamp":"2026-09-07T10:01:31.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-09-07T10:01:45.000Z","requestId":"req-5","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"t4","name":"Read","input":{"file_path":"/p/a.go"}}]}}
+{"type":"user","timestamp":"2026-09-07T10:01:46.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t4","content":"package p"}]}}
+{"type":"assistant","timestamp":"2026-09-07T10:02:00.000Z","requestId":"req-6","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"t5","name":"NotebookEdit","input":{"notebook_path":"/p/n.ipynb","new_source":"x"}}]}}
+{"type":"user","timestamp":"2026-09-07T10:02:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t5","content":"ok"}]}}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-09-07T10:03:00.000Z","requestId":"req-side","message":{"model":"claude-haiku-4-5-20251001","content":[{"type":"tool_use","id":"s1","name":"Edit","input":{"file_path":"/p/c.go","old_string":"a","new_string":"b"}}],"usage":{"output_tokens":999}}}
+{"type":"assistant","timestamp":"2026-09-07T10:04:00.000Z","requestId":"req-2","message":{"model":"claude-fable-5-1","content":[{"type":"thinking","thinking":"wrap up"}],"usage":{"output_tokens":700}}}
+{"type":"assistant","timestamp":"2026-09-07T10:04:00.000Z","requestId":"req-2","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"t6","name":"Bash","input":{"command":"go test ./..."}}],"usage":{"output_tokens":700}}}
+{"type":"assistant","timestamp":"2026-09-07T10:04:00.000Z","requestId":"req-2","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"All done: **three files** touched."}],"usage":{"output_tokens":700}}}
+{"type":"last-prompt","lastPrompt":"do the thing"}

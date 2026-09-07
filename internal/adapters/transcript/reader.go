@@ -84,14 +84,18 @@ func (r *Reader) LastReply(ctx context.Context, agent domain.Agent) (domain.Repl
 	r.log.Debug("transcript lookup",
 		slog.String("pane", agent.PaneID), slog.String("cwd", agent.Cwd), slog.String("dir", dir),
 		slog.Int("candidates", candidates), slog.String("chosen", filepath.Base(path)), slog.Int64("age_ms", age.Milliseconds()))
-	text, stats, err := lastReplyIn(path, r.maxScan)
+	text, turn, stats, err := lastReplyIn(path, r.maxScan)
+	meta := turn.meta()
+	turnDuration, _ := meta.Duration()
 	r.log.Debug("transcript scanned",
 		slog.String("chosen", filepath.Base(path)), slog.Int("lines", stats.lines),
-		slog.Int64("bytes", stats.bytes), slog.Int("skipped_json", stats.skipped), slog.Bool("found", err == nil))
+		slog.Int64("bytes", stats.bytes), slog.Int("skipped_json", stats.skipped), slog.Bool("found", err == nil),
+		slog.String("model", meta.Model), slog.Int("output_tokens", meta.OutputTokens), slog.Int("files", len(meta.Files)),
+		slog.Int64("turn_ms", turnDuration.Milliseconds()), slog.Bool("complete", turn.complete))
 	if err != nil {
 		return domain.Reply{}, err
 	}
-	return domain.Reply{Text: text, Source: path, Age: age}, nil
+	return domain.Reply{Text: text, Source: path, Age: age, Written: modTime, Meta: meta}, nil
 }
 
 // newestTranscript returns the most recently modified session file in dir

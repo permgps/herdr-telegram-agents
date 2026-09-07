@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -26,39 +27,169 @@ type scanStats struct {
 
 // record is the slice of a transcript line the reader needs. Claude Code
 // writes many record types (assistant, user, system, attachment, mode,
-// last-prompt, ...); everything but assistant and user is ignored.
+// last-prompt, ...); everything but assistant and user is ignored. One
+// API response is written as several assistant records (thinking, text,
+// tool_use) that share the RequestID and repeat the same usage.
 type record struct {
 	Type        string `json:"type"`
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
+	Timestamp   string `json:"timestamp"`
+	RequestID   string `json:"requestId"`
 	Message     struct {
+		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
+		Usage   struct {
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 }
 
-// contentPart is one element of message.content when it is a list.
+// contentPart is one element of message.content when it is a list. Name
+// and Input are set on tool_use parts; only the edited path is decoded.
 type contentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string `json:"type"`
+	Text  string `json:"text"`
+	Name  string `json:"name"`
+	Input struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+	} `json:"input"`
+}
+
+// turnStats is what the backward walk learns about the turn between the
+// end of the file and the operator's last prompt. complete is false when
+// the walk ended (budget or file start) before it met the prompt, in
+// which case started is zero and the counts cover only the newest part.
+type turnStats struct {
+	model        string
+	started      time.Time
+	ended        time.Time
+	files        []string
+	outputTokens int
+	seenRequests map[string]bool
+	complete     bool
+}
+
+// editTools are the Claude Code tools whose input names a file they
+// change; Read and Grep are not edits.
+var editTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
+
+// meta returns the stats as the domain type, files in file order with
+// duplicates dropped.
+func (t turnStats) meta() domain.TurnMeta {
+	return domain.TurnMeta{
+		Model:        t.model,
+		Started:      t.started,
+		Ended:        t.ended,
+		Files:        uniqueReversed(t.files),
+		OutputTokens: t.outputTokens,
+	}
+}
+
+// uniqueReversed reverses newest-first paths into file order and keeps
+// the first occurrence of each.
+func uniqueReversed(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for i := len(paths) - 1; i >= 0; i-- {
+		if seen[paths[i]] {
+			continue
+		}
+		seen[paths[i]] = true
+		out = append(out, paths[i])
+	}
+	return out
+}
+
+// absorb folds one non-sidechain assistant record into the stats: the
+// newest timestamp is the end of the turn, the first model met is the
+// model, output tokens count once per request id, and every edited path
+// is kept in the order met (newest first).
+func (t *turnStats) absorb(rec record) {
+	if t.ended.IsZero() {
+		t.ended = parseStamp(rec.Timestamp)
+	}
+	if t.model == "" {
+		t.model = rec.Message.Model
+	}
+	if rec.RequestID == "" {
+		t.outputTokens += rec.Message.Usage.OutputTokens
+	} else if !t.seenRequests[rec.RequestID] {
+		if t.seenRequests == nil {
+			t.seenRequests = map[string]bool{}
+		}
+		t.seenRequests[rec.RequestID] = true
+		t.outputTokens += rec.Message.Usage.OutputTokens
+	}
+	t.files = append(t.files, editedPaths(rec.Message.Content)...)
+}
+
+// parseStamp reads a transcript timestamp (RFC 3339, milliseconds); a
+// value that does not parse is the zero time.
+func parseStamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	ts, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts
+}
+
+// editedPaths lists the file_path / notebook_path inputs of the edit
+// tools in an assistant content list.
+func editedPaths(raw json.RawMessage) []string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range parts {
+		if p.Type != "tool_use" || !editTools[p.Name] {
+			continue
+		}
+		if p.Input.FilePath != "" {
+			out = append(out, p.Input.FilePath)
+		}
+		if p.Input.NotebookPath != "" {
+			out = append(out, p.Input.NotebookPath)
+		}
+	}
+	return out
 }
 
 // lastReplyIn walks the transcript backwards, newest line first, and
 // returns the first non-empty text part of an assistant record met before
-// the operator's last prompt. A prompt is a user record that is not meta
+// the operator's last prompt, together with what the records of that turn
+// say about it (turnStats). A prompt is a user record that is not meta
 // and carries no tool_result; tool results are user records too, so they
-// do not end the scan. Sidechain (subagent) records are skipped.
-func lastReplyIn(path string, budget int64) (string, scanStats, error) {
+// do not end the scan. Sidechain (subagent) records are skipped. The walk
+// goes on past the text until the prompt so the stats cover the whole
+// turn; when the budget or the file runs out first, a text already found
+// is returned with partial stats (complete false) rather than an error.
+func lastReplyIn(path string, budget int64) (string, turnStats, scanStats, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", scanStats{}, fmt.Errorf("%w: open transcript: %v", domain.ErrNoReply, err)
+		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: open transcript: %v", domain.ErrNoReply, err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return "", scanStats{}, fmt.Errorf("%w: stat transcript: %v", domain.ErrNoReply, err)
+		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: stat transcript: %v", domain.ErrNoReply, err)
 	}
 	var stats scanStats
+	var turn turnStats
 	var found string
+	var haveText bool
 	visit := func(line []byte) error {
 		stats.lines++
 		line = bytes.TrimSpace(line)
@@ -76,12 +207,20 @@ func lastReplyIn(path string, budget int64) (string, scanStats, error) {
 		switch rec.Type {
 		case "user":
 			if isPrompt(rec) {
-				return fmt.Errorf("%w: no reply text after the last prompt", domain.ErrNoReply)
+				turn.started = parseStamp(rec.Timestamp)
+				turn.complete = true
+				if !haveText {
+					return fmt.Errorf("%w: no reply text after the last prompt", domain.ErrNoReply)
+				}
+				return errStop
 			}
 		case "assistant":
+			turn.absorb(rec)
+			if haveText {
+				return nil
+			}
 			if text, ok := lastText(rec.Message.Content); ok {
-				found = text
-				return errStop
+				found, haveText = text, true
 			}
 		}
 		return nil
@@ -90,13 +229,15 @@ func lastReplyIn(path string, budget int64) (string, scanStats, error) {
 	stats.bytes = bytesRead
 	switch {
 	case errors.Is(err, errStop):
-		return found, stats, nil
+		return found, turn, stats, nil
 	case err != nil:
-		return "", stats, err
+		return "", turnStats{}, stats, err
+	case haveText:
+		return found, turn, stats, nil // the prompt is beyond the budget or the file start
 	case bytesRead >= budget && info.Size() > budget:
-		return "", stats, fmt.Errorf("%w: no prompt within the last %d bytes", domain.ErrNoReply, budget)
+		return "", turnStats{}, stats, fmt.Errorf("%w: no prompt within the last %d bytes", domain.ErrNoReply, budget)
 	}
-	return "", stats, fmt.Errorf("%w: transcript has no reply", domain.ErrNoReply)
+	return "", turnStats{}, stats, fmt.Errorf("%w: transcript has no reply", domain.ErrNoReply)
 }
 
 // isPrompt reports whether a user record is something the operator typed:

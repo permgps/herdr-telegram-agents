@@ -581,3 +581,147 @@ func TestSendForceReply(t *testing.T) {
 		t.Fatalf("reply_markup with buttons = %q", markup)
 	}
 }
+
+func TestSendFooter(t *testing.T) {
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+	// A single Code part: the footer follows the </pre> on its own line.
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "$ make\nok", Code: true, Footer: "⏱ 4 min · fable-5-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.api.callsOf("sendMessage")[0].form.Get("text"); got != "<pre>$ make\nok</pre>\n⏱ 4 min · fable-5-1" {
+		t.Errorf("text = %q", got)
+	}
+	if !strings.Contains(h.buf.String(), "footer=true") || !strings.Contains(h.buf.String(), "limit=") {
+		t.Errorf("log lacks footer/limit fields: %s", h.buf.String())
+	}
+	// Three parts: the footer rides on the last one only.
+	lines := make([]string, 0, 300)
+	for i := 0; i < 300; i++ {
+		lines = append(lines, strings.Repeat("x", 30)+" "+itoa(i))
+	}
+	h = newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: strings.Join(lines, "\n"), Code: true, Footer: "⏱ 4 min"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(calls))
+	}
+	for i, c := range calls[:2] {
+		if body := c.form.Get("text"); !strings.HasSuffix(body, "</pre>") {
+			t.Errorf("part %d carries a footer: %.40q", i+1, body[len(body)-40:])
+		}
+	}
+	if body := calls[2].form.Get("text"); !strings.HasSuffix(body, "</pre>\n⏱ 4 min") {
+		t.Errorf("last part lacks the footer: %.40q", body[len(body)-40:])
+	}
+	// The footer is escaped, and a long one is cut to 200 units.
+	h = newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "x", Footer: "<b>bold</b> & co"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.api.callsOf("sendMessage")[0].form.Get("text"); got != "x\n&lt;b&gt;bold&lt;/b&gt; &amp; co" {
+		t.Errorf("escaped footer = %q", got)
+	}
+	long := strings.Repeat("😀", 150) // 300 UTF-16 units
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "y", Footer: long}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.api.callsOf("sendMessage")[1].form.Get("text")
+	footer := strings.TrimPrefix(got, "y\n")
+	if !strings.HasSuffix(footer, "…") || len([]rune(footer)) != 100 {
+		t.Errorf("long footer = %d runes, %q…", len([]rune(footer)), footer[:20])
+	}
+	// A text of exactly textMax units with a 30-unit footer splits in two
+	// and no part exceeds Telegram's 4096 units.
+	h = newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+	text := strings.Repeat("a", 4096-64)
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: text, Footer: strings.Repeat("f", 30)}); err != nil {
+		t.Fatal(err)
+	}
+	calls = h.api.callsOf("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	for i, c := range calls {
+		if n := len([]rune(c.form.Get("text"))); n > 4096 {
+			t.Errorf("part %d is %d units", i+1, n)
+		}
+	}
+	if !strings.HasSuffix(calls[1].form.Get("text"), "\n"+strings.Repeat("f", 30)) {
+		t.Error("footer missing on the second part")
+	}
+}
+
+func TestSendFold(t *testing.T) {
+	lines := func(n int) string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "line " + itoa(i)
+		}
+		return strings.Join(out, "\n")
+	}
+	for _, tc := range []struct {
+		name   string
+		lines  int
+		fold   int
+		folded bool
+	}{
+		{"over the threshold", 25, 20, true},
+		{"at the threshold", 20, 20, false},
+		{"fold off", 25, 0, false},
+	} {
+		h := newHarness(t)
+		h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+		if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: lines(tc.lines), Code: true, Fold: tc.fold, Footer: "⏱ 1 min"}); err != nil {
+			t.Fatal(err)
+		}
+		got := h.api.callsOf("sendMessage")[0].form.Get("text")
+		want := "<pre>" + lines(tc.lines) + "</pre>\n⏱ 1 min"
+		if tc.folded {
+			want = "<blockquote expandable><pre>" + lines(tc.lines) + "</pre></blockquote>\n⏱ 1 min"
+		}
+		if got != want {
+			t.Errorf("%s: text = %.60q", tc.name, got)
+		}
+		if strings.Contains(h.buf.String(), "folded=true") != tc.folded {
+			t.Errorf("%s: log folded flag: %s", tc.name, h.buf.String())
+		}
+	}
+	// Markdown over the threshold: the rendered code block sits inside the
+	// quote.
+	h := newHarness(t)
+	h.api.on("sendMessage", func(url.Values) apiReply { return okReply(map[string]any{"message_id": 1}) })
+	md := "**done**\n```go\n" + lines(25) + "\n```"
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: md, Markdown: true, Fold: 20}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.api.callsOf("sendMessage")[0].form.Get("text")
+	if !strings.HasPrefix(got, "<blockquote expandable><b>done</b>\n<pre><code class=\"language-go\">") || !strings.HasSuffix(got, "</code></pre></blockquote>") {
+		t.Errorf("markdown fold = %q", got)
+	}
+	// The Markdown fallback keeps the fold and the footer.
+	h = newHarness(t)
+	n := 0
+	h.api.on("sendMessage", func(url.Values) apiReply {
+		n++
+		if n == 1 {
+			return errReply(400, `Bad Request: can't parse entities: Unsupported start tag "x" at byte offset 1`)
+		}
+		return okReply(map[string]any{"message_id": 7})
+	})
+	if _, err := h.gw.Send(h.ctx, domain.Outgoing{ThreadID: 42, Text: "<x>\n" + lines(24), Markdown: true, Fold: 20, Footer: "⏱ 2 min"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.api.callsOf("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	if got := calls[1].form.Get("text"); !strings.HasPrefix(got, "<blockquote expandable><pre>&lt;x&gt;\n") || !strings.HasSuffix(got, "</pre></blockquote>\n⏱ 2 min") {
+		t.Errorf("fallback = %q", got)
+	}
+}

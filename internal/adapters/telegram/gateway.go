@@ -377,18 +377,27 @@ func (g *Gateway) SendDirect(ctx context.Context, userID int64, out domain.Outgo
 }
 
 // send is the body shared by Send and SendDirect; chatID is the group or
-// the user, threadID the topic (0 for General and for a private chat).
+// the user, threadID the topic (0 for General and for a private chat). A
+// Footer is escaped and appended to the last part after a newline, the
+// split limit reduced by its length so the pair stays under Telegram's
+// cap; a part with more lines than Fold goes out inside an expandable
+// quote, the footer under it.
 func (g *Gateway) send(ctx context.Context, chatID int64, threadID int, out domain.Outgoing) (int, error) {
 	markdown := out.Markdown && !out.Code && !out.HTML
+	footer := truncateFooter(out.Footer, footerMax)
+	limit := textMax
+	if footer != "" {
+		limit -= utf16Len(footer) + 1
+	}
 	var parts []string
 	if markdown {
-		parts = splitMarkdown(out.Text, textMax)
+		parts = splitMarkdown(out.Text, limit)
 	} else {
-		parts = chunk(out.Text, textMax)
+		parts = chunk(out.Text, limit)
 	}
 	parts, droppedParts, droppedChars := capParts(parts, out.MaxParts)
-	if markdown || out.MaxParts > 0 {
-		g.log.Debug("message split", slog.Int("thread_id", out.ThreadID), slog.Bool("markdown", markdown),
+	if markdown || out.MaxParts > 0 || footer != "" {
+		g.log.Debug("message split", slog.Int("thread_id", out.ThreadID), slog.Bool("markdown", markdown), slog.Int("limit", limit),
 			slog.Int("parts", len(parts)), slog.Int("dropped_parts", droppedParts), slog.Int("dropped_chars", droppedChars))
 	}
 	lastID := 0
@@ -402,6 +411,12 @@ func (g *Gateway) send(ctx context.Context, chatID int64, threadID int, out doma
 		case markdown:
 			body = renderMarkdown(part)
 		}
+		folded := out.Fold > 0 && strings.Count(part, "\n")+1 > out.Fold
+		partFooter := ""
+		if i == len(parts)-1 {
+			partFooter = footer
+		}
+		body = wrap(body, folded, partFooter)
 		params := &bot.SendMessageParams{
 			ChatID:              chatID,
 			MessageThreadID:     threadID,
@@ -428,7 +443,7 @@ func (g *Gateway) send(ctx context.Context, chatID int64, threadID int, out doma
 			g.log.Warn("markdown rejected, re-sent as pre",
 				slog.Int("thread_id", out.ThreadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
 				slog.String("html_head", head(body, 200)), slog.Any("err", err))
-			params.Text = renderCode(part)
+			params.Text = wrap(renderCode(part), folded, partFooter)
 			id, err = g.sendPart(ctx, params)
 		}
 		if err != nil {
@@ -440,9 +455,37 @@ func (g *Gateway) send(ctx context.Context, chatID int64, threadID int, out doma
 		g.log.Debug("sendMessage",
 			slog.Int64("chat_id", chatID), slog.Int("thread_id", threadID), slog.Int("part", i+1), slog.Int("parts", len(parts)),
 			slog.Int("reply_to", out.ReplyTo), slog.Bool("notify", out.Notify),
-			slog.Int("runes", utf8.RuneCountInString(part)), slog.Int("buttons", buttons), slog.Int("message_id", lastID))
+			slog.Int("runes", utf8.RuneCountInString(part)), slog.Int("buttons", buttons),
+			slog.Bool("folded", folded), slog.Bool("footer", partFooter != ""), slog.Int("message_id", lastID))
 	}
 	return lastID, nil
+}
+
+// footerMax bounds a footer in UTF-16 units; a longer one is cut with an
+// ellipsis so the split limit never collapses.
+const footerMax = 200
+
+// wrap finishes the HTML of one part: an expandable quote around a folded
+// body and the escaped footer on its own line after it.
+func wrap(body string, folded bool, footer string) string {
+	if folded {
+		body = "<blockquote expandable>" + body + "</blockquote>"
+	}
+	if footer != "" {
+		body += "\n" + renderPlain(footer)
+	}
+	return body
+}
+
+// truncateFooter trims spaces and newlines off a footer, keeps it to one
+// line and cuts it to max UTF-16 units with an ellipsis.
+func truncateFooter(footer string, max int) string {
+	footer = strings.TrimSpace(strings.ReplaceAll(footer, "\n", " "))
+	rs := []rune(footer)
+	if n := fitUTF16(rs, max); n < len(rs) {
+		return string(rs[:fitUTF16(rs, max-1)]) + "…"
+	}
+	return footer
 }
 
 // sendPart sends one message through the queue and returns its id.

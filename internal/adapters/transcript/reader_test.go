@@ -44,7 +44,7 @@ func TestLastReplyInFixtures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
-			text, stats, err := lastReplyIn(filepath.Join("testdata", tt.file), defaultMaxScan)
+			text, turn, stats, err := lastReplyIn(filepath.Join("testdata", tt.file), defaultMaxScan)
 			if tt.wantErr != "" {
 				if !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want ErrNoReply with %q", err, tt.wantErr)
@@ -60,7 +60,54 @@ func TestLastReplyInFixtures(t *testing.T) {
 			if stats.skipped != tt.skipped || stats.lines == 0 || stats.bytes == 0 {
 				t.Errorf("stats = %+v", stats)
 			}
+			// The old fixtures carry no timestamps: the walk still reaches
+			// the prompt, the times just stay zero.
+			if !turn.complete || !turn.started.IsZero() || !turn.ended.IsZero() {
+				t.Errorf("turn = %+v", turn)
+			}
 		})
+	}
+}
+
+func TestLastReplyInMeta(t *testing.T) {
+	text, turn, _, err := lastReplyIn(filepath.Join("testdata", "meta.jsonl"), defaultMaxScan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "All done: **three files** touched." {
+		t.Errorf("text = %q", text)
+	}
+	meta := turn.meta()
+	if !turn.complete || meta.Model != "claude-fable-5-1" {
+		t.Errorf("complete=%v model=%q", turn.complete, meta.Model)
+	}
+	// Two requests carry usage (530 and 700), three records each; the
+	// sidechain record's 999 is ignored.
+	if meta.OutputTokens != 1230 {
+		t.Errorf("OutputTokens = %d, want 1230", meta.OutputTokens)
+	}
+	if got := strings.Join(meta.Files, ","); got != "/p/a.go,/p/b.go,/p/n.ipynb" {
+		t.Errorf("Files = %q", got)
+	}
+	started := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	if !meta.Started.Equal(started) || !meta.Ended.Equal(started.Add(4*time.Minute)) {
+		t.Errorf("Started = %v, Ended = %v", meta.Started, meta.Ended)
+	}
+	if line := meta.Line(); line != "⏱ 4 min · fable-5-1 · ✏️ 3 files · ↑ 1.2k tokens" {
+		t.Errorf("Line() = %q", line)
+	}
+	// Records without a request id count on their own; a bad timestamp is
+	// ignored.
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	lines := `{"type":"user","timestamp":"not a time","message":{"content":"q"}}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"output_tokens":5}}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-09-07T10:00:00Z","message":{"content":[{"type":"text","text":"b"}],"usage":{"output_tokens":7}}}` + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, turn, _, err = lastReplyIn(path, defaultMaxScan)
+	if err != nil || text != "b" || turn.outputTokens != 12 || !turn.started.IsZero() || turn.ended.IsZero() || !turn.complete {
+		t.Fatalf("no request ids: text=%q turn=%+v err=%v", text, turn, err)
 	}
 }
 
@@ -83,17 +130,19 @@ func writeTranscript(t *testing.T, path string, payload int, tail ...string) {
 func TestLastReplyInLargeToolResult(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	writeTranscript(t, path, 2500*1024, `{"type":"assistant","message":{"content":[{"type":"text","text":"After big"}]}}`)
-	text, stats, err := lastReplyIn(path, defaultMaxScan)
+	text, turn, stats, err := lastReplyIn(path, defaultMaxScan)
 	if err != nil || text != "After big" {
 		t.Fatalf("text = %q, err = %v", text, err)
 	}
-	if stats.bytes > blockSize*2 {
-		t.Errorf("read %d bytes for a reply on the last line", stats.bytes)
+	// The walk goes on past the text to the prompt for the turn stats, so
+	// it crosses the 2.5 MB tool result (still within the budget).
+	if stats.bytes < 2500*1024 || !turn.complete {
+		t.Errorf("scan stopped before the prompt: %d bytes, turn %+v", stats.bytes, turn)
 	}
-	// Without a text after the tool result the scan crosses the 2.5 MB line
-	// (still within the budget) and finds the narration before the tool.
+	// Without a text after the tool result the scan finds the narration
+	// before the tool.
 	writeTranscript(t, path, 2500*1024)
-	text, stats, err = lastReplyIn(path, defaultMaxScan)
+	text, _, stats, err = lastReplyIn(path, defaultMaxScan)
 	if err != nil || text != "Before big" {
 		t.Fatalf("text = %q, err = %v", text, err)
 	}
@@ -105,7 +154,7 @@ func TestLastReplyInLargeToolResult(t *testing.T) {
 	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if text, _, err := lastReplyIn(path, defaultMaxScan); err != nil || text != "kept" {
+	if text, _, _, err := lastReplyIn(path, defaultMaxScan); err != nil || text != "kept" {
 		t.Fatalf("empty user record: %q %v", text, err)
 	}
 	// An assistant record with a plain string content is a reply too.
@@ -113,7 +162,7 @@ func TestLastReplyInLargeToolResult(t *testing.T) {
 	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if text, _, err := lastReplyIn(path, defaultMaxScan); err != nil || text != "plain string reply" {
+	if text, _, _, err := lastReplyIn(path, defaultMaxScan); err != nil || text != "plain string reply" {
 		t.Fatalf("string content: %q %v", text, err)
 	}
 	// A prompt with nothing but tool traffic after it has no reply.
@@ -121,7 +170,7 @@ func TestLastReplyInLargeToolResult(t *testing.T) {
 	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := lastReplyIn(path, defaultMaxScan); !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), "after the last prompt") {
+	if _, _, _, err := lastReplyIn(path, defaultMaxScan); !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), "after the last prompt") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -129,9 +178,19 @@ func TestLastReplyInLargeToolResult(t *testing.T) {
 func TestLastReplyInBudget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	writeTranscript(t, path, 3*1024*1024)
-	_, _, err := lastReplyIn(path, 1<<20)
+	_, _, _, err := lastReplyIn(path, 1<<20)
 	if !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), "within the last") {
 		t.Fatalf("err = %v, want the budget reason", err)
+	}
+	// The budget covers the text but not the prompt: the text is returned
+	// with partial stats.
+	writeTranscript(t, path, 3*1024*1024, `{"type":"assistant","timestamp":"2026-09-07T10:04:00Z","requestId":"r","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"After big"}],"usage":{"output_tokens":9}}}`)
+	text, turn, _, err := lastReplyIn(path, 1<<20)
+	if err != nil || text != "After big" {
+		t.Fatalf("text = %q, err = %v", text, err)
+	}
+	if turn.complete || !turn.started.IsZero() || turn.ended.IsZero() || turn.model != "claude-fable-5-1" || turn.outputTokens != 9 {
+		t.Errorf("partial turn = %+v", turn)
 	}
 }
 
@@ -171,7 +230,7 @@ func TestLastReply(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	src, err := os.ReadFile(filepath.Join("testdata", "simple.jsonl"))
+	src, err := os.ReadFile(filepath.Join("testdata", "meta.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,8 +250,11 @@ func TestLastReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply.Text != "Done: **all good**." || reply.Source != path || reply.Age != 3*time.Second {
+	if reply.Text != "All done: **three files** touched." || reply.Source != path || reply.Age != 3*time.Second {
 		t.Errorf("reply = %+v", reply)
+	}
+	if !reply.Written.Equal(mod) || reply.Meta.Model != "claude-fable-5-1" || len(reply.Meta.Files) != 3 || reply.Meta.OutputTokens != 1230 {
+		t.Errorf("reply written/meta = %v %+v", reply.Written, reply.Meta)
 	}
 
 	cases := map[string]domain.Agent{
