@@ -171,10 +171,13 @@ func TestRegisterCommands(t *testing.T) {
 	}
 	f := calls[0].form
 	cmds := f.Get("commands")
-	for _, name := range []string{`"command":"screen"`, `"command":"keys"`, `"command":"focus"`, `"command":"git"`, `"command":"stop"`, `"command":"interrupt"`, `"command":"clear"`, `"command":"compact"`, `"command":"usage"`, `"command":"model"`, `"command":"close"`, `"command":"new"`, `"command":"status"`, `"command":"away"`, `"command":"here"`, `"command":"options"`, `"command":"help"`} {
+	for _, name := range []string{`"command":"screen"`, `"command":"keys"`, `"command":"focus"`, `"command":"git"`, `"command":"stop"`, `"command":"interrupt"`, `"command":"clear"`, `"command":"compact"`, `"command":"usage"`, `"command":"model"`, `"command":"close"`, `"command":"new"`, `"command":"observers"`, `"command":"status"`, `"command":"away"`, `"command":"here"`, `"command":"options"`, `"command":"help"`} {
 		if !strings.Contains(cmds, name) {
 			t.Errorf("commands lack %s: %s", name, cmds)
 		}
+	}
+	if n := strings.Count(cmds, `"command":`); n != 18 {
+		t.Errorf("commands count = %d, want 18: %s", n, cmds)
 	}
 	if scope := f.Get("scope"); !strings.Contains(scope, `"type":"chat"`) || !strings.Contains(scope, `"chat_id":-1001234567890`) {
 		t.Errorf("scope = %q", scope)

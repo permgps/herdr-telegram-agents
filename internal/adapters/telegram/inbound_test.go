@@ -93,6 +93,12 @@ func TestInboundDropsForeignAndUnauthorised(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h.bot.ProcessUpdate(ctx, tc.update)
+			if tc.name == "not operator" {
+				// A stranger is dropped and reported once.
+				if ev, ok := expectEvent(t, h.gw.Events()).(domain.StrangerSeen); !ok || ev.FromID != 777 || ev.ThreadID != 5 {
+					t.Fatalf("event = %#v", ev)
+				}
+			}
 			expectNoEvent(t, h.gw.Events())
 			if tc.reason != "" && !strings.Contains(h.buf.String(), tc.reason) {
 				t.Errorf("drop reason %q not logged: %s", tc.reason, h.buf.String())
@@ -170,6 +176,9 @@ func TestInboundGeneralCommand(t *testing.T) {
 	}
 
 	h.bot.ProcessUpdate(ctx, topicMessage(testChatID, 777, 0, "/status"))
+	if ev, ok := expectEvent(t, h.gw.Events()).(domain.StrangerSeen); !ok || ev.FromID != 777 || ev.ThreadID != 0 {
+		t.Fatalf("stranger in General: event = %#v", ev)
+	}
 	expectNoEvent(t, h.gw.Events())
 	if !strings.Contains(h.buf.String(), "reason=not_operator") {
 		t.Errorf("stranger in General not dropped: %s", h.buf.String())
@@ -391,6 +400,9 @@ func TestInboundCallbackFromOperatorEmitsButtonPressed(t *testing.T) {
 func TestInboundCallbackFromStrangerIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.bot.ProcessUpdate(context.Background(), callbackUpdate(testChatID, 777, 7, 1000, "2"))
+	if ev, ok := expectEvent(t, h.gw.Events()).(domain.StrangerSeen); !ok || ev.FromID != 777 {
+		t.Fatalf("event = %#v", ev)
+	}
 	expectNoEvent(t, h.gw.Events())
 	calls := h.api.callsOf("answerCallbackQuery")
 	if len(calls) != 1 || calls[0].form.Get("text") != "not allowed" || calls[0].form.Get("callback_query_id") != "cb-1000" {
@@ -468,5 +480,165 @@ func TestInboundAttachmentEvents(t *testing.T) {
 	expectNoEvent(t, h.gw.Events())
 	if !strings.Contains(h.buf.String(), "unsupported_message") {
 		t.Fatal("sticker drop not logged")
+	}
+}
+
+// testObserver is the observer id the access tests configure.
+const testObserver int64 = 5151
+
+func iconEdit(id, thread int) *models.Update {
+	return ownService(id, thread, func(m *models.Message) { m.ForumTopicEdited = &models.ForumTopicEdited{IconCustomEmojiID: "x"} })
+}
+
+// TestInboundNoticeKept: with the option on Keep the bot's own notices are
+// left in place, and a notice already waiting keeps the delay it arrived
+// under.
+func TestInboundNoticeDelayLive(t *testing.T) {
+	h := newHarnessWith(t, telegram.Config{NoticeDelay: 200 * time.Millisecond})
+	deleted := make(chan int, 8)
+	h.api.on("deleteMessage", func(f url.Values) apiReply {
+		id, _ := strconv.Atoi(f.Get("message_id"))
+		deleted <- id
+		return okReply(true)
+	})
+	ctx := context.Background()
+
+	h.gw.SetNoticeDelay(0, false)
+	h.bot.ProcessUpdate(ctx, iconEdit(51, 42))
+	expectNoEvent(t, h.gw.Events())
+	select {
+	case id := <-deleted:
+		t.Fatalf("kept notice %d deleted", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if !strings.Contains(h.buf.String(), "service message kept") || !strings.Contains(h.buf.String(), `msg="telegram notice delay set" keep=true`) {
+		t.Fatalf("keep not logged: %s", h.buf.String())
+	}
+
+	h.gw.SetNoticeDelay(50*time.Millisecond, true)
+	start := time.Now()
+	h.bot.ProcessUpdate(ctx, iconEdit(52, 42))
+	select {
+	case id := <-deleted:
+		if id != 52 || time.Since(start) < 50*time.Millisecond {
+			t.Fatalf("deleted %d after %v", id, time.Since(start))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notice 52 never deleted")
+	}
+	if !strings.Contains(h.buf.String(), `msg="telegram notice delay set" delay_ms=50`) {
+		t.Fatalf("delay not logged: %s", h.buf.String())
+	}
+
+	// A notice scheduled under 200 ms is still deleted after Keep is set.
+	h.gw.SetNoticeDelay(200*time.Millisecond, true)
+	h.bot.ProcessUpdate(ctx, iconEdit(53, 42))
+	h.gw.SetNoticeDelay(0, false)
+	select {
+	case id := <-deleted:
+		if id != 53 {
+			t.Fatalf("deleted %d, want 53", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notice 53 scheduled before Keep was never deleted")
+	}
+}
+
+func generalFrom(fromID int64, text string) *models.Update {
+	return topicMessage(testChatID, fromID, 0, text)
+}
+
+// TestInboundObserverAccess: an observer's slash commands in General reach
+// the application with RoleObserver; everything else from an observer is
+// dropped with reason=observer.
+func TestInboundObserverAccess(t *testing.T) {
+	h := newHarnessWith(t, telegram.Config{Observers: []int64{testObserver}})
+	ctx := context.Background()
+	if !h.buf.contains("operators=1 observers=1", time.Second) {
+		t.Fatalf("counts not logged at start: %s", h.buf.String())
+	}
+
+	h.bot.ProcessUpdate(ctx, topicMessage(testChatID, testObserver, 5, "run it"))
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "reason=observer") {
+		t.Fatalf("observer topic text not dropped: %s", h.buf.String())
+	}
+	if strings.Contains(h.buf.String(), "stranger") {
+		t.Fatalf("observer reported as a stranger: %s", h.buf.String())
+	}
+
+	for _, text := range []string{"/status", "/options"} {
+		h.bot.ProcessUpdate(ctx, generalFrom(testObserver, text))
+		got, ok := expectEvent(t, h.gw.Events()).(domain.GeneralCommand)
+		if !ok || got.Role != domain.RoleObserver || got.FromID != testObserver || got.Text != text {
+			t.Fatalf("%s: event = %#v", text, got)
+		}
+	}
+	h.bot.ProcessUpdate(ctx, generalFrom(testOperator, "/status"))
+	if got, ok := expectEvent(t, h.gw.Events()).(domain.GeneralCommand); !ok || got.Role != domain.RoleOperator {
+		t.Fatalf("operator event = %#v", got)
+	}
+
+	h.bot.ProcessUpdate(ctx, generalFrom(testObserver, "hello"))
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "reason=general_topic") {
+		t.Fatalf("observer plain text not dropped: %s", h.buf.String())
+	}
+
+	h.bot.ProcessUpdate(ctx, callbackUpdate(testChatID, testObserver, 7, 1000, "2"))
+	expectNoEvent(t, h.gw.Events())
+	calls := h.api.callsOf("answerCallbackQuery")
+	if len(calls) != 1 || calls[0].form.Get("text") != "not allowed" {
+		t.Fatalf("answerCallbackQuery calls = %+v", calls)
+	}
+	if !h.buf.contains("callback refused", time.Second) {
+		t.Fatalf("refusal not logged: %s", h.buf.String())
+	}
+}
+
+// TestInboundStrangerSeen: a stranger's messages are dropped and reported
+// once per window with their name, username and thread; making them an
+// observer through SetAccess changes the next verdict.
+func TestInboundStrangerSeen(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	const stranger int64 = 777
+
+	u := topicMessage(testChatID, stranger, 9, "let me in")
+	u.Message.From = &models.User{ID: stranger, FirstName: "Ann", LastName: "Lee", Username: "annlee"}
+	before := time.Now()
+	h.bot.ProcessUpdate(ctx, u)
+	ev, ok := expectEvent(t, h.gw.Events()).(domain.StrangerSeen)
+	if !ok || ev.FromID != stranger || ev.Name != "Ann Lee" || ev.Username != "annlee" || ev.ThreadID != 9 || ev.At.Before(before) {
+		t.Fatalf("event = %#v", ev)
+	}
+	if !strings.Contains(h.buf.String(), "reason=not_operator") || !strings.Contains(h.buf.String(), `msg="telegram stranger seen" from_id=777 thread_id=9 first=true`) {
+		t.Fatalf("stranger not logged: %s", h.buf.String())
+	}
+
+	// Within the window the second message is dropped without an event.
+	h.bot.ProcessUpdate(ctx, generalFrom(stranger, "/status"))
+	expectNoEvent(t, h.gw.Events())
+	if !strings.Contains(h.buf.String(), "first=false") {
+		t.Fatalf("repeat not logged: %s", h.buf.String())
+	}
+
+	// A stranger's button press is refused and counts as seen as well.
+	h.bot.ProcessUpdate(ctx, callbackUpdate(testChatID, 778, 7, 1000, "2"))
+	if ev, ok := expectEvent(t, h.gw.Events()).(domain.StrangerSeen); !ok || ev.FromID != 778 || ev.ThreadID != 7 {
+		t.Fatalf("callback stranger event = %#v", ev)
+	}
+
+	// A sender without a From (channel post) is dropped and never reported.
+	h.bot.ProcessUpdate(ctx, topicMessage(testChatID, 0, 9, "anon"))
+	expectNoEvent(t, h.gw.Events())
+
+	h.gw.SetAccess([]int64{testOperator}, []int64{stranger})
+	if !strings.Contains(h.buf.String(), `msg="telegram access set" operators=1 observers=1`) {
+		t.Fatalf("access not logged: %s", h.buf.String())
+	}
+	h.bot.ProcessUpdate(ctx, generalFrom(stranger, "/status"))
+	if got, ok := expectEvent(t, h.gw.Events()).(domain.GeneralCommand); !ok || got.Role != domain.RoleObserver {
+		t.Fatalf("event after SetAccess = %#v", got)
 	}
 }

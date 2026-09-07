@@ -39,6 +39,9 @@ const (
 	NoticeDelay = 20 * time.Second
 	// noticeKeep is the noticeDelay value meaning "never delete".
 	noticeKeep = -1
+	// strangerEvery bounds how often one unknown sender is reported to
+	// the application; every one of their updates is still dropped.
+	strangerEvery = 10 * time.Minute
 )
 
 // Config selects the forum group and who may talk to the bot in it.
@@ -115,6 +118,11 @@ type Gateway struct {
 	// deleteWarned is set after the first failed service-message deletion
 	// so a missing right is reported once, not per edit.
 	deleteWarned atomic.Bool
+	// lastStranger remembers when each unknown sender was last reported
+	// (StrangerSeen), so a chatty stranger yields one event per
+	// strangerEvery.
+	strangerMu   sync.Mutex
+	lastStranger map[int64]time.Time
 }
 
 var _ domain.TelegramGateway = (*Gateway)(nil)
@@ -126,17 +134,18 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 		log = slog.New(slog.DiscardHandler)
 	}
 	g := &Gateway{
-		api:         api,
-		chatID:      cfg.ChatID,
-		botID:       cfg.BotID,
-		icons:       cfg.Icons,
-		statusIcons: domain.DefaultStatusIcons(),
-		iconWarned:  map[string]bool{},
-		queue:       queue,
-		events:      make(chan domain.Event, eventBuffer),
-		stopped:     make(chan struct{}),
-		log:         log,
-		http:        &http.Client{Timeout: downloadTimeout},
+		api:          api,
+		chatID:       cfg.ChatID,
+		botID:        cfg.BotID,
+		icons:        cfg.Icons,
+		statusIcons:  domain.DefaultStatusIcons(),
+		iconWarned:   map[string]bool{},
+		queue:        queue,
+		events:       make(chan domain.Event, eventBuffer),
+		stopped:      make(chan struct{}),
+		log:          log,
+		http:         &http.Client{Timeout: downloadTimeout},
+		lastStranger: map[int64]time.Time{},
 	}
 	g.access.Store(newAccess(cfg.Operators, cfg.Observers))
 	g.noticeDelay.Store(int64(cfg.NoticeDelay))

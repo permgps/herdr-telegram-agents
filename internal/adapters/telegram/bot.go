@@ -111,8 +111,8 @@ func Poll(ctx context.Context, b *bot.Bot, log *slog.Logger) {
 
 // botCommands is the menu Telegram shows for "/" in the configured chat.
 // Descriptions are one line each; the commands work in topics and, for
-// status, options and help, in General (options, new, away and here only
-// there).
+// status, options and help, in General (options, new, observers, away and
+// here only there).
 var botCommands = []models.BotCommand{
 	{Command: "screen", Description: "Show the agent screen (N: last N lines, all: output since your last message)"},
 	{Command: "keys", Description: "Send raw keys to the agent, e.g. /keys esc"},
@@ -126,6 +126,7 @@ var botCommands = []models.BotCommand{
 	{Command: "model", Description: "Claude Code /model [name]: show the picker or set the model"},
 	{Command: "close", Description: "Close the agent's pane (asks Yes/No)"},
 	{Command: "new", Description: "Start an agent: /new <workspace> [kind] (General)"},
+	{Command: "observers", Description: "List or change observers: /observers [add|remove <id>] (General)"},
 	{Command: "status", Description: "Agent status here, all agents in General"},
 	{Command: "away", Description: "Treat me as away (General): /away or /away 2h"},
 	{Command: "here", Description: "Back to automatic presence (General)"},
