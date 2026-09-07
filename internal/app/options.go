@@ -82,6 +82,14 @@ func (o *Options) QuietPosts() domain.PostsMode { return o.Get().QuietPosts() }
 // PostsDone is what the topic receives when an agent turns done.
 func (o *Options) PostsDone() domain.DoneMode { return o.Get().PostsDone() }
 
+// PostsChrome reports whether Claude Code's input frame is cut from
+// screen posts.
+func (o *Options) PostsChrome() bool { return o.Get().PostsChrome() }
+
+// NoticeDelay is how long the bot's own topic notices stay, and whether
+// they are deleted at all.
+func (o *Options) NoticeDelay() (time.Duration, bool) { return o.Get().NoticeDelay() }
+
 // QuietReannounce reports whether leaving re-posts still-blocked agents.
 func (o *Options) QuietReannounce() bool { return o.Get().QuietReannounce() }
 

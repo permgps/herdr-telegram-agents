@@ -85,7 +85,7 @@ func (g *Gateway) matchOurTopic(u *models.Update) bool {
 		return false
 	case isGeneral(m):
 		return false
-	case !g.operators[senderID(m)]:
+	case !g.access.Load().operators[senderID(m)]:
 		g.drop("not_operator", m.Chat.ID, senderID(m))
 		return false
 	}
@@ -101,7 +101,7 @@ func (g *Gateway) matchGeneral(u *models.Update) bool {
 		return false
 	}
 	switch {
-	case !g.operators[senderID(m)]:
+	case !g.access.Load().operators[senderID(m)]:
 		g.drop("not_operator", m.Chat.ID, senderID(m))
 	case !strings.HasPrefix(m.Text, "/"):
 		g.drop("general_topic", m.Chat.ID, senderID(m))
@@ -206,7 +206,7 @@ func attachmentOf(m *models.Message) *domain.TopicAttachment {
 func (g *Gateway) onCallback(ctx context.Context, _ *bot.Bot, u *models.Update) {
 	q := u.CallbackQuery
 	m := callbackMessage(q)
-	if !g.operators[q.From.ID] {
+	if !g.access.Load().operators[q.From.ID] {
 		g.drop("not_operator", m.Chat.ID, q.From.ID)
 		if _, err := g.api.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "not allowed"}); err != nil {
 			g.log.Debug("callback refusal not delivered", slog.Int64("from_id", q.From.ID), slog.Any("err", translate(err)))
@@ -247,10 +247,10 @@ func (g *Gateway) onOwnService(ctx context.Context, _ *bot.Bot, u *models.Update
 // level with the right named and afterwards at debug only.
 func (g *Gateway) deleteServiceMessage(ctx context.Context, threadID, messageID int) {
 	attrs := []any{slog.Int("thread_id", threadID), slog.Int("message_id", messageID)}
-	if g.noticeDelay > 0 {
-		g.log.Debug("service message delete scheduled", append(attrs, slog.Int64("delay_ms", g.noticeDelay.Milliseconds()))...)
+	if delay := time.Duration(g.noticeDelay.Load()); delay > 0 {
+		g.log.Debug("service message delete scheduled", append(attrs, slog.Int64("delay_ms", delay.Milliseconds()))...)
 		select {
-		case <-time.After(g.noticeDelay):
+		case <-time.After(delay):
 		case <-ctx.Done():
 			g.log.Debug("service message not deleted, context done", attrs...)
 			return

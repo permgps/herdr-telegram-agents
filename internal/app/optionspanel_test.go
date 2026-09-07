@@ -286,10 +286,10 @@ func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
 	}
 
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupTopics)))
-	if got := texts(f.tg.Buttons(900)); got[0] != "30 days Delete closed topics after" || len(got) != 4 {
+	if got := texts(f.tg.Buttons(900)); got[0] != "30 days Delete closed topics after" || got[1] != "20 s Keep icon notices for" || len(got) != 5 {
 		t.Fatalf("topics buttons = %v", got)
 	}
-	if text := f.tg.Text(900); !strings.Contains(text, "Current: 30 days") {
+	if text := f.tg.Text(900); !strings.Contains(text, "Current: 30 days") || !strings.Contains(text, "<b>Keep icon notices for</b>: How long the &#34;changed the topic icon&#34; notice stays") || !strings.Contains(text, "Current: 20 s") {
 		t.Fatalf("topics text = %s", text)
 	}
 	pressPanel(f, t, 900, dataGrid(domain.OptionDeleteAfterDays, 0))
@@ -379,7 +379,7 @@ func TestPanelPostsGroup(t *testing.T) {
 		hooked = append(hooked, key+"="+cur.String(key))
 	})
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
-	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ Trim the input frame|☑ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("posts buttons = %v", got)
 	}
 	if text := f.tg.Text(900); !strings.Contains(text, "<b>Questions in the bot&#39;s chat</b>: On: a question from an agent is posted into its topic without a sound") {
@@ -390,7 +390,7 @@ func TestPanelPostsGroup(t *testing.T) {
 	if f.opts.PagerEnabled() || f.options.Saved() != 1 || len(hooked) != 1 || hooked[0] != "posts.pager=false" {
 		t.Fatalf("pager toggle: enabled=%v saves=%d hooks=%v", f.opts.PagerEnabled(), f.options.Saved(), hooked)
 	}
-	if got := texts(f.tg.Buttons(900)); got[2] != "☐ Questions in the bot's chat" {
+	if got := texts(f.tg.Buttons(900)); got[3] != "☐ Questions in the bot's chat" {
 		t.Fatalf("buttons after pager toggle = %v", got)
 	}
 	pressPanel(f, t, 900, dataToggle(domain.OptionPostsPager))

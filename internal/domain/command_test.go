@@ -87,6 +87,17 @@ func TestParseCommand(t *testing.T) {
 		{"git with bot suffix", "/git@herdr_bot status", "herdr_bot", domain.Command{Kind: domain.CmdGit, Git: domain.GitSpec{Sub: "status", Args: []string{"status", "--short", "--branch"}}}},
 		{"new with suffix", "/new@herdr_bot Work", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "Work", AgentKind: "claude"}},
 		{"new collapses inner spacing", "/new  Big   Site  ", "herdr_bot", domain.Command{Kind: domain.CmdNew, Workspace: "Big Site", AgentKind: "claude"}},
+		{"observers list", "/observers", "herdr_bot", domain.Command{Kind: domain.CmdObservers}},
+		{"observers add", "/observers add 42", "herdr_bot", domain.Command{Kind: domain.CmdObservers, Observers: domain.ObserversSpec{Action: domain.ObserverAdd, ID: 42}}},
+		{"observers remove", "/observers remove 42", "herdr_bot", domain.Command{Kind: domain.CmdObservers, Observers: domain.ObserversSpec{Action: domain.ObserverRemove, ID: 42}}},
+		{"observers add upper case", "/Observers ADD 42", "herdr_bot", domain.Command{Kind: domain.CmdObservers, Observers: domain.ObserversSpec{Action: domain.ObserverAdd, ID: 42}}},
+		{"observers with bot suffix", "/observers@herdr_bot add 42", "herdr_bot", domain.Command{Kind: domain.CmdObservers, Observers: domain.ObserversSpec{Action: domain.ObserverAdd, ID: 42}}},
+		{"observers add garbage id", "/observers add x", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/observers add x"}},
+		{"observers add zero", "/observers add 0", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/observers add 0"}},
+		{"observers add negative", "/observers add -3", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/observers add -3"}},
+		{"observers add without id", "/observers add", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/observers add"}},
+		{"observers unknown action", "/observers kick 42", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/observers kick 42"}},
+		{"observers three args", "/observers add 42 now", "herdr_bot", domain.Command{Kind: domain.CmdUnknown, Text: "/observers add 42 now"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

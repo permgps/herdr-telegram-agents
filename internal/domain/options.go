@@ -61,6 +61,13 @@ const (
 	// OptionDeleteAfterDays is how long a closed topic of an exited agent
 	// stays before the sweep deletes it; "0" keeps every topic.
 	OptionDeleteAfterDays = "topics.delete_after_days"
+	// OptionNoticeDelay is how many seconds the bot's own topic notices
+	// (icon and name edits, close, reopen, the dashboard pin) stay before
+	// the daemon deletes them; "0" keeps every notice in place.
+	OptionNoticeDelay = "topics.notice_delay"
+	// ChoiceSourceNotice is the static list of notice delays offered by
+	// the panel for OptionNoticeDelay (see NoticeChoices).
+	ChoiceSourceNotice = "notice"
 	// OptionQuietEnabled is the master switch of quiet mode: while the
 	// operator is at the desk, topic writes wait and posts are silent.
 	OptionQuietEnabled = "quiet.enabled"
@@ -90,6 +97,9 @@ const (
 	// OptionPostsDone says what a topic receives when its agent finishes:
 	// a DoneMode value.
 	OptionPostsDone = "posts.done"
+	// OptionPostsChrome cuts Claude Code's input frame (the box, the
+	// status line and the mode hint) from the bottom of every screen post.
+	OptionPostsChrome = "posts.chrome"
 	// ChoiceSourceDone is the static list of DoneMode values.
 	ChoiceSourceDone = "done"
 	// OptionPostsReactions puts 👀 on the operator's prompt once the agent
@@ -248,6 +258,14 @@ func buildOptionSpecs() []OptionSpec {
 			Choices:     ChoiceSourceDone,
 		},
 		{
+			Key:         OptionPostsChrome,
+			Group:       GroupPosts,
+			Title:       "Trim the input frame",
+			Description: "Cut Claude Code's input box, status line and mode hint from the bottom of every screen post so it ends on the agent's last line. A question's options are never cut. Off posts the screen as captured.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
 			Key:         OptionPostsReactions,
 			Group:       GroupPosts,
 			Title:       "React to prompts",
@@ -350,6 +368,16 @@ func buildOptionSpecs() []OptionSpec {
 			Choices:     ChoiceSourceDays,
 			Validate:    validateDays,
 		},
+		OptionSpec{
+			Key:         OptionNoticeDelay,
+			Group:       GroupTopics,
+			Title:       "Keep icon notices for",
+			Description: "How long the \"changed the topic icon\" notice stays before the daemon deletes it. Clients learn the new icon from that notice; a client that was asleep when it was deleted keeps drawing the old icon until it next opens the topic. Keep leaves every notice in place.",
+			Kind:        KindChoice,
+			Default:     "20",
+			Choices:     ChoiceSourceNotice,
+			Validate:    validateSeconds,
+		},
 	)
 	return specs
 }
@@ -401,6 +429,15 @@ const maxSeconds = 3600
 // 30, 60 and 120 seconds.
 func SecondsChoices() []string { return append([]string(nil), secondsChoices...) }
 
+// noticeChoices is the list the panel offers for OptionNoticeDelay: Keep
+// and five delays. 10 s (the fixed delay before the option existed) left
+// Telegram Desktop on the old icon on 2026-09-06, so the default is 20.
+var noticeChoices = []string{"0", "10", "20", "30", "60", "120"}
+
+// NoticeChoices returns the notice delays the panel offers: Keep, 10, 20,
+// 30, 60 and 120 seconds.
+func NoticeChoices() []string { return append([]string(nil), noticeChoices...) }
+
 // megabytesChoices is the list the panel offers for OptionInboxMaxMB.
 var megabytesChoices = []string{"5", "10", "20"}
 
@@ -427,6 +464,8 @@ func StaticChoices(name string) ([]string, bool) {
 		return DoneChoices(), true
 	case ChoiceSourceSeconds:
 		return SecondsChoices(), true
+	case ChoiceSourceNotice:
+		return NoticeChoices(), true
 	}
 	return nil, false
 }
@@ -465,10 +504,21 @@ func validateSeconds(value string) error {
 
 // ChoiceLabel is the human form of a choice value in panel text: days
 // become "Off", "1 day" or "30 days", minutes "1 min" or "3 min", seconds
-// "Off" or "30 s", megabytes "20 MB", posts modes "Silent", "Held",
-// "Normal"; other sources show the value itself.
+// "Off" or "30 s", notice delays "Keep" or "20 s", megabytes "20 MB",
+// posts modes "Silent", "Held", "Normal"; other sources show the value
+// itself.
 func ChoiceLabel(spec OptionSpec, value string) string {
 	switch spec.Choices {
+	case ChoiceSourceNotice:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Keep"
+		default:
+			return fmt.Sprintf("%d s", n)
+		}
 	case ChoiceSourceMegabytes:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
@@ -512,9 +562,20 @@ func ChoiceLabel(spec OptionSpec, value string) string {
 }
 
 // ChoiceButton is the short form of a choice value on a button: "Off",
-// "7d", "3m", "30s", "20MB", "Silent"; other sources show the value itself.
+// "7d", "3m", "30s", "Keep", "20MB", "Silent"; other sources show the
+// value itself.
 func ChoiceButton(spec OptionSpec, value string) string {
 	switch spec.Choices {
+	case ChoiceSourceNotice:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Keep"
+		default:
+			return fmt.Sprintf("%ds", n)
+		}
 	case ChoiceSourceMegabytes:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
@@ -796,6 +857,26 @@ func (o Options) BlockedDelay() time.Duration { return o.seconds(OptionPostsBloc
 // MinTurn is the shortest turn whose done screen is posted; zero posts
 // every done screen (also for an unparsable value).
 func (o Options) MinTurn() time.Duration { return o.seconds(OptionPostsMinSeconds) }
+
+// PostsChrome reports whether Claude Code's input frame is cut from the
+// bottom of screen posts.
+func (o Options) PostsChrome() bool { return o.Bool(OptionPostsChrome) }
+
+// NoticeDelay is how long the bot's own topic notices stay before they
+// are deleted, and whether they are deleted at all: "0" answers (0,
+// false), meaning every notice is kept; N answers (N s, true). Garbage
+// and negative values fall back to the default.
+func (o Options) NoticeDelay() (delay time.Duration, del bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionNoticeDelay)))
+	if err != nil || n < 0 {
+		spec, _ := LookupOption(OptionNoticeDelay)
+		n, _ = strconv.Atoi(spec.Default)
+	}
+	if n == 0 {
+		return 0, false
+	}
+	return time.Duration(n) * time.Second, true
+}
 
 // seconds reads a second-count option; zero for garbage or a value ≤ 0.
 func (o Options) seconds(key string) time.Duration {

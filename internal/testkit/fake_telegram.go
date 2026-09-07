@@ -29,6 +29,8 @@ import (
 //	probe:<user>
 //	pin:<message>            unpin:<message>          deletemsg:<message>
 //	rights
+//	noticedelay:<seconds>    noticedelay:keep
+//	access:<operators>/<observers>   (counts)
 //
 // Thread 0 in Send stands for the General topic and is always accepted.
 // Send and SendDirect hand out message ids from 1000 upwards; EditButtons
@@ -49,6 +51,8 @@ type FakeTelegram struct {
 	buttons   map[int][]domain.Button
 	texts     map[int]string
 	icons     domain.StatusIcons
+	operators []int64
+	observers []int64
 	pack      []string
 	docs      []domain.Document
 	files     map[string][]byte
@@ -158,6 +162,13 @@ func (f *FakeTelegram) Icons() domain.StatusIcons {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.icons
+}
+
+// Access returns the lists given to the last SetAccess (copies).
+func (f *FakeTelegram) Access() (operators, observers []int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.operators...), append([]int64(nil), f.observers...)
 }
 
 // SetIconPack replaces what IconPack answers; nil means "pack unknown".
@@ -438,6 +449,27 @@ func (f *FakeTelegram) SetStatusIcons(icons domain.StatusIcons) {
 	defer f.mu.Unlock()
 	f.icons = icons
 	f.log.Debug("fake telegram icons", slog.String("working", icons.Working))
+}
+
+func (f *FakeTelegram) SetNoticeDelay(delay time.Duration, del bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !del {
+		f.calls = append(f.calls, "noticedelay:keep")
+		f.log.Debug("fake telegram notice delay", slog.Bool("keep", true))
+		return
+	}
+	f.calls = append(f.calls, fmt.Sprintf("noticedelay:%d", int(delay/time.Second)))
+	f.log.Debug("fake telegram notice delay", slog.Int64("seconds", int64(delay/time.Second)))
+}
+
+func (f *FakeTelegram) SetAccess(operators, observers []int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.operators = append([]int64(nil), operators...)
+	f.observers = append([]int64(nil), observers...)
+	f.calls = append(f.calls, fmt.Sprintf("access:%d/%d", len(operators), len(observers)))
+	f.log.Debug("fake telegram access", slog.Int("operators", len(operators)), slog.Int("observers", len(observers)))
 }
 
 func (f *FakeTelegram) IconPack() []string {

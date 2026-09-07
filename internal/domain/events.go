@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // Event is a marker for everything that flows through the gateways' event
 // channels. The unexported method keeps the set closed to this package.
 type Event interface {
@@ -98,12 +100,28 @@ type ButtonPressed struct {
 	Data       string
 }
 
-// GeneralCommand is a slash command an operator wrote in the General topic.
-// Only text starting with "/" reaches the application from General.
+// GeneralCommand is a slash command an operator or an observer wrote in
+// the General topic. Only text starting with "/" reaches the application
+// from General; Role says who wrote it, so the application decides which
+// commands an observer may use.
 type GeneralCommand struct {
 	MessageID int
 	FromID    int64
 	Text      string
+	Role      Role
+}
+
+// StrangerSeen is emitted when someone who is neither an operator nor an
+// observer wrote into the group or pressed a button; the adapter emits it
+// at most once per sender within its window. ThreadID is the topic the
+// message was in, 0 for General; Name is the sender's first and last name,
+// Username the handle without "@" (empty when the account has none).
+type StrangerSeen struct {
+	FromID   int64
+	Name     string
+	Username string
+	ThreadID int
+	At       time.Time
 }
 
 // TopicRenamed is emitted when someone renames a topic in Telegram.
@@ -136,3 +154,4 @@ func (TopicRenamed) isEvent()    {}
 func (TopicClosed) isEvent()     {}
 func (TopicReopened) isEvent()   {}
 func (RightsChanged) isEvent()   {}
+func (StrangerSeen) isEvent()    {}

@@ -31,7 +31,13 @@ func TestFakeTelegramRecordsAndFails(t *testing.T) {
 	if err := tg.CloseTopic(ctx, topic.ThreadID); err != nil {
 		t.Fatalf("second CloseTopic = %v", err)
 	}
-	want := []string{"create:⚙️ a:working", "edit:101:name=💤 a", "close:101", "close:101"}
+	tg.SetNoticeDelay(20*time.Second, true)
+	tg.SetNoticeDelay(0, false)
+	tg.SetAccess([]int64{7}, []int64{8, 9})
+	if ops, obs := tg.Access(); len(ops) != 1 || ops[0] != 7 || len(obs) != 2 || obs[1] != 9 {
+		t.Fatalf("Access = %v, %v", ops, obs)
+	}
+	want := []string{"create:⚙️ a:working", "edit:101:name=💤 a", "close:101", "close:101", "noticedelay:20", "noticedelay:keep", "access:1/2"}
 	got := tg.Calls()
 	if len(got) != len(want) {
 		t.Fatalf("Calls = %v, want %v", got, want)

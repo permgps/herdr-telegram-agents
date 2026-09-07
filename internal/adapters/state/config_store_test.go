@@ -24,6 +24,7 @@ func sampleConfig() domain.Config {
 		ChatID:       -1001,
 		ChatTitle:    "Agents",
 		OperatorIDs:  []int64{7, 8},
+		ObserverIDs:  []int64{9},
 		LogLevel:     "debug",
 		ConfiguredAt: time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC),
 	}
@@ -45,12 +46,12 @@ func TestConfigStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BotToken != want.BotToken || got.ChatID != want.ChatID || len(got.OperatorIDs) != 2 ||
+	if got.BotToken != want.BotToken || got.ChatID != want.ChatID || len(got.OperatorIDs) != 2 || len(got.ObserverIDs) != 1 || got.ObserverIDs[0] != 9 ||
 		got.ChatTitle != want.ChatTitle || got.LogLevel != want.LogLevel || !got.ConfiguredAt.Equal(want.ConfiguredAt) {
 		t.Fatalf("round trip: got %+v", got)
 	}
 	raw, _ := os.ReadFile(s.Path())
-	for _, key := range []string{`"bot_token"`, `"chat_id"`, `"operator_ids"`, `"configured_at"`} {
+	for _, key := range []string{`"bot_token"`, `"chat_id"`, `"operator_ids"`, `"observer_ids"`, `"configured_at"`} {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("file lacks %s:\n%s", key, raw)
 		}
@@ -120,5 +121,30 @@ func TestConfigStoreCreatesDir(t *testing.T) {
 	}
 	if _, err := os.Stat(s.Path()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConfigStoreObserversOptional(t *testing.T) {
+	s := state.NewConfigStore(t.TempDir(), nil)
+	ctx := context.Background()
+	// A file written before observers existed loads with none.
+	old := `{"version":1,"bot_token":"1:t","chat_id":-1001,"operator_ids":[7]}`
+	if err := os.WriteFile(s.Path(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ObserverIDs != nil {
+		t.Fatalf("observers = %v, want nil", got.ObserverIDs)
+	}
+	// Saving without observers leaves the key out of the file.
+	if err := s.Save(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(s.Path())
+	if strings.Contains(string(raw), "observer_ids") {
+		t.Fatalf("empty observers written:\n%s", raw)
 	}
 }

@@ -26,6 +26,7 @@ type configFile struct {
 	ChatID       int64     `json:"chat_id"`
 	ChatTitle    string    `json:"chat_title,omitempty"`
 	OperatorIDs  []int64   `json:"operator_ids"`
+	ObserverIDs  []int64   `json:"observer_ids,omitempty"`
 	LogLevel     string    `json:"log_level,omitempty"`
 	ConfiguredAt time.Time `json:"configured_at"`
 }
@@ -72,6 +73,7 @@ func (s *ConfigStore) Load(context.Context) (domain.Config, error) {
 		ChatID:       f.ChatID,
 		ChatTitle:    f.ChatTitle,
 		OperatorIDs:  f.OperatorIDs,
+		ObserverIDs:  f.ObserverIDs,
 		LogLevel:     f.LogLevel,
 		ConfiguredAt: f.ConfiguredAt,
 	}
@@ -79,7 +81,7 @@ func (s *ConfigStore) Load(context.Context) (domain.Config, error) {
 		return domain.Config{}, fmt.Errorf("config %s: %w", s.path, err)
 	}
 	s.log.Debug("config loaded",
-		slog.String("path", s.path), slog.Int64("chat_id", cfg.ChatID), slog.Int("operators", len(cfg.OperatorIDs)))
+		slog.String("path", s.path), slog.Int64("chat_id", cfg.ChatID), slog.Int("operators", len(cfg.OperatorIDs)), slog.Int("observers", len(cfg.ObserverIDs)))
 	return cfg, nil
 }
 
@@ -95,6 +97,7 @@ func (s *ConfigStore) Save(_ context.Context, cfg domain.Config) error {
 		ChatID:       cfg.ChatID,
 		ChatTitle:    cfg.ChatTitle,
 		OperatorIDs:  cfg.OperatorIDs,
+		ObserverIDs:  cfg.ObserverIDs,
 		LogLevel:     cfg.LogLevel,
 		ConfiguredAt: cfg.ConfiguredAt,
 	}
@@ -105,7 +108,7 @@ func (s *ConfigStore) Save(_ context.Context, cfg domain.Config) error {
 	if err := writeAtomic(s.path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	s.log.Debug("config saved", slog.String("path", s.path), slog.Int64("chat_id", cfg.ChatID))
+	s.log.Debug("config saved", slog.String("path", s.path), slog.Int64("chat_id", cfg.ChatID), slog.Int("observers", len(cfg.ObserverIDs)))
 	return nil
 }
 

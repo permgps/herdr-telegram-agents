@@ -196,6 +196,16 @@ type TelegramGateway interface {
 	// safe to call from any goroutine. The default table is in force until
 	// the first call.
 	SetStatusIcons(icons StatusIcons)
+	// SetNoticeDelay says what happens to the bot's own topic notices
+	// (icon and name edits, close, reopen, the dashboard pin) that arrive
+	// after the call: deleted after delay when del is true, kept when it
+	// is false. Notices already waiting keep their delay. Safe to call
+	// from any goroutine.
+	SetNoticeDelay(delay time.Duration, del bool)
+	// SetAccess replaces the allow-lists for updates that arrive after the
+	// call: operators drive the agents, observers may only read and use
+	// /status and /help in General. Safe to call from any goroutine.
+	SetAccess(operators, observers []int64)
 	// IconPack lists the emoji of the free topic-icon pack in Telegram's
 	// order, cached at connect; nil when the pack is unknown.
 	IconPack() []string

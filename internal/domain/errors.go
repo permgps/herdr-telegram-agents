@@ -70,6 +70,10 @@ var (
 	ErrNotRepository = errors.New("not a git repository")
 	// ErrGitMissing means no git binary was found on PATH.
 	ErrGitMissing = errors.New("git is not installed")
+	// ErrInvalidObserver means an observer id cannot be added or removed:
+	// not a positive number, an operator, already an observer, or not an
+	// observer on removal. Wrapped with the reason.
+	ErrInvalidObserver = errors.New("invalid observer")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

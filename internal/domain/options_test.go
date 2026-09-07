@@ -133,6 +133,7 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 		choices string
 	}{
 		{OptionPostsDone, KindChoice, "screen", ChoiceSourceDone},
+		{OptionPostsChrome, KindBool, "true", ""},
 		{OptionPostsReactions, KindBool, "true", ""},
 		{OptionPostsPager, KindBool, "true", ""},
 		{OptionPostsBlockedDelay, KindChoice, "0", ChoiceSourceSeconds},
@@ -147,7 +148,7 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 			t.Errorf("posts option %d = %+v, want %+v", i, got, w)
 		}
 	}
-	if posts[3].Validate == nil || posts[4].Validate == nil {
+	if posts[4].Validate == nil || posts[5].Validate == nil {
 		t.Error("seconds options must carry validateSeconds")
 	}
 	inbox := OptionsInGroup(GroupInbox)
@@ -198,7 +199,8 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 	if got := OptionsInGroup(GroupPrivacy); len(got) != 1 || got[0].Key != OptionRedact || got[0].Kind != KindBool || got[0].Default != "true" {
 		t.Errorf("privacy options = %+v", got)
 	}
-	if got := OptionsInGroup(GroupTopics); len(got) != 1 || got[0].Key != OptionDeleteAfterDays || got[0].Kind != KindChoice || got[0].Default != "30" || got[0].Choices != ChoiceSourceDays {
+	if got := OptionsInGroup(GroupTopics); len(got) != 2 || got[0].Key != OptionDeleteAfterDays || got[0].Kind != KindChoice || got[0].Default != "30" || got[0].Choices != ChoiceSourceDays ||
+		got[1].Key != OptionNoticeDelay || got[1].Kind != KindChoice || got[1].Default != "20" || got[1].Choices != ChoiceSourceNotice || got[1].Validate == nil {
 		t.Errorf("topics options = %+v", got)
 	}
 	if got := OptionsInGroup(GroupAppearance); len(got) != 6 || got[0].Key != "icons.working" || got[5].Key != "icons.exited" {
@@ -606,5 +608,63 @@ func TestInboxOptions(t *testing.T) {
 	}
 	if got := ChoiceButton(spec, "5"); got != "5MB" {
 		t.Errorf("ChoiceButton = %q", got)
+	}
+}
+
+func TestNoticeDelayOption(t *testing.T) {
+	o := DefaultOptions()
+	if d, del := o.NoticeDelay(); d != 20*time.Second || !del {
+		t.Errorf("default NoticeDelay = %v, %v; want 20s, true", d, del)
+	}
+	if !o.PostsChrome() {
+		t.Error("the frame cut should default to on")
+	}
+	if off, _ := o.With(OptionPostsChrome, "false"); off.PostsChrome() {
+		t.Error("PostsChrome still on after With")
+	}
+	for value, want := range map[string]struct {
+		delay time.Duration
+		del   bool
+	}{"0": {0, false}, "20": {20 * time.Second, true}, "45": {45 * time.Second, true}, "x": {20 * time.Second, true}, "-5": {20 * time.Second, true}} {
+		next, _ := o.With(OptionNoticeDelay, value)
+		if d, del := next.NoticeDelay(); d != want.delay || del != want.del {
+			t.Errorf("NoticeDelay(%q) = %v, %v; want %v, %v", value, d, del, want.delay, want.del)
+		}
+	}
+	for _, v := range []string{"0", "20", "45", "3600"} {
+		next, _ := o.With(OptionNoticeDelay, v)
+		if err := ValidateOptions(next, nil); err != nil {
+			t.Errorf("ValidateOptions(%q): %v", v, err)
+		}
+	}
+	for _, v := range []string{"x", "", "-1", "3601"} {
+		next, _ := o.With(OptionNoticeDelay, v)
+		if err := ValidateOptions(next, nil); !errors.Is(err, ErrInvalidOption) {
+			t.Errorf("ValidateOptions(%q) = %v, want ErrInvalidOption", v, err)
+		}
+	}
+	spec, _ := LookupOption(OptionNoticeDelay)
+	for _, tc := range []struct{ value, label, button string }{
+		{"0", "Keep", "Keep"},
+		{"20", "20 s", "20s"},
+		{"120", "120 s", "120s"},
+		{"garbage", "garbage", "garbage"},
+	} {
+		if got := ChoiceLabel(spec, tc.value); got != tc.label {
+			t.Errorf("ChoiceLabel(%q) = %q, want %q", tc.value, got, tc.label)
+		}
+		if got := ChoiceButton(spec, tc.value); got != tc.button {
+			t.Errorf("ChoiceButton(%q) = %q, want %q", tc.value, got, tc.button)
+		}
+	}
+	list, ok := StaticChoices(ChoiceSourceNotice)
+	if !ok || strings.Join(list, ",") != "0,10,20,30,60,120" {
+		t.Errorf("StaticChoices(notice) = %v, %v", list, ok)
+	}
+	// A hand-edited value outside the panel's list survives sanitising.
+	dirty, _ := o.With(OptionNoticeDelay, "45")
+	clean, dropped := SanitizeOptions(dirty, nil)
+	if len(dropped) != 0 || clean.String(OptionNoticeDelay) != "45" {
+		t.Errorf("sanitize kept %q, dropped %v", clean.String(OptionNoticeDelay), dropped)
 	}
 }

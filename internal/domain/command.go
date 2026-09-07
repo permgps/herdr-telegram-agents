@@ -51,6 +51,9 @@ const (
 	// CmdGit runs a read-only git command in the agent's working directory
 	// (/git status | diff [staged] | log [N]).
 	CmdGit CommandKind = "git"
+	// CmdObservers lists or changes the observers (General only); Observers
+	// holds the action and the id.
+	CmdObservers CommandKind = "observers"
 	// CmdUnknown is a slash word the plugin does not know; Text holds it.
 	CmdUnknown CommandKind = "unknown"
 )
@@ -260,6 +263,54 @@ type Command struct {
 	// Git is the resolved argv for CmdGit; an empty Sub means the operator
 	// asked for something outside the allow-list and gets GitUsage.
 	Git GitSpec
+	// Observers is the action of CmdObservers.
+	Observers ObserversSpec
+}
+
+// ObserverAction is what /observers does.
+type ObserverAction int
+
+const (
+	// ObserverList prints operators, observers and the strangers seen.
+	ObserverList ObserverAction = iota
+	// ObserverAdd makes ID an observer.
+	ObserverAdd
+	// ObserverRemove takes ID off the observer list.
+	ObserverRemove
+)
+
+// ObserversSpec is the parsed shape of /observers: the action and, for
+// add and remove, the Telegram user id.
+type ObserversSpec struct {
+	Action ObserverAction
+	ID     int64
+}
+
+// ObserversUsage is the reply to an /observers shape the parser rejects.
+const ObserversUsage = "/observers, /observers add <id>, /observers remove <id>"
+
+// parseObservers reads "/observers", "/observers add <id>" and
+// "/observers remove <id>" with a positive integer id; anything else is
+// CmdUnknown with the full line, like parseAway.
+func parseObservers(args []string) Command {
+	if len(args) == 0 {
+		return Command{Kind: CmdObservers}
+	}
+	unknown := Command{Kind: CmdUnknown, Text: "/observers " + strings.Join(args, " ")}
+	if len(args) != 2 {
+		return unknown
+	}
+	id, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil || id <= 0 {
+		return unknown
+	}
+	switch strings.ToLower(args[0]) {
+	case "add":
+		return Command{Kind: CmdObservers, Observers: ObserversSpec{Action: ObserverAdd, ID: id}}
+	case "remove":
+		return Command{Kind: CmdObservers, Observers: ObserversSpec{Action: ObserverRemove, ID: id}}
+	}
+	return unknown
 }
 
 // GitSpec is one allow-listed git invocation: Sub names the subcommand the
@@ -392,6 +443,8 @@ func ParseCommand(text, botUsername string) Command {
 	case "git":
 		spec, _ := ParseGit(args)
 		return Command{Kind: CmdGit, Git: spec}
+	case "observers":
+		return parseObservers(args)
 	}
 	if rule, ok := forwardRuleFor(word, rest != ""); ok {
 		line := "/" + word

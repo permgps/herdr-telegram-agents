@@ -31,34 +31,71 @@ const (
 	// eventBuffer bounds inbound events waiting for the application.
 	eventBuffer = 64
 	// NoticeDelay is how long a topic edit notice made by the bot stays
-	// before it is deleted. Telegram clients learn a topic's new icon or
-	// name from that service message; deleting it at once left phones
-	// showing the old icon, so the notice is kept until connected clients
-	// have applied it.
-	NoticeDelay = 10 * time.Second
+	// before it is deleted until the options apply (SetNoticeDelay).
+	// Telegram clients learn a topic's new icon or name from that service
+	// message; deleting it at once left phones showing the old icon, and
+	// the earlier 10 s left Telegram Desktop on the old icon on
+	// 2026-09-06, so the notice now stays 20 s by default.
+	NoticeDelay = 20 * time.Second
+	// noticeKeep is the noticeDelay value meaning "never delete".
+	noticeKeep = -1
 )
 
 // Config selects the forum group and who may talk to the bot in it.
 type Config struct {
 	ChatID    int64
 	Operators []int64
+	// Observers may read the group and use /status and /help in General;
+	// everything else from them is dropped.
+	Observers []int64
 	Icons     IconSet
 	// BotID is the bot's own user id, needed for the rights check.
 	BotID int64
 	// NoticeDelay defers the deletion of the bot's own topic edit notices;
 	// zero deletes them as soon as they arrive. Production uses the
-	// NoticeDelay constant.
+	// NoticeDelay constant until the options apply through SetNoticeDelay.
 	NoticeDelay time.Duration
+}
+
+// access is the pair of allow-lists in force, swapped as one value by
+// SetAccess so a handler never sees half an update.
+type access struct {
+	operators map[int64]bool
+	observers map[int64]bool
+}
+
+// newAccess builds the lists from the two id slices.
+func newAccess(operators, observers []int64) *access {
+	a := &access{operators: make(map[int64]bool, len(operators)), observers: make(map[int64]bool, len(observers))}
+	for _, id := range operators {
+		a.operators[id] = true
+	}
+	for _, id := range observers {
+		a.observers[id] = true
+	}
+	return a
+}
+
+// role classifies a sender; an id on both lists is an operator.
+func (a *access) role(id int64) domain.Role {
+	switch {
+	case a.operators[id]:
+		return domain.RoleOperator
+	case a.observers[id]:
+		return domain.RoleObserver
+	}
+	return domain.RoleStranger
 }
 
 // Gateway implements domain.TelegramGateway on top of one bot client, a
 // serial call queue and the update handlers registered at construction.
 type Gateway struct {
-	api       *bot.Bot
-	chatID    int64
-	botID     int64
-	operators map[int64]bool
-	icons     IconSet
+	api    *bot.Bot
+	chatID int64
+	botID  int64
+	// access holds the operator and observer lists in force (SetAccess).
+	access atomic.Pointer[access]
+	icons  IconSet
 	// statusIcons is the emoji per status in force (SetStatusIcons);
 	// iconWarned lists emoji already reported as missing from the pack.
 	iconMu      sync.RWMutex
@@ -71,8 +108,10 @@ type Gateway struct {
 	// http fetches file bytes from the file endpoint; downloads bypass
 	// the message queue because they are not Bot API method calls.
 	http *http.Client
-	// noticeDelay is Config.NoticeDelay.
-	noticeDelay time.Duration
+	// noticeDelay is the delay in nanoseconds before the bot's own topic
+	// notices are deleted, or noticeKeep to leave them in place; set from
+	// Config.NoticeDelay and replaced by SetNoticeDelay.
+	noticeDelay atomic.Int64
 	// deleteWarned is set after the first failed service-message deletion
 	// so a missing right is reported once, not per edit.
 	deleteWarned atomic.Bool
@@ -86,15 +125,10 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	ops := make(map[int64]bool, len(cfg.Operators))
-	for _, id := range cfg.Operators {
-		ops[id] = true
-	}
 	g := &Gateway{
 		api:         api,
 		chatID:      cfg.ChatID,
 		botID:       cfg.BotID,
-		operators:   ops,
 		icons:       cfg.Icons,
 		statusIcons: domain.DefaultStatusIcons(),
 		iconWarned:  map[string]bool{},
@@ -103,17 +137,38 @@ func NewGateway(api *bot.Bot, cfg Config, queue *Queue, log *slog.Logger) *Gatew
 		stopped:     make(chan struct{}),
 		log:         log,
 		http:        &http.Client{Timeout: downloadTimeout},
-		noticeDelay: cfg.NoticeDelay,
 	}
+	g.access.Store(newAccess(cfg.Operators, cfg.Observers))
+	g.noticeDelay.Store(int64(cfg.NoticeDelay))
 	g.registerHandlers()
 	return g
+}
+
+// SetNoticeDelay replaces the delay applied to the bot's own topic notices
+// that arrive from now on; del false keeps them in place.
+func (g *Gateway) SetNoticeDelay(delay time.Duration, del bool) {
+	if !del {
+		g.noticeDelay.Store(noticeKeep)
+		g.log.Info("telegram notice delay set", slog.Bool("keep", true))
+		return
+	}
+	g.noticeDelay.Store(int64(delay))
+	g.log.Info("telegram notice delay set", slog.Int64("delay_ms", delay.Milliseconds()))
+}
+
+// SetAccess replaces the operator and observer lists for updates that
+// arrive from now on.
+func (g *Gateway) SetAccess(operators, observers []int64) {
+	g.access.Store(newAccess(operators, observers))
+	g.log.Info("telegram access set", slog.Int("operators", len(operators)), slog.Int("observers", len(observers)))
 }
 
 // Run serves the outbound call queue until ctx is done. Inbound handlers
 // stop emitting once it returns; the events channel is never closed because
 // the poller may still be delivering updates.
 func (g *Gateway) Run(ctx context.Context) {
-	g.log.Info("telegram gateway started", slog.Int64("chat_id", g.chatID), slog.Int("operators", len(g.operators)))
+	a := g.access.Load()
+	g.log.Info("telegram gateway started", slog.Int64("chat_id", g.chatID), slog.Int("operators", len(a.operators)), slog.Int("observers", len(a.observers)))
 	g.queue.Run(ctx)
 	close(g.stopped)
 	g.log.Info("telegram gateway stopped")
