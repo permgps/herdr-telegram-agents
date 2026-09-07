@@ -17,7 +17,10 @@ post, with a sound; with it off the topic post itself rings. Either way you
 answer in the topic. See [Silence the group](behaviour.md#silence-the-group)
 for why. When it turns **done** the topic gets the last 12 lines of the
 screen, or the agent's last reply when `Done post` in `/options` says so (see
-[Done posts](behaviour.md#done-posts)). Every screen post ends on the agent's
+[Done posts](behaviour.md#done-posts)); under it, one line with the turn's
+duration, model, edited files and output tokens from the Claude Code
+transcript (`Turn summary line`), and a reply longer than `Fold long replies
+after` arrives collapsed behind an arrow. Every screen post ends on the agent's
 last line: Claude Code's input frame at the bottom (the `─` rules with the
 empty `❯` row, the status line and the mode hint) is cut while `Trim the
 input frame` in `/options` → Posts is on, which is the default; a dialog and
