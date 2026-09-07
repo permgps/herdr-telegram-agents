@@ -1158,3 +1158,32 @@ func TestDaemonPagerRingsInPrivateChat(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestDaemonNoticeDelayApplied: the topics.notice_delay option reaches the
+// gateway at start and on every change.
+func TestDaemonNoticeDelayApplied(t *testing.T) {
+	f := newDaemon(t)
+	ctx := context.Background()
+	f.start(t)
+	f.waitCalls(t, 2)
+	if got := f.tg.Settings(); len(got) != 1 || got[0] != "noticedelay:20" {
+		t.Fatalf("settings after start = %v", got)
+	}
+	if err := f.opts.Set(ctx, domain.OptionNoticeDelay, "0", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "keep applied", func() bool {
+		s := f.tg.Settings()
+		return len(s) == 2 && s[1] == "noticedelay:keep"
+	})
+	if err := f.opts.Set(ctx, domain.OptionNoticeDelay, "60", 1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "60 s applied", func() bool {
+		s := f.tg.Settings()
+		return len(s) == 3 && s[2] == "noticedelay:60"
+	})
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}

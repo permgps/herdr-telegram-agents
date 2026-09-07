@@ -246,6 +246,9 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 			d.Resync()
 		}
 	})
+	opts.OnChange(domain.OptionNoticeDelay, func(_ string, cur domain.Options) {
+		d.applyNoticeDelay(cur)
+	})
 	opts.OnChange(domain.OptionDeleteAfterDays, func(_ string, cur domain.Options) {
 		if cur.DeleteAfter() <= 0 {
 			d.log.Info("stale topic cleanup switched off")
@@ -268,6 +271,13 @@ func NewDaemon(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		d.dashboard.Schedule("option")
 	})
 	return d
+}
+
+// applyNoticeDelay pushes the topics.notice_delay option to the gateway.
+func (d *Daemon) applyNoticeDelay(cur domain.Options) {
+	delay, del := cur.NoticeDelay()
+	d.tg.SetNoticeDelay(delay, del)
+	d.log.Info("notice delay set", slog.Int("seconds", int(delay/time.Second)), slog.Bool("keep", !del))
 }
 
 // ProbePager asks the loop to check the operators' private chats again.
@@ -388,6 +398,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.log.Info("daemon started", slog.Int64("chat_id", d.cfg.ChatID), slog.String("chat", d.cfg.ChatTitle), slog.Bool("sync", d.opts.SyncEnabled()),
 		slog.Bool("quiet_enabled", pst.Enabled), slog.Bool("presence_supported", pst.Supported), slog.String("quiet", pst.Word()))
 	d.tg.SetStatusIcons(d.opts.StatusIcons())
+	d.applyNoticeDelay(d.opts.Get())
 	if !d.opts.SyncEnabled() {
 		d.log.Warn("sync is off, mirror paused until it is switched on in /options")
 	}
@@ -590,7 +601,7 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 			return d.replay(ctx, false)
 		}
 		return nil
-	case domain.TopicMessage, domain.TopicAttachment, domain.ButtonPressed, domain.GeneralCommand:
+	case domain.TopicMessage, domain.TopicAttachment, domain.ButtonPressed, domain.GeneralCommand, domain.StrangerSeen:
 		d.bridge.Submit(raw)
 		return nil
 	case domain.TopicClosed:

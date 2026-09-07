@@ -37,7 +37,10 @@ func TestFakeTelegramRecordsAndFails(t *testing.T) {
 	if ops, obs := tg.Access(); len(ops) != 1 || ops[0] != 7 || len(obs) != 2 || obs[1] != 9 {
 		t.Fatalf("Access = %v, %v", ops, obs)
 	}
-	want := []string{"create:⚙️ a:working", "edit:101:name=💤 a", "close:101", "close:101", "noticedelay:20", "noticedelay:keep", "access:1/2"}
+	if got := tg.Settings(); len(got) != 3 || got[0] != "noticedelay:20" || got[1] != "noticedelay:keep" || got[2] != "access:1/2" {
+		t.Fatalf("Settings = %v", got)
+	}
+	want := []string{"create:⚙️ a:working", "edit:101:name=💤 a", "close:101", "close:101"}
 	got := tg.Calls()
 	if len(got) != len(want) {
 		t.Fatalf("Calls = %v, want %v", got, want)

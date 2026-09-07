@@ -43,6 +43,9 @@ type Services struct {
 	Replies domain.ReplySource
 	Git     domain.GitRunner
 	Inbox   domain.InboxStore
+	// Config saves config.json when /observers changes the observer list;
+	// nil refuses the change with a notice.
+	Config domain.ConfigStore
 }
 
 // NewBridge wires the outbound and inbound use cases around the registry,
@@ -62,7 +65,7 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 	// the raw gateway because topic names are agent labels.
 	tg = newRedactingGateway(tg, domain.NewRedactor(cfg.BotToken), opts.RedactEnabled, log)
 	out := newOutbound(herdr, tg, cfg.ChatID, cfg.OperatorIDs, topics, registry.Agent, registry.Live, capture, opts, svc.Replies, clock, log)
-	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, svc.Git, svc.Inbox, cfg.ChatID, cfg.BotUsername, clock, log)
+	in := newInbound(herdr, tg, topics, registry.Agent, registry.Live, out, opts, svc, cfg, clock, log)
 	b := &Bridge{
 		out:         out,
 		in:          in,
@@ -231,8 +234,11 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 		b.log.Debug("bridge job", slog.String("kind", "inbox_result"), slog.Int("message_id", j.messageID), slog.Int("saved", len(j.paths)), slog.Int("failed", len(j.failed)))
 		b.run(ctx, "inbox_result", func(ctx context.Context) error { return b.in.InboxFinished(ctx, j) })
 	case domain.GeneralCommand:
-		b.log.Debug("bridge job", slog.String("kind", "general_command"), slog.Int("message_id", j.MessageID))
+		b.log.Debug("bridge job", slog.String("kind", "general_command"), slog.Int("message_id", j.MessageID), slog.String("role", j.Role.String()))
 		b.run(ctx, "general_command", func(ctx context.Context) error { return b.in.HandleGeneral(ctx, j) })
+	case domain.StrangerSeen:
+		b.log.Debug("bridge job", slog.String("kind", "stranger_seen"), slog.Int64("from_id", j.FromID), slog.Int("thread_id", j.ThreadID))
+		b.in.HandleStranger(j)
 	case presenceAway:
 		b.log.Debug("bridge job", slog.String("kind", "catch_up"))
 		b.run(ctx, "catch_up", b.out.CatchUp)

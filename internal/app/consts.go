@@ -123,4 +123,7 @@ const (
 	// came with the paste (measured 2026-09-06); a second enter submits
 	// the queued line, and on an empty line it does nothing.
 	inboxSubmitDelay = 1500 * time.Millisecond
+	// strangerKeep is how many unknown senders /observers lists under
+	// "Seen recently", newest first, one entry per id.
+	strangerKeep = 10
 )

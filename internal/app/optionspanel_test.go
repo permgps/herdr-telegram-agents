@@ -307,6 +307,23 @@ func TestPanelPrivacyAndTopicsGroups(t *testing.T) {
 	if v := f.opts.Get().String(domain.OptionDeleteAfterDays); v != "0" || f.opts.DeleteAfter() != 0 {
 		t.Fatalf("after Off: value %q", v)
 	}
+	// The notice delay row offers Keep and five delays; Keep stores "0".
+	pressPanel(f, t, 900, dataGrid(domain.OptionNoticeDelay, 0))
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Keep|10s|[20s]|30s|60s|120s|‹ Back" {
+		t.Fatalf("notice row = %v", got)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionNoticeDelay, 0))
+	if d, del := f.opts.NoticeDelay(); d != 0 || del {
+		t.Fatalf("after Keep: %v, %v", d, del)
+	}
+	if got := texts(f.tg.Buttons(900)); got[1] != "Keep Keep icon notices for" {
+		t.Fatalf("topics buttons after Keep = %v", got)
+	}
+	pressPanel(f, t, 900, dataGrid(domain.OptionNoticeDelay, 0))
+	pressPanel(f, t, 900, dataPick(domain.OptionNoticeDelay, 3))
+	if d, del := f.opts.NoticeDelay(); d != 30*time.Second || !del {
+		t.Fatalf("after 30s: %v, %v", d, del)
+	}
 	if got := texts(f.tg.Buttons(900)); got[0] != "Off Delete closed topics after" {
 		t.Fatalf("group after Off = %v", got)
 	}
@@ -397,12 +414,21 @@ func TestPanelPostsGroup(t *testing.T) {
 	if !f.opts.PagerEnabled() || len(hooked) != 2 {
 		t.Fatalf("pager toggle back: enabled=%v hooks=%v", f.opts.PagerEnabled(), hooked)
 	}
+	// The frame cut is a plain checkbox.
+	pressPanel(f, t, 900, dataToggle(domain.OptionPostsChrome))
+	if got := texts(f.tg.Buttons(900)); got[1] != "☐ Trim the input frame" || f.opts.PostsChrome() {
+		t.Fatalf("chrome toggle: buttons=%v on=%v", got, f.opts.PostsChrome())
+	}
+	pressPanel(f, t, 900, dataToggle(domain.OptionPostsChrome))
+	if got := texts(f.tg.Buttons(900)); got[1] != "☑ Trim the input frame" || !f.opts.PostsChrome() {
+		t.Fatalf("chrome toggle back: buttons=%v on=%v", got, f.opts.PostsChrome())
+	}
 	pressPanel(f, t, 900, dataGrid(domain.OptionPostsDone, 0))
 	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "[Screen]|Reply|Formatted|‹ Back" {
 		t.Fatalf("done grid = %v", got)
 	}
 	pressPanel(f, t, 900, dataPick(domain.OptionPostsDone, 2))
-	if f.opts.Get().PostsDone() != domain.DoneFormatted || f.options.Saved() != 3 {
+	if f.opts.Get().PostsDone() != domain.DoneFormatted || f.options.Saved() != 5 {
 		t.Fatalf("pick formatted: mode=%q saves=%d", f.opts.Get().PostsDone(), f.options.Saved())
 	}
 	saved, err := f.options.Load(f.ctx)

@@ -29,6 +29,9 @@ import (
 //	probe:<user>
 //	pin:<message>            unpin:<message>          deletemsg:<message>
 //	rights
+//
+// Setter pushes are recorded apart from the traffic, in Settings:
+//
 //	noticedelay:<seconds>    noticedelay:keep
 //	access:<operators>/<observers>   (counts)
 //
@@ -45,6 +48,7 @@ type FakeTelegram struct {
 	nextID    int
 	nextMsgID int
 	calls     []string
+	settings  []string
 	sent      []domain.Outgoing
 	direct    []domain.Outgoing
 	pinned    map[int]bool
@@ -162,6 +166,14 @@ func (f *FakeTelegram) Icons() domain.StatusIcons {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.icons
+}
+
+// Settings returns every recorded setter push (SetNoticeDelay, SetAccess),
+// in order.
+func (f *FakeTelegram) Settings() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.settings...)
 }
 
 // Access returns the lists given to the last SetAccess (copies).
@@ -455,11 +467,11 @@ func (f *FakeTelegram) SetNoticeDelay(delay time.Duration, del bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !del {
-		f.calls = append(f.calls, "noticedelay:keep")
+		f.settings = append(f.settings, "noticedelay:keep")
 		f.log.Debug("fake telegram notice delay", slog.Bool("keep", true))
 		return
 	}
-	f.calls = append(f.calls, fmt.Sprintf("noticedelay:%d", int(delay/time.Second)))
+	f.settings = append(f.settings, fmt.Sprintf("noticedelay:%d", int(delay/time.Second)))
 	f.log.Debug("fake telegram notice delay", slog.Int64("seconds", int64(delay/time.Second)))
 }
 
@@ -468,7 +480,7 @@ func (f *FakeTelegram) SetAccess(operators, observers []int64) {
 	defer f.mu.Unlock()
 	f.operators = append([]int64(nil), operators...)
 	f.observers = append([]int64(nil), observers...)
-	f.calls = append(f.calls, fmt.Sprintf("access:%d/%d", len(operators), len(observers)))
+	f.settings = append(f.settings, fmt.Sprintf("access:%d/%d", len(operators), len(observers)))
 	f.log.Debug("fake telegram access", slog.Int("operators", len(operators)), slog.Int("observers", len(observers)))
 }
 

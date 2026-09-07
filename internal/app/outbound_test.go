@@ -31,6 +31,8 @@ type bridgeFixture struct {
 	replies *testkit.FakeReplies
 	git     *testkit.FakeGit
 	inbox   *testkit.FakeInbox
+	configs *testkit.MemConfigStore
+	cfg     domain.Config
 	logBuf  *bytes.Buffer
 	out     *outbound
 	in      *inbound
@@ -73,7 +75,10 @@ func newBridgeFixture(t *testing.T) *bridgeFixture {
 	f.out = newOutbound(f.herdr, tg, -1001234567890, []int64{1}, f.view, lookup, live, f.capture, f.opts, f.replies, f.clock, log)
 	f.git = testkit.NewFakeGit()
 	f.inbox = testkit.NewFakeInbox("/state/inbox")
-	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, f.git, f.inbox, -1001234567890, "agents_bot", f.clock, log)
+	f.configs = testkit.NewMemConfigStore()
+	f.cfg = domain.Config{Version: domain.ConfigVersion, BotToken: testBotToken, BotUsername: "agents_bot", ChatID: -1001234567890, OperatorIDs: []int64{1}}
+	f.configs.Set(f.cfg)
+	f.in = newInbound(f.herdr, tg, f.view, lookup, live, f.out, f.opts, Services{Git: f.git, Inbox: f.inbox, Config: f.configs}, f.cfg, f.clock, log)
 	return f
 }
 
@@ -1492,5 +1497,140 @@ func TestPagerText(t *testing.T) {
 	}
 	if lastLines("a\nb\nc\n\n", 2) != "b\nc" || lastLines("a", 6) != "a" {
 		t.Errorf("lastLines = %q / %q", lastLines("a\nb\nc\n\n", 2), lastLines("a", 6))
+	}
+}
+
+// The input frame Claude Code draws under its transcript (read from a live
+// pane on 2026-09-07), rules shortened; testFrame ends a screen with it.
+const (
+	frameRule   = "────────────────────────────────────────"
+	frameStatus = "  …/Projects/My/herdr_tg │ main ✓ │ 14%: 121k[▓░░░░░░░░░]713k │ $4.37 │ 5h 3%[░░░░░░░░░░]4h19m"
+	frameHint   = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+	testFrame   = "\n" + frameRule + "\n❯\n" + frameRule + "\n" + frameStatus + "\n" + frameHint + "\n"
+)
+
+func TestOutboundDonePostCutsTheFrame(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "⏺ Done. The tests pass.\n"+testFrame)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || sent[0].Text != "⏺ Done. The tests pass." {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if log := f.logBuf.String(); !strings.Contains(log, `"msg":"chrome cut"`) || !strings.Contains(log, `"lines":5`) {
+		t.Fatalf("cut not logged: %s", log)
+	}
+
+	// With the switch off the frame is posted as captured.
+	if err := f.opts.Set(f.ctx, domain.OptionPostsChrome, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	sent = f.tg.Sent()
+	if len(sent) != 2 || !strings.HasSuffix(sent[1].Text, frameHint) || !strings.Contains(sent[1].Text, "❯\n") {
+		t.Fatalf("frame not kept with posts.chrome off: %+v", sent)
+	}
+}
+
+func TestOutboundDoneDuplicateAfterTheCut(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "⏺ Done.\n"+testFrame)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	// The same screen with another clock in the status line is the same post.
+	f.herdr.SetScreen("p1", "⏺ Done.\n"+strings.ReplaceAll(testFrame, "4h19m", "4h18m"))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if n := len(f.tg.Sent()); n != 1 {
+		t.Fatalf("status clock change posted again: %d sends", n)
+	}
+	if !strings.Contains(f.logBuf.String(), `"reason":"duplicate"`) {
+		t.Fatalf("duplicate not logged: %s", f.logBuf.String())
+	}
+}
+
+func TestOutboundBlockedKeepsTheDialogUnderTheFrame(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	dialog := "Allow the edit?\n\n❯ 1. Yes\n  2. No\n  3. Type something.\n\nEnter to select · ↑/↓ to navigate · Esc to cancel"
+	f.herdr.SetScreen("p1", "⏺ Let me check.\n\n"+dialog+"\n"+frameStatus+"\n"+frameHint+"\n\n")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 || !strings.HasSuffix(sent[0].Text, "Esc to cancel") || strings.Contains(sent[0].Text, "shift+tab") {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if got := texts(sent[0].Buttons); len(got) != 3 || got[0] != "1️⃣ Yes" || got[1] != "2️⃣ No" {
+		t.Fatalf("buttons = %v", got)
+	}
+	// The pager's tail is taken after the cut: it ends on the question, not
+	// on the status line.
+	direct := f.tg.Direct()
+	if len(direct) != 1 || !strings.Contains(direct[0].Text, "1. Yes") || strings.Contains(direct[0].Text, "shift+tab") {
+		t.Fatalf("pager text = %+v", direct)
+	}
+}
+
+func TestOutboundPagerTailEndsOnTheQuestion(t *testing.T) {
+	f := newBridgeFixture(t)
+	pagerOutbound(f)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nContinue? (y/n)\n"+testFrame)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	direct := f.tg.Direct()
+	if len(direct) != 1 || !strings.Contains(direct[0].Text, "<pre>line 3\nline 4\nline 5\nline 6\nline 7\nContinue? (y/n)</pre>") {
+		t.Fatalf("pager text = %+v", direct)
+	}
+}
+
+func TestOutboundScreenRequestCutsTheFrame(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "w1:p1", "t1", "a", domain.StatusIdle)
+	f.herdr.SetScreen("w1:p1", "reply text\n"+testFrame)
+	if err := f.out.Screen(f.ctx, a.Key, 40); err != nil {
+		t.Fatal(err)
+	}
+	if reads := f.herdr.Reads(); len(reads) != 1 || reads[0].Lines != 40 || reads[0].Source != domain.ScreenVisible {
+		t.Fatalf("Reads = %+v", reads)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 1 || sent[0].Text != "reply text" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	// /screen all cuts the frame from the current screen as well.
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: a})
+	if err := f.out.ScreenAll(f.ctx, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 2 || !strings.HasSuffix(sent[1].Text, "reply text") || strings.Contains(sent[1].Text, "❯") {
+		t.Fatalf("screen all = %+v", sent)
+	}
+	// A frame alone is an empty screen.
+	f.herdr.SetScreen("w1:p1", testFrame)
+	if err := f.out.Screen(f.ctx, a.Key, 0); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); sent[2].Text != "(screen is empty)" {
+		t.Fatalf("frame-only screen = %q", sent[2].Text)
+	}
+}
+
+func TestCleanScreen(t *testing.T) {
+	if got, n := cleanScreen("a\n"+testFrame, true); got != "a" || n != 5 {
+		t.Errorf("cleanScreen on = %q, %d", got, n)
+	}
+	if got, n := cleanScreen("a\n"+testFrame, false); n != 0 || !strings.HasSuffix(got, frameHint) {
+		t.Errorf("cleanScreen off = %q, %d", got, n)
+	}
+	if got, n := cleanScreen("\n a \n\n", true); got != " a" || n != 0 {
+		t.Errorf("cleanScreen plain = %q, %d", got, n)
 	}
 }

@@ -39,7 +39,7 @@ func newDoctor(t *testing.T) *doctorFixture {
 		clock:   testkit.NewFakeClock(t0),
 	}
 	f.proc = testkit.NewFakeProcess(f.clock.Now)
-	f.configs.Set(domain.Config{Version: 1, BotToken: "1:x", BotUsername: "agents_bot", ChatID: -1001, ChatTitle: "Agents", OperatorIDs: []int64{1, 2}, LogLevel: "debug"})
+	f.configs.Set(domain.Config{Version: 1, BotToken: "1:x", BotUsername: "agents_bot", ChatID: -1001, ChatTitle: "Agents", OperatorIDs: []int64{1, 2}, ObserverIDs: []int64{9}, LogLevel: "debug"})
 	if err := f.proc.Acquire(4242); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestDoctorAllGreen(t *testing.T) {
 		t.Fatalf("levels = %s", got)
 	}
 	want := map[string]string{
-		"config":        `config.json v1: @agents_bot, chat "Agents" (-1001), 2 operators, log level debug`,
+		"config":        `config.json v1: @agents_bot, chat "Agents" (-1001), 2 operators, 1 observer, log level debug`,
 		"options":       "defaults",
 		"telegram":      "@fakebot (id 42)",
 		"group":         `"Agents": forum yes, admin yes, manage topics yes, delete messages yes, pin messages yes`,

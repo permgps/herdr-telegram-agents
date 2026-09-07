@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,7 @@ const helpText = `Commands
 /here: back to automatic presence (General only)
 /new <workspace> [kind]: start an agent in a new tab of that workspace (General only; kind defaults to claude)
 /options: settings panel (General only): sync, quiet mode, status icons, secret redaction, topic cleanup
+/observers [add|remove <id>]: list or change who may watch the group without driving agents (General only)
 /help: this list
 
 While an agent is blocked, y, n, yes, no, 1-9, enter, ok and esc are sent as keys.
@@ -56,6 +58,8 @@ const (
 	closeKept     = "not closed"
 	// newInGeneral answers /new written in a topic.
 	newInGeneral = "/new works in General: /new <workspace> [kind]"
+	// observersInGeneral answers /observers written in a topic.
+	observersInGeneral = "observer commands live in General: " + domain.ObserversUsage
 	// Replies of /new: the workspace list, the two progress lines and the
 	// failures.
 	newWorkspacesFmt   = "workspaces: %s"
@@ -104,12 +108,21 @@ type inbound struct {
 	presence *Presence
 	// since supplies when each agent entered its status for the /status
 	// durations (the dashboard's record); nil shows no durations.
-	since       func() map[domain.Key]time.Time
-	panel       *panel
-	chatID      int64
-	botUsername string
-	clock       domain.Clock
-	log         *slog.Logger
+	since func() map[domain.Key]time.Time
+	panel *panel
+	// cfg is the config in force: the chat, the bot's username and the
+	// operator and observer lists; /observers updates it and saves it
+	// through store (nil refuses the change). Bridge goroutine only.
+	cfg   domain.Config
+	store domain.ConfigStore
+	// strangers are the unknown senders reported by the gateway, newest
+	// first, one per id, at most strangerKeep; /observers lists them.
+	strangers []domain.StrangerSeen
+	clock     domain.Clock
+	log       *slog.Logger
+	// chrome reads the posts.chrome switch for the screens forwarded
+	// commands post.
+	chrome func() bool
 
 	// deb arms the settle timer of a forwarded command; pending holds what
 	// to do when it fires. Both are touched on the bridge goroutine only.
@@ -141,8 +154,8 @@ type followUp struct {
 }
 
 func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *topicView, agents agentLookup,
-	live func() []domain.Agent, out *outbound, opts *Options, git domain.GitRunner, inbox domain.InboxStore,
-	chatID int64, botUsername string, clock domain.Clock, log *slog.Logger) *inbound {
+	live func() []domain.Agent, out *outbound, opts *Options, svc Services,
+	cfg domain.Config, clock domain.Clock, log *slog.Logger) *inbound {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -151,9 +164,10 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 	}
 	in := &inbound{
 		herdr: herdr, tg: tg, topics: topics, agents: agents, live: live, out: out,
-		git: git, inbox: inbox,
+		git: svc.Git, inbox: svc.Inbox,
 		opts: opts, panel: newPanel(opts, tg, log),
-		chatID: chatID, botUsername: botUsername, log: log,
+		cfg: cfg, store: svc.Config, log: log,
+		chrome:  opts.PostsChrome,
 		clock:   clock,
 		deb:     newDebouncer(clock, commandSettle, log),
 		pending: map[domain.Key]followUp{},
@@ -224,7 +238,7 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 	} else if err := i.out.CancelTyping(ctx, key); err != nil {
 		return err
 	}
-	cmd := domain.Route(msg.Text, i.botUsername, agent.Status)
+	cmd := domain.Route(msg.Text, i.cfg.BotUsername, agent.Status)
 	i.log.Info("topic command", slog.String("kind", string(cmd.Kind)), slog.String("key", key.String()),
 		slog.Int("thread_id", msg.ThreadID), slog.Int64("from_id", msg.FromID), slog.Int("message_id", msg.MessageID),
 		slog.String("status", string(agent.Status)), slog.Int("len", len(msg.Text)))
@@ -274,6 +288,8 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, presenceInGeneral)
 	case domain.CmdNew:
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, newInGeneral)
+	case domain.CmdObservers:
+		return i.reply(ctx, msg.ThreadID, msg.MessageID, observersInGeneral)
 	case domain.CmdForward:
 		return i.forward(ctx, msg, key, agent, cmd)
 	default:
@@ -466,9 +482,13 @@ func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
 			return err
 		}
 	} else {
-		text := trimScreen(screen.Text)
+		raw := screen.Text
 		if f.cmd.Forward.Post == domain.ForwardPostScreen && f.cmd.Forward.Dismiss {
-			text = trimScreen(domain.CutOverlay(text))
+			raw = domain.CutOverlay(raw)
+		}
+		text, cut := cleanScreen(raw, i.chrome())
+		if cut > 0 {
+			i.log.Debug("chrome cut", slog.String("key", key.String()), slog.Int("lines", cut))
 		}
 		if text == "" {
 			text = "(screen is empty)"
@@ -496,10 +516,17 @@ func (i *inbound) dismiss(ctx context.Context, key domain.Key, f followUp) error
 	return nil
 }
 
-// HandleGeneral answers a command written in the General topic.
+// HandleGeneral answers a command written in the General topic. An
+// observer may use /status and /help; their other commands are dropped
+// without a reply.
 func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) error {
-	parsed := domain.ParseCommand(cmd.Text, i.botUsername)
-	i.log.Info("general command", slog.String("kind", string(parsed.Kind)), slog.Int64("from_id", cmd.FromID), slog.Int("message_id", cmd.MessageID))
+	parsed := domain.ParseCommand(cmd.Text, i.cfg.BotUsername)
+	i.log.Info("general command", slog.String("kind", string(parsed.Kind)), slog.Int64("from_id", cmd.FromID),
+		slog.Int("message_id", cmd.MessageID), slog.String("role", cmd.Role.String()))
+	if cmd.Role == domain.RoleObserver && parsed.Kind != domain.CmdStatus && parsed.Kind != domain.CmdHelp {
+		i.log.Debug("observer command dropped", slog.Int64("from_id", cmd.FromID), slog.String("kind", string(parsed.Kind)))
+		return nil
+	}
 	switch parsed.Kind {
 	case domain.CmdStatus:
 		text := i.statusSummary()
@@ -518,9 +545,137 @@ func (i *inbound) HandleGeneral(ctx context.Context, cmd domain.GeneralCommand) 
 		return i.startAgent(ctx, cmd, parsed)
 	case domain.CmdGit:
 		return i.reply(ctx, 0, cmd.MessageID, topicOnly)
+	case domain.CmdObservers:
+		return i.observers(ctx, cmd, parsed.Observers)
 	default:
 		return i.reply(ctx, 0, cmd.MessageID, "unknown command, see /help")
 	}
+}
+
+// HandleStranger records an unknown sender the gateway reported, so
+// /observers can list them, and logs them at info with their id: that is
+// where an operator finds the id to add. Bridge goroutine only.
+func (i *inbound) HandleStranger(ev domain.StrangerSeen) {
+	i.log.Info("unknown sender", slog.Int64("from_id", ev.FromID), slog.String("name", ev.Name),
+		slog.String("username", ev.Username), slog.Int("thread_id", ev.ThreadID))
+	kept := make([]domain.StrangerSeen, 0, strangerKeep)
+	kept = append(kept, ev)
+	for _, s := range i.strangers {
+		if s.FromID != ev.FromID && len(kept) < strangerKeep {
+			kept = append(kept, s)
+		}
+	}
+	i.strangers = kept
+}
+
+// observers serves /observers in General: the list, or an add or remove
+// that is saved to config.json and pushed to the gateway before the reply.
+func (i *inbound) observers(ctx context.Context, cmd domain.GeneralCommand, spec domain.ObserversSpec) error {
+	switch spec.Action {
+	case domain.ObserverAdd, domain.ObserverRemove:
+		return i.reply(ctx, 0, cmd.MessageID, i.changeObserver(ctx, cmd.FromID, spec))
+	}
+	return i.absorb(i.send(ctx, domain.Outgoing{ThreadID: 0, Text: i.observersList(), HTML: true, ReplyTo: cmd.MessageID}))
+}
+
+// changeObserver applies an add or remove and words the outcome. The
+// config is saved first; a failed save changes nothing in memory.
+func (i *inbound) changeObserver(ctx context.Context, by int64, spec domain.ObserversSpec) string {
+	var (
+		next domain.Config
+		err  error
+	)
+	if spec.Action == domain.ObserverAdd {
+		next, err = i.cfg.WithObserver(spec.ID)
+	} else {
+		next, err = i.cfg.WithoutObserver(spec.ID)
+	}
+	if err != nil {
+		i.log.Debug("observer change refused", slog.Int64("id", spec.ID), slog.Int64("by", by), slog.String("err", err.Error()))
+		return "⚠️ " + observerReason(err)
+	}
+	if i.store == nil {
+		i.log.Warn("config save failed", slog.String("err", "no config store"))
+		return "⚠️ config not saved: no config store"
+	}
+	if err := i.store.Save(ctx, next); err != nil {
+		i.log.Warn("config save failed", slog.String("err", err.Error()))
+		return "⚠️ config not saved: " + failureReason(err)
+	}
+	i.cfg = next
+	i.tg.SetAccess(next.OperatorIDs, next.ObserverIDs)
+	if spec.Action == domain.ObserverAdd {
+		i.log.Info("observer added", slog.Int64("id", spec.ID), slog.Int64("by", by))
+		return fmt.Sprintf("👁 %d is an observer now: sees the group, may use /status and /help in General", spec.ID)
+	}
+	i.log.Info("observer removed", slog.Int64("id", spec.ID), slog.Int64("by", by))
+	return fmt.Sprintf("%d is no longer an observer", spec.ID)
+}
+
+// observerReason strips the sentinel prefix from an ErrInvalidObserver so
+// the reply reads "42 is an operator".
+func observerReason(err error) string {
+	msg := err.Error()
+	if i := strings.Index(msg, ": "); i >= 0 && errors.Is(err, domain.ErrInvalidObserver) {
+		return msg[i+2:]
+	}
+	return msg
+}
+
+// observersList renders operators, observers and the strangers seen
+// recently as HTML for General.
+func (i *inbound) observersList() string {
+	var b strings.Builder
+	b.WriteString("👤 Operators: " + idList(i.cfg.OperatorIDs) + "\n")
+	b.WriteString("👁 Observers: " + idList(i.cfg.ObserverIDs) + "\n")
+	b.WriteString("🚪 Seen recently, not allowed:")
+	if len(i.strangers) == 0 {
+		b.WriteString(" none\n")
+	} else {
+		b.WriteString("\n")
+		for _, s := range i.strangers {
+			b.WriteString("· " + i.strangerLine(s) + "\n")
+		}
+	}
+	b.WriteString("add one with /observers add &lt;id&gt;")
+	return b.String()
+}
+
+// strangerLine is "Ann Lee @annlee (777) · 5 min ago in General".
+func (i *inbound) strangerLine(s domain.StrangerSeen) string {
+	var parts []string
+	if s.Name != "" {
+		parts = append(parts, html.EscapeString(s.Name))
+	}
+	if s.Username != "" {
+		parts = append(parts, "@"+html.EscapeString(s.Username))
+	}
+	parts = append(parts, fmt.Sprintf("(%d)", s.FromID))
+	ago := "just now"
+	if d := formatDuration(i.clock.Now().Sub(s.At)); d != "" {
+		ago = d + " ago"
+	}
+	where := "General"
+	if key, ok := i.topics.KeyForThread(s.ThreadID); ok && s.ThreadID != 0 {
+		if entry, ok := i.topics.Entry(key); ok {
+			where = html.EscapeString(entry.Label())
+		}
+	} else if s.ThreadID != 0 {
+		where = fmt.Sprintf("topic %d", s.ThreadID)
+	}
+	return strings.Join(parts, " ") + " · " + ago + " in " + where
+}
+
+// idList joins ids with commas; "none" for an empty list.
+func idList(ids []int64) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(ids))
+	for n, id := range ids {
+		parts[n] = strconv.FormatInt(id, 10)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // startAgent serves /new: resolves the workspace, opens a tab in it and
@@ -709,7 +864,7 @@ func (i *inbound) statusSummary() string {
 		icons:    i.opts.StatusIcons(),
 		syncOff:  !i.opts.SyncEnabled(),
 		presence: i.presenceHeader(),
-		chatID:   i.chatID,
+		chatID:   i.cfg.ChatID,
 		now:      i.clock.Now(),
 	}
 	if i.since != nil {

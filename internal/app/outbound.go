@@ -57,6 +57,10 @@ type outbound struct {
 	// post when doneMode asks for it; nil means the screen is always used.
 	replies  domain.ReplySource
 	doneMode func() domain.DoneMode
+	// chrome reads the posts.chrome switch: cut Claude Code's input frame
+	// from the bottom of every screen before it is posted, hashed or
+	// parsed for a dialog.
+	chrome func() bool
 
 	deb        *debouncer
 	lastPosted map[domain.Key]string // SHA-256 of the last screen posted per key
@@ -171,6 +175,7 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 	minTurn := func() time.Duration { return 0 }
 	blockedDelay := func() time.Duration { return 0 }
 	pager := func() bool { return false }
+	chrome := func() bool { return true }
 	if opts != nil {
 		paused = func() bool { return !opts.SyncEnabled() }
 		doneMode = opts.PostsDone
@@ -178,6 +183,7 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 		minTurn = opts.MinTurn
 		blockedDelay = opts.BlockedDelay
 		pager = opts.PagerEnabled
+		chrome = opts.PostsChrome
 	}
 	if live == nil {
 		live = func() []domain.Agent { return nil }
@@ -199,6 +205,7 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 		reannounce:   func() bool { return false },
 		replies:      replies,
 		doneMode:     doneMode,
+		chrome:       chrome,
 		log:          log,
 		deb:          newDebouncer(clock, screenSettle, log),
 		lastPosted:   map[domain.Key]string{},
@@ -551,7 +558,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 			o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
 			return nil
 		}
-		text = trimScreen(screen.Text)
+		text = o.clean(key, screen.Text)
 	}
 	if text == "" {
 		return o.skip(key, "empty")
@@ -714,7 +721,7 @@ func (o *outbound) delayedCapture(ctx context.Context, key domain.Key, agent dom
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
 		return "", false
 	}
-	text := trimScreen(screen.Text)
+	text := o.clean(key, screen.Text)
 	if !had || restart {
 		o.captures[key] = pendingCapture{text: text, seq: agent.StateChangeSeq}
 		o.deb.ScheduleAfter(key, delay)
@@ -817,7 +824,7 @@ func (o *outbound) refreshKeyboard(ctx context.Context, key domain.Key, msgID, l
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
 		return true, nil
 	}
-	text := trimScreen(screen.Text)
+	text := o.clean(key, screen.Text)
 	d := domain.ParseDialog(text)
 	if !d.Multi {
 		o.log.Debug("keyboard refresh dropped", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.String("reason", "not_multi"))
@@ -841,7 +848,7 @@ func (o *outbound) submitKeys(ctx context.Context, key domain.Key, kb keyboard) 
 	screen, err := o.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, blockedLines)
 	if err != nil {
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
-	} else if live := domain.ParseDialog(trimScreen(screen.Text)); live.Multi {
+	} else if live := domain.ParseDialog(o.clean(key, screen.Text)); live.Multi {
 		d = live
 	}
 	keys := d.SubmitKeys()
@@ -863,7 +870,7 @@ func (o *outbound) dialogStillOpen(ctx context.Context, key domain.Key, kb keybo
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
 		return false
 	}
-	d := domain.ParseDialog(trimScreen(screen.Text))
+	d := domain.ParseDialog(o.clean(key, screen.Text))
 	open := len(d.Choices) > 0 && len(d.Choices) == len(kb.choices) && d.Multi == kb.multi && d.TextEntry == kb.textEntry
 	o.log.Debug("dialog checked while working", slog.String("key", key.String()), slog.Bool("open", open),
 		slog.Int("choices", len(d.Choices)), slog.Bool("multi", d.Multi))
@@ -1208,7 +1215,7 @@ func (o *outbound) Screen(ctx context.Context, key domain.Key, lines int) error 
 	if err != nil {
 		return err
 	}
-	text := trimScreen(screen.Text)
+	text := o.clean(key, screen.Text)
 	if text == "" {
 		text = "(screen is empty)"
 	}
@@ -1235,7 +1242,7 @@ func (o *outbound) ScreenAll(ctx context.Context, key domain.Key) error {
 	if err != nil {
 		return err
 	}
-	text := trimScreen(strings.Join(lines, "\n"))
+	text := o.clean(key, strings.Join(lines, "\n"))
 	if text == "" {
 		o.log.Debug("screen all empty", slog.String("key", key.String()), slog.Bool("marked", marked))
 		_, err := o.tg.Send(ctx, domain.Outgoing{ThreadID: entry.ThreadID, Text: "(no output since your last message)"})
@@ -1297,6 +1304,30 @@ func screenLines(text string) []string {
 		lines[i] = strings.TrimRight(l, " \t\r")
 	}
 	return lines
+}
+
+// cleanScreen prepares terminal text for posting: trimScreen, then, when
+// chrome is set, domain.CutChrome and trimScreen again so the post ends on
+// the agent's last line. It returns the number of frame lines removed.
+func cleanScreen(text string, chrome bool) (string, int) {
+	text = trimScreen(text)
+	if !chrome {
+		return text, 0
+	}
+	cut, n := domain.CutChrome(text)
+	if n == 0 {
+		return text, 0
+	}
+	return trimScreen(cut), n
+}
+
+// clean is cleanScreen under the posts.chrome switch, logging a cut.
+func (o *outbound) clean(key domain.Key, text string) string {
+	out, n := cleanScreen(text, o.chrome())
+	if n > 0 {
+		o.log.Debug("chrome cut", slog.String("key", key.String()), slog.Int("lines", n))
+	}
+	return out
 }
 
 // trimScreen normalises terminal text for posting: trailing spaces are cut

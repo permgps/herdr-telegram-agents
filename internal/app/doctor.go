@@ -106,8 +106,8 @@ func (d *Doctor) checkConfig(ctx context.Context) (domain.Config, domain.Check) 
 	if level == "" {
 		level = "info"
 	}
-	detail := fmt.Sprintf("config.json v%d: %s, chat %q (%d), %s, log level %s",
-		cfg.Version, bot, cfg.ChatTitle, cfg.ChatID, plural(len(cfg.OperatorIDs), "operator"), level)
+	detail := fmt.Sprintf("config.json v%d: %s, chat %q (%d), %s, %s, log level %s",
+		cfg.Version, bot, cfg.ChatTitle, cfg.ChatID, plural(len(cfg.OperatorIDs), "operator"), plural(len(cfg.ObserverIDs), "observer"), level)
 	return cfg, domain.Check{Name: "config", Level: domain.CheckOK, Detail: detail}
 }
 

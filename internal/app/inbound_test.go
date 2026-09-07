@@ -331,6 +331,33 @@ func TestInboundForwardUsageCutsOverlayAndDismisses(t *testing.T) {
 	}
 }
 
+func TestInboundForwardUsageCutsTheFrame(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusDone)
+	f.herdr.SetScreen("p1", overlayScreen+testFrame)
+
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 24, "/usage")); err != nil {
+		t.Fatal(err)
+	}
+	f.fireCommand(t, 1)
+	assertCallsEqual(t, f.tg, "send:101:   Settings  Status   Usage\n\n   Current session\n   █████ 10% used:reply=24")
+	if log := f.logBuf.String(); !strings.Contains(log, `"msg":"chrome cut"`) || !strings.Contains(log, `"lines":5`) {
+		t.Fatalf("cut not logged: %s", log)
+	}
+	// With the switch off the frame stays in the tail.
+	if err := f.opts.Set(f.ctx, domain.OptionPostsChrome, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 25, "/usage")); err != nil {
+		t.Fatal(err)
+	}
+	f.fireCommand(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || !strings.HasSuffix(sent[0].Text, frameHint) {
+		t.Fatalf("frame not kept: %+v", sent)
+	}
+}
+
 func TestInboundForwardScreenWithoutRuleIsPostedWhole(t *testing.T) {
 	f := newBridgeFixture(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
@@ -1390,5 +1417,181 @@ func TestInboundAttachmentWhileBlockedIsStillPrompt(t *testing.T) {
 	}
 	if n := len(f.herdr.Keys()); n != 0 {
 		t.Fatalf("caption sent as keys: %d", n)
+	}
+}
+
+func opCmd(id int, text string) domain.GeneralCommand {
+	return domain.GeneralCommand{MessageID: id, FromID: 1, Text: text, Role: domain.RoleOperator}
+}
+
+func TestInboundObserversList(t *testing.T) {
+	f := newBridgeFixture(t)
+	if err := f.in.HandleGeneral(f.ctx, opCmd(40, "/observers")); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 1 || !sent[0].HTML || sent[0].ReplyTo != 40 || sent[0].ThreadID != 0 {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if sent[0].Text != "👤 Operators: 1\n👁 Observers: none\n🚪 Seen recently, not allowed: none\nadd one with /observers add &lt;id&gt;" {
+		t.Fatalf("list = %q", sent[0].Text)
+	}
+
+	// Strangers are listed newest first, one per id, with where and when.
+	f.add(t, "p1", "t1", "reviewer <x>", domain.StatusIdle)
+	f.in.HandleStranger(domain.StrangerSeen{FromID: 777, Name: "Ann <Lee>", Username: "annlee", ThreadID: 0, At: f.clock.Now().Add(-5 * time.Minute)})
+	f.in.HandleStranger(domain.StrangerSeen{FromID: 778, ThreadID: 101, At: f.clock.Now()})
+	f.in.HandleStranger(domain.StrangerSeen{FromID: 777, Name: "Ann <Lee>", Username: "annlee", ThreadID: 999, At: f.clock.Now()})
+	if err := f.in.HandleGeneral(f.ctx, opCmd(41, "/observers")); err != nil {
+		t.Fatal(err)
+	}
+	sent = f.tg.Sent()
+	want := "🚪 Seen recently, not allowed:\n· Ann &lt;Lee&gt; @annlee (777) · just now in topic 999\n· (778) · just now in ws · reviewer &lt;x&gt;\nadd one"
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, want) {
+		t.Fatalf("list with strangers = %+v, want it to contain %q", sent, want)
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"unknown sender","from_id":777,"name":"Ann <Lee>","username":"annlee","thread_id":0`) {
+		t.Fatalf("stranger not logged: %s", f.logBuf.String())
+	}
+	// The ring keeps the newest strangerKeep ids.
+	for id := int64(100); id < 100+strangerKeep+3; id++ {
+		f.in.HandleStranger(domain.StrangerSeen{FromID: id, At: f.clock.Now()})
+	}
+	if n := len(f.in.strangers); n != strangerKeep || f.in.strangers[0].FromID != 100+strangerKeep+2 {
+		t.Fatalf("ring = %d entries, first %d", n, f.in.strangers[0].FromID)
+	}
+}
+
+func TestInboundObserversAddAndRemove(t *testing.T) {
+	f := newBridgeFixture(t)
+	reply := func(t *testing.T, id int, text string) string {
+		t.Helper()
+		f.tg.Reset()
+		if err := f.in.HandleGeneral(f.ctx, opCmd(id, text)); err != nil {
+			t.Fatal(err)
+		}
+		sent := f.tg.Sent()
+		if len(sent) != 1 || sent[0].ReplyTo != id || sent[0].ThreadID != 0 {
+			t.Fatalf("%s: Sent = %+v", text, sent)
+		}
+		return sent[0].Text
+	}
+	if got := reply(t, 50, "/observers add 77"); got != "👁 77 is an observer now: sees the group, may use /status and /help in General" {
+		t.Fatalf("add reply = %q", got)
+	}
+	if f.configs.SaveCount() != 1 {
+		t.Fatalf("saves = %d", f.configs.SaveCount())
+	}
+	saved, _ := f.configs.Load(f.ctx)
+	if len(saved.ObserverIDs) != 1 || saved.ObserverIDs[0] != 77 || len(saved.OperatorIDs) != 1 {
+		t.Fatalf("saved config = %+v", saved)
+	}
+	if s := f.tg.Settings(); len(s) != 1 || s[0] != "access:1/1" {
+		t.Fatalf("settings = %v", s)
+	}
+	if ops, obs := f.tg.Access(); len(ops) != 1 || ops[0] != 1 || len(obs) != 1 || obs[0] != 77 {
+		t.Fatalf("access = %v, %v", ops, obs)
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"observer added","id":77,"by":1`) {
+		t.Fatalf("add not logged: %s", f.logBuf.String())
+	}
+	for text, want := range map[string]string{
+		"/observers add 1":     "⚠️ 1 is an operator",
+		"/observers add 77":    "⚠️ 77 is already an observer",
+		"/observers remove 78": "⚠️ 78 is not an observer",
+	} {
+		if got := reply(t, 51, text); got != want {
+			t.Fatalf("%s reply = %q, want %q", text, got, want)
+		}
+	}
+	if f.configs.SaveCount() != 1 || len(f.tg.Settings()) != 1 {
+		t.Fatalf("refusals saved or pushed: saves=%d settings=%v", f.configs.SaveCount(), f.tg.Settings())
+	}
+	if got := reply(t, 52, "/observers"); !strings.Contains(got, "👁 Observers: 77\n") {
+		t.Fatalf("list after add = %q", got)
+	}
+
+	// A failed save changes nothing.
+	f.configs.Fail(errors.New("disk full"))
+	if got := reply(t, 53, "/observers remove 77"); got != "⚠️ config not saved: disk full" {
+		t.Fatalf("failed save reply = %q", got)
+	}
+	f.configs.Fail(nil)
+	if got := reply(t, 54, "/observers"); !strings.Contains(got, "👁 Observers: 77\n") || len(f.tg.Settings()) != 1 {
+		t.Fatalf("list after failed save = %q, settings %v", got, f.tg.Settings())
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"config save failed","err":"disk full"`) {
+		t.Fatalf("save failure not logged: %s", f.logBuf.String())
+	}
+
+	if got := reply(t, 55, "/observers remove 77"); got != "77 is no longer an observer" {
+		t.Fatalf("remove reply = %q", got)
+	}
+	if s := f.tg.Settings(); len(s) != 2 || s[1] != "access:1/0" {
+		t.Fatalf("settings after remove = %v", s)
+	}
+	saved, _ = f.configs.Load(f.ctx)
+	if saved.ObserverIDs != nil || f.configs.SaveCount() != 2 {
+		t.Fatalf("saved after remove = %+v, saves %d", saved, f.configs.SaveCount())
+	}
+	if got := reply(t, 56, "/observers add x"); got != "unknown command, see /help" {
+		t.Fatalf("garbage reply = %q", got)
+	}
+}
+
+func TestInboundObserverGate(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+	observer := func(id int, text string) domain.GeneralCommand {
+		return domain.GeneralCommand{MessageID: id, FromID: 77, Text: text, Role: domain.RoleObserver}
+	}
+	if err := f.in.HandleGeneral(f.ctx, observer(60, "/status")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.HandleGeneral(f.ctx, observer(61, "/help")); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Sent()
+	if len(sent) != 2 || !strings.Contains(sent[0].Text, "reviewer") || !strings.HasPrefix(sent[1].Text, "Commands") {
+		t.Fatalf("observer replies = %+v", sent)
+	}
+	for _, text := range []string{"/options", "/observers add 78", "/new ws", "/away", "/whatever"} {
+		if err := f.in.HandleGeneral(f.ctx, observer(62, text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(f.tg.Sent()); n != 2 {
+		t.Fatalf("observer command answered: %+v", f.tg.Sent()[2:])
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"observer command dropped","from_id":77,"kind":"options"`) || !strings.Contains(f.logBuf.String(), `"role":"observer"`) {
+		t.Fatalf("drop not logged: %s", f.logBuf.String())
+	}
+	if f.configs.SaveCount() != 0 {
+		t.Fatalf("an observer changed the config: %d saves", f.configs.SaveCount())
+	}
+
+	// In a topic /observers points to General.
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 63, "/observers")); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 3 || sent[2].Text != "observer commands live in General: /observers, /observers add <id>, /observers remove <id>" || sent[2].ThreadID != 101 {
+		t.Fatalf("topic reply = %+v", sent)
+	}
+	if !strings.Contains(helpText, "/observers [add|remove <id>]") {
+		t.Fatal("help lacks /observers")
+	}
+}
+
+func TestInboundObserversWithoutStore(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.in.store = nil
+	if err := f.in.HandleGeneral(f.ctx, opCmd(70, "/observers add 77")); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "⚠️ config not saved: no config store" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if len(f.in.cfg.ObserverIDs) != 0 || len(f.tg.Settings()) != 0 {
+		t.Fatal("observer added without a store")
 	}
 }
