@@ -25,6 +25,7 @@ type daemonFixture struct {
 	rec      *app.Reconciler
 	idle     *testkit.FakeIdle
 	presence *app.Presence
+	bridge   *app.Bridge
 	daemon   *app.Daemon
 	inbox    *testkit.FakeInbox
 	done     chan error
@@ -69,6 +70,7 @@ func newDaemonSeeded(t *testing.T, kv ...string) *daemonFixture {
 	f.capture = app.NewCapture(f.herdr, registry.Live, f.clock, nil)
 	f.inbox = testkit.NewFakeInbox("/state/inbox")
 	bridge := app.NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, f.opts, app.Services{Inbox: f.inbox}, f.clock, nil)
+	f.bridge = bridge
 	f.idle = testkit.NewFakeIdle(0)
 	f.idle.Unsupported() // quiet mode stays off unless a test sets an idle time
 	f.presence = app.NewPresence(f.idle, f.opts, f.clock, nil)
@@ -130,6 +132,12 @@ const (
 	started0 = "send:0:▶️ Telegram Agents 1.2.3 started: 0 agents"
 	stopping = "send:0:⏹ Telegram Agents 1.2.3 stopping"
 )
+
+// waitHandled blocks until the bridge has served at least n jobs.
+func (f *daemonFixture) waitHandled(t *testing.T, n int64) {
+	t.Helper()
+	waitFor(t, fmt.Sprintf("bridge served %d jobs", n), func() bool { return f.bridge.Handled() >= n })
+}
 
 func (f *daemonFixture) waitCalls(t *testing.T, n int) {
 	t.Helper()
@@ -542,11 +550,19 @@ func TestDaemonManyAgentsBurst(t *testing.T) {
 		a := agent(fmt.Sprintf("p%02d", i), "", "", st)
 		f.herdr.Push(domain.HerdrEvent{Kind: domain.PaneAgentStatusChanged, PaneID: a.Key.PaneID, Agent: &a})
 	}
+	// Submit never blocks, so the pushes must not outrun the bridge
+	// goroutine: each round waits until the bridge has served every job so
+	// far (the n appeared events of the start, then 2n per round). A
+	// starved runner (macOS with -race, 2026-09-06) otherwise overflows the
+	// queue and the drop count measures the scheduler, not the daemon.
+	served := int64(n)
 	for range 5 {
 		for i := range n {
 			push(i, domain.StatusWorking)
 			push(i, domain.StatusIdle)
 		}
+		served += 2 * n
+		f.waitHandled(t, served)
 		f.clock.Advance(time.Second)
 	}
 	// The snapshot must agree with the events: the reconcile ticker fires
@@ -555,16 +571,15 @@ func TestDaemonManyAgentsBurst(t *testing.T) {
 	for i := range n {
 		push(i, domain.StatusBlocked)
 	}
+	served += n
+	f.waitHandled(t, served)
 	// Let the debounce and the screen settle timers fire. Timers are armed
-	// as jobs are served, so the clock is advanced repeatedly.
-	deadline := time.Now().Add(3 * time.Second)
-	for len(f.tg.Sent()) < n+1 && time.Now().Before(deadline) {
+	// as jobs are served, so the clock is advanced until every screen is
+	// posted.
+	waitFor(t, "blocked screens posted", func() bool {
 		f.clock.Advance(5 * time.Second)
-		time.Sleep(2 * time.Millisecond)
-	}
-	if len(f.tg.Sent()) < n+1 {
-		t.Fatalf("blocked screens posted = %d, want %d", len(f.tg.Sent())-1, n)
-	}
+		return len(f.tg.Sent()) >= n+1
+	})
 
 	if dropped := f.daemon.Stats().Dropped; dropped != 0 {
 		t.Fatalf("dropped %d jobs under a 40-agent burst", dropped)

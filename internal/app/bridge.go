@@ -24,6 +24,8 @@ type Bridge struct {
 	// fatal carries the first fatal error; the daemon reads it once.
 	fatal   chan error
 	dropped atomic.Int64
+	// handled counts jobs taken off the queue; tests pace a burst by it.
+	handled atomic.Int64
 	log     *slog.Logger
 	// runCtx is the context of Run; spawn derives its goroutines from it
 	// and wg counts them so Run returns only when they are done.
@@ -165,12 +167,20 @@ func (b *Bridge) Submit(job any) {
 // Dropped returns how many jobs were lost to overflow.
 func (b *Bridge) Dropped() int64 { return b.dropped.Load() }
 
+// Handled returns how many jobs the bridge has taken off its queue. A
+// test that floods the queue waits on it between bursts: Submit never
+// blocks, so a producer that outruns the bridge goroutine sees drops that
+// say nothing about the code under test.
+func (b *Bridge) Handled() int64 { return b.handled.Load() }
+
 // Run serves jobs, screen settle timers and command follow-up timers until
 // ctx is done. Errors never end the loop; fatal ones are reported through
 // Fatal and the daemon decides.
 func (b *Bridge) Run(ctx context.Context) {
 	b.log.Info("bridge started")
-	defer b.log.Info("bridge stopped")
+	defer func() {
+		b.log.Info("[FIX] bridge stopped", slog.Int64("handled", b.handled.Load()), slog.Int64("dropped", b.dropped.Load()))
+	}()
 	b.runCtx = ctx
 	defer b.wg.Wait()
 	for {
@@ -179,6 +189,7 @@ func (b *Bridge) Run(ctx context.Context) {
 			return
 		case job := <-b.jobs:
 			b.handle(ctx, job)
+			b.handled.Add(1)
 		case key := <-b.out.Due():
 			b.run(ctx, "screen", func(ctx context.Context) error { return b.out.Fire(ctx, key) })
 		case key := <-b.in.Due():
