@@ -80,11 +80,29 @@ const (
 
 // Reply is an agent's last message taken from its own transcript. Text is
 // the raw Markdown as the agent wrote it. Source names the file it came
-// from, for logs only. Age is how long ago that file was last written.
+// from, for logs only. Age is how long ago that file was last written and
+// Written the moment it was (zero when unknown); a file written before
+// the turn started belongs to an earlier turn. Meta is what the transcript
+// says about the turn that produced Text; every field may be empty.
 type Reply struct {
-	Text   string
-	Source string
-	Age    time.Duration
+	Text    string
+	Source  string
+	Age     time.Duration
+	Written time.Time
+	Meta    TurnMeta
+}
+
+// TurnMeta is what an agent's transcript records about one turn: the
+// model that answered, when the turn started (the operator's prompt) and
+// ended (the newest assistant record), the files it edited and how many
+// output tokens it wrote. Every field may be empty; Line renders whatever
+// is known.
+type TurnMeta struct {
+	Model        string
+	Started      time.Time
+	Ended        time.Time
+	Files        []string
+	OutputTokens int
 }
 
 // ReplySource finds the last reply of an agent outside Herdr, in the
@@ -118,7 +136,11 @@ type Button struct {
 // silent. Buttons, when set, are attached to the last message part as an
 // inline keyboard, one button per row. ForceReply asks the operator's
 // client to open the reply box for this message (Telegram's force_reply,
-// selective); it is ignored when Buttons are set.
+// selective); it is ignored when Buttons are set. Footer is one line of
+// plain text the adapter escapes and appends after the last part, outside
+// any code block and outside the fold; empty means none. Fold is a line
+// count: a part with more lines than this is sent collapsed (Telegram's
+// expandable quote), 0 never folds.
 type Outgoing struct {
 	ThreadID   int
 	Text       string
@@ -130,6 +152,8 @@ type Outgoing struct {
 	Notify     bool
 	Buttons    []Button
 	ForceReply bool
+	Footer     string
+	Fold       int
 }
 
 // Document is one file for the forum group, sent silently as a single

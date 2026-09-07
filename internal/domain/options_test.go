@@ -133,6 +133,8 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 		choices string
 	}{
 		{OptionPostsDone, KindChoice, "screen", ChoiceSourceDone},
+		{OptionPostsMeta, KindBool, "true", ""},
+		{OptionPostsFold, KindChoice, "20", ChoiceSourceLines},
 		{OptionPostsChrome, KindBool, "true", ""},
 		{OptionPostsReactions, KindBool, "false", ""},
 		{OptionPostsPager, KindBool, "true", ""},
@@ -148,8 +150,11 @@ func TestOptionGroupsAndSpecs(t *testing.T) {
 			t.Errorf("posts option %d = %+v, want %+v", i, got, w)
 		}
 	}
-	if posts[4].Validate == nil || posts[5].Validate == nil {
+	if posts[6].Validate == nil || posts[7].Validate == nil {
 		t.Error("seconds options must carry validateSeconds")
+	}
+	if posts[2].Validate == nil {
+		t.Error("posts.fold must carry validateLines")
 	}
 	inbox := OptionsInGroup(GroupInbox)
 	wantInbox := []struct {
@@ -563,6 +568,64 @@ func TestSecondsOptions(t *testing.T) {
 	clean, dropped := SanitizeOptions(dirty, nil)
 	if len(dropped) != 0 || clean.String(OptionPostsBlockedDelay) != "45" {
 		t.Errorf("sanitize kept %q, dropped %v", clean.String(OptionPostsBlockedDelay), dropped)
+	}
+}
+
+func TestFoldOption(t *testing.T) {
+	o := DefaultOptions()
+	if !o.PostsMeta() {
+		t.Error("posts.meta should default to on")
+	}
+	if off, _ := o.With(OptionPostsMeta, "false"); off.PostsMeta() {
+		t.Error("posts.meta still on after With")
+	}
+	if got := o.FoldAfter(); got != 20 {
+		t.Errorf("default FoldAfter = %d, want 20", got)
+	}
+	for value, want := range map[string]int{"0": 0, "20": 20, "75": 75, "1000": 1000, "garbage": 20, "-1": 20, "1001": 20} {
+		next, _ := o.With(OptionPostsFold, value)
+		if got := next.FoldAfter(); got != want {
+			t.Errorf("FoldAfter(%q) = %d, want %d", value, got, want)
+		}
+	}
+	for _, v := range []string{"0", "10", "40", "75", "1000"} {
+		next, err := o.With(OptionPostsFold, v)
+		if err != nil {
+			t.Fatalf("With(posts.fold, %q): %v", v, err)
+		}
+		if err := ValidateOptions(next, nil); err != nil {
+			t.Errorf("ValidateOptions(posts.fold %q): %v", v, err)
+		}
+	}
+	for _, v := range []string{"-1", "1001", "x", "", "20 lines"} {
+		next, _ := o.With(OptionPostsFold, v)
+		if err := ValidateOptions(next, nil); !errors.Is(err, ErrInvalidOption) {
+			t.Errorf("ValidateOptions(posts.fold %q) = %v, want ErrInvalidOption", v, err)
+		}
+	}
+	spec, _ := LookupOption(OptionPostsFold)
+	for _, tc := range []struct{ value, label, button string }{
+		{"0", "Off", "Off"},
+		{"20", "20 lines", "20"},
+		{"40", "40 lines", "40"},
+		{"garbage", "garbage", "garbage"},
+	} {
+		if got := ChoiceLabel(spec, tc.value); got != tc.label {
+			t.Errorf("ChoiceLabel(%q) = %q, want %q", tc.value, got, tc.label)
+		}
+		if got := ChoiceButton(spec, tc.value); got != tc.button {
+			t.Errorf("ChoiceButton(%q) = %q, want %q", tc.value, got, tc.button)
+		}
+	}
+	list, ok := StaticChoices(ChoiceSourceLines)
+	if !ok || strings.Join(list, ",") != "0,10,20,40" {
+		t.Errorf("StaticChoices(lines) = %v, %v", list, ok)
+	}
+	// A hand-edited value outside the panel's list survives sanitising.
+	dirty, _ := o.With(OptionPostsFold, "75")
+	clean, dropped := SanitizeOptions(dirty, nil)
+	if len(dropped) != 0 || clean.String(OptionPostsFold) != "75" {
+		t.Errorf("sanitize kept %q, dropped %v", clean.String(OptionPostsFold), dropped)
 	}
 }
 

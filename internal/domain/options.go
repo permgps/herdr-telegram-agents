@@ -97,6 +97,16 @@ const (
 	// OptionPostsDone says what a topic receives when its agent finishes:
 	// a DoneMode value.
 	OptionPostsDone = "posts.done"
+	// OptionPostsMeta ends every done post with one line from the agent's
+	// transcript: duration, model, edited files and output tokens.
+	OptionPostsMeta = "posts.meta"
+	// OptionPostsFold is the line count above which a done post taken from
+	// the transcript (Reply or Formatted) arrives collapsed; "0" never
+	// folds.
+	OptionPostsFold = "posts.fold"
+	// ChoiceSourceLines is the static list of line counts offered by the
+	// panel for OptionPostsFold (see LinesChoices).
+	ChoiceSourceLines = "lines"
 	// OptionPostsChrome cuts Claude Code's input frame (the box, the
 	// status line and the mode hint) from the bottom of every screen post.
 	OptionPostsChrome = "posts.chrome"
@@ -257,6 +267,24 @@ func buildOptionSpecs() []OptionSpec {
 			Kind:        KindChoice,
 			Default:     string(DoneScreen),
 			Choices:     ChoiceSourceDone,
+		},
+		{
+			Key:         OptionPostsMeta,
+			Group:       GroupPosts,
+			Title:       "Turn summary line",
+			Description: "End every done post with one line from the agent's transcript: how long the turn took, the model, how many files it edited and how many tokens it wrote. Claude Code only; without a transcript the post ends as before.",
+			Kind:        KindBool,
+			Default:     "true",
+		},
+		{
+			Key:         OptionPostsFold,
+			Group:       GroupPosts,
+			Title:       "Fold long replies after",
+			Description: "A done post taken from the transcript (Reply or Formatted) with more lines than this arrives collapsed: Telegram shows its first lines and an arrow to open the rest. The summary line stays visible. Off never folds; Screen posts are never folded.",
+			Kind:        KindChoice,
+			Default:     "20",
+			Choices:     ChoiceSourceLines,
+			Validate:    validateLines,
 		},
 		{
 			Key:         OptionPostsChrome,
@@ -439,6 +467,20 @@ var noticeChoices = []string{"0", "10", "20", "30", "60", "120"}
 // 30, 60 and 120 seconds.
 func NoticeChoices() []string { return append([]string(nil), noticeChoices...) }
 
+// linesChoices is the list the panel offers for OptionPostsFold.
+var linesChoices = []string{"0", "10", "20", "40"}
+
+// maxLines bounds a hand-edited fold threshold.
+const maxLines = 1000
+
+// defaultFoldAfter is the threshold in force when the stored value cannot
+// be parsed; it equals the OptionPostsFold default.
+const defaultFoldAfter = 20
+
+// LinesChoices returns the line counts the panel offers: Off, 10, 20 and
+// 40 lines.
+func LinesChoices() []string { return append([]string(nil), linesChoices...) }
+
 // megabytesChoices is the list the panel offers for OptionInboxMaxMB.
 var megabytesChoices = []string{"5", "10", "20"}
 
@@ -467,6 +509,8 @@ func StaticChoices(name string) ([]string, bool) {
 		return SecondsChoices(), true
 	case ChoiceSourceNotice:
 		return NoticeChoices(), true
+	case ChoiceSourceLines:
+		return LinesChoices(), true
 	}
 	return nil, false
 }
@@ -503,13 +547,31 @@ func validateSeconds(value string) error {
 	return nil
 }
 
+func validateLines(value string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 || n > maxLines {
+		return fmt.Errorf("%q is not a line count between 0 and %d: %w", value, maxLines, ErrInvalidOption)
+	}
+	return nil
+}
+
 // ChoiceLabel is the human form of a choice value in panel text: days
 // become "Off", "1 day" or "30 days", minutes "1 min" or "3 min", seconds
-// "Off" or "30 s", notice delays "Keep" or "20 s", megabytes "20 MB",
-// posts modes "Silent", "Held", "Normal"; other sources show the value
-// itself.
+// "Off" or "30 s", notice delays "Keep" or "20 s", lines "Off" or
+// "20 lines", megabytes "20 MB", posts modes "Silent", "Held", "Normal";
+// other sources show the value itself.
 func ChoiceLabel(spec OptionSpec, value string) string {
 	switch spec.Choices {
+	case ChoiceSourceLines:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Off"
+		default:
+			return fmt.Sprintf("%d lines", n)
+		}
 	case ChoiceSourceNotice:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		switch {
@@ -563,10 +625,20 @@ func ChoiceLabel(spec OptionSpec, value string) string {
 }
 
 // ChoiceButton is the short form of a choice value on a button: "Off",
-// "7d", "3m", "30s", "Keep", "20MB", "Silent"; other sources show the
-// value itself.
+// "7d", "3m", "30s", "Keep", "20", "20MB", "Silent"; other sources show
+// the value itself.
 func ChoiceButton(spec OptionSpec, value string) string {
 	switch spec.Choices {
+	case ChoiceSourceLines:
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		switch {
+		case err != nil:
+			return value
+		case n == 0:
+			return "Off"
+		default:
+			return strconv.Itoa(n)
+		}
 	case ChoiceSourceNotice:
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		switch {
@@ -862,6 +934,21 @@ func (o Options) MinTurn() time.Duration { return o.seconds(OptionPostsMinSecond
 // PostsChrome reports whether Claude Code's input frame is cut from the
 // bottom of screen posts.
 func (o Options) PostsChrome() bool { return o.Bool(OptionPostsChrome) }
+
+// PostsMeta reports whether every done post ends with the turn summary
+// line from the agent's transcript.
+func (o Options) PostsMeta() bool { return o.Bool(OptionPostsMeta) }
+
+// FoldAfter is the line count above which a transcript done post arrives
+// collapsed; zero never folds. An unparsable or out-of-range value answers
+// the default.
+func (o Options) FoldAfter() int {
+	n, err := strconv.Atoi(strings.TrimSpace(o.String(OptionPostsFold)))
+	if err != nil || n < 0 || n > maxLines {
+		return defaultFoldAfter
+	}
+	return n
+}
 
 // NoticeDelay is how long the bot's own topic notices stay before they
 // are deleted, and whether they are deleted at all: "0" answers (0,

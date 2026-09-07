@@ -86,6 +86,13 @@ func (o *Options) PostsDone() domain.DoneMode { return o.Get().PostsDone() }
 // screen posts.
 func (o *Options) PostsChrome() bool { return o.Get().PostsChrome() }
 
+// PostsMeta reports whether done posts end with the turn summary line.
+func (o *Options) PostsMeta() bool { return o.Get().PostsMeta() }
+
+// FoldAfter is the fold threshold in lines for transcript done posts;
+// zero never folds.
+func (o *Options) FoldAfter() int { return o.Get().FoldAfter() }
+
 // NoticeDelay is how long the bot's own topic notices stay, and whether
 // they are deleted at all.
 func (o *Options) NoticeDelay() (time.Duration, bool) { return o.Get().NoticeDelay() }

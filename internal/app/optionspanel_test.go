@@ -396,7 +396,7 @@ func TestPanelPostsGroup(t *testing.T) {
 		hooked = append(hooked, key+"="+cur.String(key))
 	})
 	pressPanel(f, t, 900, dataGroup(groupIndex(domain.GroupPosts)))
-	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ Trim the input frame|☐ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Screen Done post|☑ Turn summary line|20 lines Fold long replies after|☑ Trim the input frame|☐ React to prompts|☑ Questions in the bot's chat|Off Question delay|Off Skip short done posts|↺ Reset to defaults|‹ Back|✖ Close" {
 		t.Fatalf("posts buttons = %v", got)
 	}
 	if text := f.tg.Text(900); !strings.Contains(text, "<b>Questions in the bot&#39;s chat</b>: On: a question from an agent is posted into its topic without a sound") {
@@ -407,7 +407,7 @@ func TestPanelPostsGroup(t *testing.T) {
 	if f.opts.PagerEnabled() || f.options.Saved() != 1 || len(hooked) != 1 || hooked[0] != "posts.pager=false" {
 		t.Fatalf("pager toggle: enabled=%v saves=%d hooks=%v", f.opts.PagerEnabled(), f.options.Saved(), hooked)
 	}
-	if got := texts(f.tg.Buttons(900)); got[3] != "☐ Questions in the bot's chat" {
+	if got := texts(f.tg.Buttons(900)); got[5] != "☐ Questions in the bot's chat" {
 		t.Fatalf("buttons after pager toggle = %v", got)
 	}
 	pressPanel(f, t, 900, dataToggle(domain.OptionPostsPager))
@@ -416,11 +416,11 @@ func TestPanelPostsGroup(t *testing.T) {
 	}
 	// The frame cut is a plain checkbox.
 	pressPanel(f, t, 900, dataToggle(domain.OptionPostsChrome))
-	if got := texts(f.tg.Buttons(900)); got[1] != "☐ Trim the input frame" || f.opts.PostsChrome() {
+	if got := texts(f.tg.Buttons(900)); got[3] != "☐ Trim the input frame" || f.opts.PostsChrome() {
 		t.Fatalf("chrome toggle: buttons=%v on=%v", got, f.opts.PostsChrome())
 	}
 	pressPanel(f, t, 900, dataToggle(domain.OptionPostsChrome))
-	if got := texts(f.tg.Buttons(900)); got[1] != "☑ Trim the input frame" || !f.opts.PostsChrome() {
+	if got := texts(f.tg.Buttons(900)); got[3] != "☑ Trim the input frame" || !f.opts.PostsChrome() {
 		t.Fatalf("chrome toggle back: buttons=%v on=%v", got, f.opts.PostsChrome())
 	}
 	pressPanel(f, t, 900, dataGrid(domain.OptionPostsDone, 0))
@@ -437,5 +437,26 @@ func TestPanelPostsGroup(t *testing.T) {
 	}
 	if got := saved.String(domain.OptionPostsDone); got != "formatted" {
 		t.Fatalf("saved value = %q", got)
+	}
+	// The summary line is a plain checkbox; the fold picker offers Off, 10,
+	// 20 and 40 lines and the pick is saved.
+	pressPanel(f, t, 900, dataToggle(domain.OptionPostsMeta))
+	if got := texts(f.tg.Buttons(900)); got[1] != "☐ Turn summary line" || f.opts.PostsMeta() {
+		t.Fatalf("meta toggle: buttons=%v on=%v", got, f.opts.PostsMeta())
+	}
+	pressPanel(f, t, 900, dataToggle(domain.OptionPostsMeta))
+	if got := texts(f.tg.Buttons(900)); got[1] != "☑ Turn summary line" || !f.opts.PostsMeta() {
+		t.Fatalf("meta toggle back: buttons=%v on=%v", got, f.opts.PostsMeta())
+	}
+	pressPanel(f, t, 900, dataGrid(domain.OptionPostsFold, 0))
+	if got := texts(f.tg.Buttons(900)); strings.Join(got, "|") != "Off|10|[20]|40|‹ Back" {
+		t.Fatalf("fold grid = %v", got)
+	}
+	pressPanel(f, t, 900, dataPick(domain.OptionPostsFold, 0))
+	if f.opts.FoldAfter() != 0 || f.options.Saved() != 8 {
+		t.Fatalf("pick off: fold=%d saves=%d", f.opts.FoldAfter(), f.options.Saved())
+	}
+	if got := texts(f.tg.Buttons(900)); got[2] != "Off Fold long replies after" {
+		t.Fatalf("buttons after fold pick = %v", got)
 	}
 }
