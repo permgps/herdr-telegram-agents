@@ -719,12 +719,13 @@ func TestOutboundDoneModes(t *testing.T) {
 			if reads := len(f.herdr.Reads()); reads != tc.reads {
 				t.Errorf("screen reads = %d, want %d", reads, tc.reads)
 			}
-			wantCalls := 1
-			if tc.mode == domain.DoneScreen {
-				wantCalls = 0
+			// Every mode reads the transcript once: for the text, or only
+			// for the summary line in Screen mode.
+			if calls := len(f.replies.Calls()); calls != 1 {
+				t.Errorf("reply lookups = %d, want 1", calls)
 			}
-			if calls := len(f.replies.Calls()); calls != wantCalls {
-				t.Errorf("reply lookups = %d, want %d", calls, wantCalls)
+			if got.Footer != "" || got.Fold != map[bool]int{true: 20}[tc.mode != domain.DoneScreen] {
+				t.Errorf("footer/fold without meta = %q / %d", got.Footer, got.Fold)
 			}
 			line := "screen posted"
 			if tc.mode != domain.DoneScreen {
@@ -734,6 +735,198 @@ func TestOutboundDoneModes(t *testing.T) {
 				t.Errorf("log lacks %q: %s", line, f.logBuf.String())
 			}
 		})
+	}
+}
+
+// metaFixture returns a fixture with the agent's transcript meta scripted
+// so its summary line reads "⏱ 4 min · fable-5-1 · ✏️ 3 files · ↑ 12k
+// tokens", the transcript written one second before the fake clock.
+func metaFixture(t *testing.T, mode domain.DoneMode) (*bridgeFixture, domain.Agent) {
+	t.Helper()
+	f := newBridgeFixture(t)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(mode), 1); err != nil {
+		t.Fatal(err)
+	}
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "recap: all tests pass")
+	f.replies.Set(a.Key, "Done. **All** tests pass.")
+	f.replies.SetMeta(a.Key, domain.TurnMeta{Model: "claude-fable-5-1", Started: tb0, Ended: tb0.Add(4 * time.Minute),
+		Files: []string{"a.go", "b.go", "c.go"}, OutputTokens: 12000}, f.clock.Now().Add(-time.Second))
+	return f, a
+}
+
+const metaLine = "⏱ 4 min · fable-5-1 · ✏️ 3 files · ↑ 12k tokens"
+
+func TestOutboundDoneSummaryLine(t *testing.T) {
+	for _, tc := range []struct {
+		mode domain.DoneMode
+		code bool
+		fold int
+		line string
+	}{
+		{domain.DoneScreen, true, 0, "screen posted"},
+		{domain.DoneReply, true, 20, "reply posted"},
+		{domain.DoneFormatted, false, 20, "reply posted"},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			f, a := metaFixture(t, tc.mode)
+			f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+			f.fire(t, 1)
+			sent := f.tg.Sent()
+			if len(sent) != 1 || sent[0].Footer != metaLine || sent[0].Fold != tc.fold || sent[0].Code != tc.code {
+				t.Fatalf("Sent = %+v", sent)
+			}
+			logs := f.logBuf.String()
+			if !strings.Contains(logs, `"msg":"turn meta","key":"p1/t1","model":"claude-fable-5-1","turn_ms":240000,"files":3,"output_tokens":12000`) ||
+				!strings.Contains(logs, `"line":"`+metaLine+`"`) {
+				t.Errorf("log lacks the turn meta line: %s", logs)
+			}
+			if !strings.Contains(logs, `"msg":"`+tc.line+`"`) || !strings.Contains(logs, `"footer":true`) {
+				t.Errorf("log lacks %q with footer=true: %s", tc.line, logs)
+			}
+		})
+	}
+	// Formatted with the fold off: no fold, the line stays.
+	f, a := metaFixture(t, domain.DoneFormatted)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsFold, "0", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Fold != 0 || sent[0].Footer != metaLine || !sent[0].Markdown {
+		t.Fatalf("fold off: Sent = %+v", sent)
+	}
+}
+
+func TestOutboundDoneSummaryLineOff(t *testing.T) {
+	// Screen mode with posts.meta off: no transcript read at all.
+	f, a := metaFixture(t, domain.DoneScreen)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsMeta, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "" || sent[0].Text != "recap: all tests pass" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if calls := f.replies.Calls(); len(calls) != 0 {
+		t.Errorf("transcript read with posts.meta off: %v", calls)
+	}
+	// Reply mode with posts.meta off: the text, no line.
+	f, a = metaFixture(t, domain.DoneReply)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsMeta, "false", 1); err != nil {
+		t.Fatal(err)
+	}
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "" || sent[0].Text != "Done. **All** tests pass." || sent[0].Fold != 20 {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"reply posted"`) || strings.Contains(f.logBuf.String(), `"msg":"turn meta"`) {
+		t.Errorf("log = %s", f.logBuf.String())
+	}
+}
+
+func TestOutboundDoneSummaryLineUnavailable(t *testing.T) {
+	// A Codex agent in Screen mode: the screen, no line, one debug line
+	// and nothing at info.
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "recap: all tests pass")
+	f.replies.Fail(a.Key, fmt.Errorf("%w: unsupported agent %q", domain.ErrNoReply, "codex"))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "" || sent[0].Text != "recap: all tests pass" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	logs := f.logBuf.String()
+	if !strings.Contains(logs, `"level":"DEBUG","msg":"turn meta unavailable","key":"p1/t1","err":"`) || strings.Contains(logs, "reply source unavailable") {
+		t.Errorf("log = %s", logs)
+	}
+	if !strings.Contains(logs, `"msg":"screen posted"`) || !strings.Contains(logs, `"footer":false`) {
+		t.Errorf("log lacks screen posted with footer=false: %s", logs)
+	}
+	// A reply whose meta is unknown: the post as before, no line.
+	f = newBridgeFixture(t)
+	if err := f.opts.Set(f.ctx, domain.OptionPostsDone, string(domain.DoneReply), 1); err != nil {
+		t.Fatal(err)
+	}
+	a = f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.replies.Set(a.Key, "Just text")
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "" || sent[0].Text != "Just text" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestOutboundDoneStaleTranscript(t *testing.T) {
+	// Reply mode: a transcript written a minute before the turn's first
+	// working status is another turn's; the screen is posted instead.
+	f, a := metaFixture(t, domain.DoneReply)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.replies.SetMeta(a.Key, domain.TurnMeta{Model: "claude-fable-5-1"}, f.clock.Now().Add(-time.Minute))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "recap: all tests pass" || sent[0].Footer != "" || !sent[0].Code || sent[0].Fold != 0 {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if !strings.Contains(f.logBuf.String(), `"level":"INFO","msg":"reply source unavailable","key":"p1/t1","mode":"reply","err":"no reply available: stale transcript: written 1m0s before the turn started"`) {
+		t.Errorf("log = %s", f.logBuf.String())
+	}
+	// Screen mode: the screen without a line, at debug.
+	f, a = metaFixture(t, domain.DoneScreen)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.replies.SetMeta(a.Key, domain.TurnMeta{Model: "claude-fable-5-1"}, f.clock.Now().Add(-time.Minute))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if !strings.Contains(f.logBuf.String(), `"msg":"turn meta unavailable"`) || !strings.Contains(f.logBuf.String(), "stale") || strings.Contains(f.logBuf.String(), "reply source unavailable") {
+		t.Errorf("log = %s", f.logBuf.String())
+	}
+	// A turn whose start the daemon never saw has no guard: the line is
+	// posted even for an old transcript.
+	f, a = metaFixture(t, domain.DoneReply)
+	f.replies.SetMeta(a.Key, domain.TurnMeta{Model: "claude-fable-5-1"}, f.clock.Now().Add(-time.Hour))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "fable-5-1" || sent[0].Text != "Done. **All** tests pass." {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	// A transcript written after the turn started passes the guard.
+	f, a = metaFixture(t, domain.DoneReply)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+	f.clock.Advance(10 * time.Second)
+	f.replies.SetMeta(a.Key, domain.TurnMeta{Model: "claude-fable-5-1"}, f.clock.Now())
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+	f.fire(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != "fable-5-1" {
+		t.Fatalf("Sent = %+v", sent)
+	}
+}
+
+func TestOutboundDoneReplyDuplicateIgnoresFooter(t *testing.T) {
+	f, a := metaFixture(t, domain.DoneReply)
+	for i := 0; i < 2; i++ {
+		f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusWorking)})
+		f.clock.Advance(time.Second)
+		// The second turn wrote fewer tokens: a different footer, the same
+		// text, no second post.
+		meta := domain.TurnMeta{Model: "claude-fable-5-1", Started: tb0, Ended: tb0.Add(4 * time.Minute), Files: []string{"a.go", "b.go", "c.go"}, OutputTokens: 12000}
+		if i == 1 {
+			meta = domain.TurnMeta{Model: "claude-fable-5-1", OutputTokens: 999}
+		}
+		f.replies.SetMeta(a.Key, meta, f.clock.Now())
+		f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusDone)})
+		f.fire(t, 1)
+	}
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Footer != metaLine {
+		t.Fatalf("Sent = %+v", sent)
+	}
+	if !strings.Contains(f.logBuf.String(), `"reason":"duplicate"`) {
+		t.Errorf("log lacks the duplicate skip: %s", f.logBuf.String())
 	}
 }
 

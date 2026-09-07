@@ -61,6 +61,11 @@ type outbound struct {
 	// from the bottom of every screen before it is posted, hashed or
 	// parsed for a dialog.
 	chrome func() bool
+	// meta reads posts.meta: end every done post with the turn summary
+	// line from the transcript; fold reads posts.fold, the line count
+	// above which a transcript done post is sent collapsed (0 never).
+	meta func() bool
+	fold func() int
 
 	deb        *debouncer
 	lastPosted map[domain.Key]string // SHA-256 of the last screen posted per key
@@ -176,6 +181,8 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 	blockedDelay := func() time.Duration { return 0 }
 	pager := func() bool { return false }
 	chrome := func() bool { return true }
+	meta := func() bool { return true }
+	fold := func() int { return defaultFoldLines }
 	if opts != nil {
 		paused = func() bool { return !opts.SyncEnabled() }
 		doneMode = opts.PostsDone
@@ -184,6 +191,8 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 		blockedDelay = opts.BlockedDelay
 		pager = opts.PagerEnabled
 		chrome = opts.PostsChrome
+		meta = opts.PostsMeta
+		fold = opts.FoldAfter
 	}
 	if live == nil {
 		live = func() []domain.Agent { return nil }
@@ -206,6 +215,8 @@ func newOutbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, chatID in
 		replies:      replies,
 		doneMode:     doneMode,
 		chrome:       chrome,
+		meta:         meta,
+		fold:         fold,
 		log:          log,
 		deb:          newDebouncer(clock, screenSettle, log),
 		lastPosted:   map[domain.Key]string{},
@@ -546,13 +557,36 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	if mode != domain.DoneScreen && o.replies == nil {
 		mode = domain.DoneScreen
 	}
-	if !captured && mode != domain.DoneScreen {
+	// The transcript is read for the reply text (Reply, Formatted) and,
+	// with posts.meta on, for the summary line under every done post. A
+	// transcript last written before the turn started belongs to an
+	// earlier turn (two Claude panes in one directory) and counts as
+	// unavailable. A failure costs the screen mode nothing but the line.
+	wantMeta := agent.Status == domain.StatusDone && o.meta() && o.replies != nil
+	var footer string
+	if !captured && (mode != domain.DoneScreen || wantMeta) {
 		r, err := o.replies.LastReply(ctx, agent)
-		if err != nil {
+		if err == nil && hasTurn && !t.started.IsZero() && !r.Written.IsZero() && r.Written.Before(t.started) {
+			err = fmt.Errorf("%w: stale transcript: written %s before the turn started", domain.ErrNoReply, t.started.Sub(r.Written).Round(time.Second))
+		}
+		switch {
+		case err != nil && mode != domain.DoneScreen:
 			o.log.Info("reply source unavailable", slog.String("key", key.String()), slog.String("mode", string(mode)), slog.Any("err", err))
 			mode = domain.DoneScreen
-		} else {
-			reply, text = r, strings.TrimSpace(r.Text)
+		case err != nil:
+			o.log.Debug("turn meta unavailable", slog.String("key", key.String()), slog.Any("err", err))
+		default:
+			if mode != domain.DoneScreen {
+				reply, text = r, strings.TrimSpace(r.Text)
+			}
+			if wantMeta {
+				footer = r.Meta.Line()
+				turnDuration, _ := r.Meta.Duration()
+				o.log.Debug("turn meta", slog.String("key", key.String()), slog.String("model", r.Meta.Model),
+					slog.Int64("turn_ms", turnDuration.Milliseconds()), slog.Int("files", len(r.Meta.Files)),
+					slog.Int("output_tokens", r.Meta.OutputTokens), slog.Int64("written_ms_ago", o.clock.Now().Sub(r.Written).Milliseconds()),
+					slog.String("line", footer))
+			}
 		}
 	}
 	if mode == domain.DoneScreen && !captured {
@@ -573,9 +607,10 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	if err := o.retire(ctx, key, "superseded"); err != nil {
 		return err
 	}
-	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: mode != domain.DoneFormatted, Markdown: mode == domain.DoneFormatted, Notify: notify}
+	out := domain.Outgoing{ThreadID: entry.ThreadID, Text: text, Code: mode != domain.DoneFormatted, Markdown: mode == domain.DoneFormatted, Notify: notify, Footer: footer}
 	if mode != domain.DoneScreen {
 		out.MaxParts = replyMaxParts
+		out.Fold = o.fold()
 	}
 	var dialog domain.Dialog
 	if agent.Status == domain.StatusBlocked {
@@ -614,12 +649,14 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		o.log.Info("reply posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 			slog.String("mode", string(mode)), slog.Int("lines", strings.Count(text, "\n")+1), slog.Int("bytes", len(text)),
 			slog.String("source", reply.Source), slog.Int64("age_ms", reply.Age.Milliseconds()),
-			slog.Int("message_id", id), slog.Bool("notify", notify), slog.Bool("forced", force))
+			slog.Int("message_id", id), slog.Bool("notify", notify), slog.Bool("forced", force),
+			slog.Bool("footer", footer != ""), slog.Int("fold", out.Fold))
 		return nil
 	}
 	o.log.Info("screen posted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 		slog.String("status", string(agent.Status)), slog.Int("lines", strings.Count(text, "\n")+1), slog.Int("bytes", len(text)),
-		slog.Int("buttons", len(out.Buttons)), slog.Int("message_id", id), slog.Bool("notify", out.Notify), slog.Bool("paged", paged), slog.Bool("forced", force))
+		slog.Int("buttons", len(out.Buttons)), slog.Int("message_id", id), slog.Bool("notify", out.Notify), slog.Bool("paged", paged), slog.Bool("forced", force),
+		slog.Bool("footer", footer != ""))
 	return nil
 }
 

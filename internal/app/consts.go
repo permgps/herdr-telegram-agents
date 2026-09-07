@@ -30,6 +30,9 @@ const (
 	// replyMaxParts caps a done post taken from the transcript: a reply
 	// longer than this many messages is cut with a trailer.
 	replyMaxParts = 5
+	// defaultFoldLines is the fold threshold used without an options
+	// registry (tests); it mirrors the posts.fold default.
+	defaultFoldLines = 20
 	// bridgeBuffer bounds jobs waiting for the bridge goroutine.
 	bridgeBuffer = 256
 	// bridgeCallTimeout bounds one bridge job (Herdr read plus Telegram send).

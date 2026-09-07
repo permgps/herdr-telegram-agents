@@ -224,6 +224,8 @@ func TestPanelStringsAreEnglish(t *testing.T) {
 	for _, tc := range []struct{ group, key, title string }{
 		{domain.GroupSync, domain.OptionSyncDashboard, "Dashboard in General"},
 		{domain.GroupPosts, domain.OptionPostsPager, "Questions in the bot's chat"},
+		{domain.GroupPosts, domain.OptionPostsMeta, "Turn summary line"},
+		{domain.GroupPosts, domain.OptionPostsFold, "Fold long replies after"},
 	} {
 		pressPanel(f, t, 900, dataGroup(groupIndex(tc.group)))
 		spec, _ := domain.LookupOption(tc.key)
