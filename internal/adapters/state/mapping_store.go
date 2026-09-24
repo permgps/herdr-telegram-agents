@@ -17,9 +17,11 @@ import (
 const MappingFileName = "mapping.json"
 
 type mappingFile struct {
-	Version int                         `json:"version"`
-	ChatID  int64                       `json:"chat_id"`
-	Topics  map[string]mappingFileEntry `json:"topics"`
+	Version          int                         `json:"version"`
+	ChatID           int64                       `json:"chat_id"`
+	Topics           map[string]mappingFileEntry `json:"topics"`
+	PendingCreates   map[string]bool             `json:"pending_creates,omitempty"`
+	PendingDashboard bool                        `json:"pending_dashboard,omitempty"`
 	// Dashboard is the pinned status message in General; omitted when
 	// none exists so files written before the dashboard stay byte-equal.
 	Dashboard int `json:"dashboard_message_id,omitempty"`
@@ -100,6 +102,12 @@ func (s *MappingStore) Load(context.Context) (*domain.Mapping, error) {
 		m.Version = f.Version
 	}
 	m.Dashboard = f.Dashboard
+	m.PendingDashboard = f.PendingDashboard
+	for key, pending := range f.PendingCreates {
+		if pending {
+			m.PendingCreates[key] = true
+		}
+	}
 	for key, e := range f.Topics {
 		m.Topics[key] = &domain.TopicEntry{
 			ThreadID:    e.ThreadID,
@@ -124,7 +132,16 @@ func (s *MappingStore) Save(ctx context.Context, m *domain.Mapping) error {
 	if version < domain.MappingVersion {
 		version = domain.MappingVersion
 	}
-	f := mappingFile{Version: version, ChatID: m.ChatID, Topics: make(map[string]mappingFileEntry, len(m.Topics)), Dashboard: m.Dashboard}
+	f := mappingFile{Version: version, ChatID: m.ChatID, Topics: make(map[string]mappingFileEntry, len(m.Topics)), Dashboard: m.Dashboard,
+		PendingDashboard: m.PendingDashboard}
+	if len(m.PendingCreates) > 0 {
+		f.PendingCreates = make(map[string]bool, len(m.PendingCreates))
+		for key, pending := range m.PendingCreates {
+			if pending {
+				f.PendingCreates[key] = true
+			}
+		}
+	}
 	for key, e := range m.Topics {
 		f.Topics[key] = mappingFileEntry{
 			ThreadID:    e.ThreadID,

@@ -16,10 +16,6 @@ const (
 	snapshotCoalesce = 500 * time.Millisecond
 	// editDebounce is the trailing-edge delay before a topic edit.
 	editDebounce = 3 * time.Second
-	// mappingMaxEntries caps the mapping file; oldest exited entries go
-	// first. Age alone never drops an entry: the stale-topic sweep deletes
-	// the topic and forgets the entry instead.
-	mappingMaxEntries = 500
 	// screenSettle is how long the bridge waits after an agent turns blocked
 	// or done before reading its screen, so the dialog has fully rendered.
 	screenSettle = 1500 * time.Millisecond
@@ -72,9 +68,12 @@ const (
 	// requests.
 	sweepInterval = 24 * time.Hour
 	// sweepBatch caps the deletions of one sweep pass so a long backlog
-	// does not monopolise the Telegram queue; the rest wait for the next
-	// pass.
+	// does not monopolise the Telegram queue.
 	sweepBatch = 50
+	// sweepContinueInterval spaces successful batches. A pass that cannot
+	// delete anything waits longer before trying again.
+	sweepContinueInterval = 1 * time.Minute
+	sweepRetryInterval    = 5 * time.Minute
 	// presenceInterval is how often the daemon samples the machine's input
 	// idle time to decide whether the operator is at the desk.
 	presenceInterval = 10 * time.Second

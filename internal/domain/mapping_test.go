@@ -177,35 +177,29 @@ func TestMappingOrphans(t *testing.T) {
 	}
 }
 
-func TestMappingPrune(t *testing.T) {
+func TestMappingPruneRetainsTopicReferencesUntilDeletion(t *testing.T) {
 	m := domain.NewMapping(-1)
 	live := agent("p0", "t0", "live", domain.StatusWorking)
 	linked(t, m, live, 0)
-	for i := 1; i <= 4; i++ {
-		a := agent("p"+string(rune('0'+i)), "t", "x", domain.StatusWorking)
+	for i := 1; i <= 501; i++ {
+		a := agent(fmt.Sprintf("p%d", i), "t", "x", domain.StatusWorking)
 		linked(t, m, a, i)
 		m.MarkExited(a.Key, t0.Add(time.Duration(i)*time.Hour))
 	}
-	// Age alone removes nothing any more: the sweep owns that.
-	if got := m.Prune(10); got != 0 {
-		t.Fatalf("Prune under the cap removed %d", got)
+	// A count cap cannot be enforced by forgetting topics Telegram still has.
+	if got := m.Prune(500); got != 0 {
+		t.Fatalf("Prune removed %d Telegram topic references", got)
 	}
-	if len(m.Topics) != 5 {
-		t.Fatalf("entries = %d, want 5", len(m.Topics))
-	}
-	// Count: cap at 3 removes the two oldest exited.
-	if got := m.Prune(3); got != 2 {
-		t.Fatalf("Prune by count removed %d, want 2", got)
+	if len(m.Topics) != 502 {
+		t.Fatalf("entries = %d, want 502", len(m.Topics))
 	}
 	if _, ok := m.TopicFor(live.Key); !ok {
 		t.Fatal("live entry pruned")
 	}
-	if _, ok := m.TopicFor(domain.Key{PaneID: "p4", TerminalID: "t"}); !ok {
-		t.Fatal("newest exited entry pruned instead of the oldest")
-	}
-	// Cap 0 disables the prune.
-	if got := m.Prune(0); got != 0 {
-		t.Fatalf("Prune with cap 0 removed %d", got)
+	for i := 1; i <= 501; i++ {
+		if _, ok := m.TopicFor(domain.Key{PaneID: fmt.Sprintf("p%d", i), TerminalID: "t"}); !ok {
+			t.Fatalf("exited topic %d lost before Telegram deletion", i)
+		}
 	}
 }
 

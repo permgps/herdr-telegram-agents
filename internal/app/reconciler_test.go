@@ -23,6 +23,24 @@ type recFixture struct {
 	ctx   context.Context
 }
 
+type failAfterMappingStore struct {
+	inner *testkit.MemMappingStore
+	calls int
+	allow int
+}
+
+func (s *failAfterMappingStore) Load(ctx context.Context) (*domain.Mapping, error) {
+	return s.inner.Load(ctx)
+}
+
+func (s *failAfterMappingStore) Save(ctx context.Context, m *domain.Mapping) error {
+	s.calls++
+	if s.calls > s.allow {
+		return errors.New("disk write failed")
+	}
+	return s.inner.Save(ctx, m)
+}
+
 func newRec(t *testing.T) *recFixture {
 	t.Helper()
 	f := &recFixture{
@@ -83,8 +101,8 @@ func TestReconcilerCreatesOnceForRepeatedAppeared(t *testing.T) {
 	f.handle(t, app.AgentAppeared, a)
 	f.handle(t, app.AgentAppeared, a)
 	assertCalls(t, f.tg, "create:reviewer:working")
-	if f.store.SaveCount() != 1 {
-		t.Fatalf("saves = %d, want 1", f.store.SaveCount())
+	if f.store.SaveCount() != 2 {
+		t.Fatalf("saves = %d, want 2", f.store.SaveCount())
 	}
 	entry, ok := f.rec.Mapping().TopicFor(a.Key)
 	if !ok || entry.ThreadID != 101 || entry.Name != "reviewer" {
@@ -102,8 +120,8 @@ func TestReconcilerDebouncesChanges(t *testing.T) {
 	assertCalls(t, f.tg, "create:reviewer:working")
 	f.fireDue(t, 1)
 	assertCalls(t, f.tg, "create:reviewer:working", "edit:101:name=fixer,status=blocked")
-	if f.store.SaveCount() != 2 {
-		t.Fatalf("saves = %d, want 2", f.store.SaveCount())
+	if f.store.SaveCount() != 3 {
+		t.Fatalf("saves = %d, want 3", f.store.SaveCount())
 	}
 
 	// A change that nets out to the current state fires nothing.
@@ -199,7 +217,9 @@ func TestReconcilerFatalErrorsPropagate(t *testing.T) {
 	}
 	f := newRec(t)
 	f.tg.FailNext("create", errors.New("network"))
-	f.handle(t, app.AgentAppeared, agent("p1", "t1", "a", domain.StatusIdle))
+	if err := f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: agent("p1", "t1", "a", domain.StatusIdle)}); err == nil {
+		t.Fatal("ambiguous create failure was hidden")
+	}
 	if _, ok := f.rec.Mapping().TopicFor(domain.Key{PaneID: "p1", TerminalID: "t1"}); ok {
 		t.Fatal("entry linked after failed create")
 	}
@@ -770,8 +790,8 @@ func TestReconcilerSaveFailureDoesNotClaimDurableReassociation(t *testing.T) {
 	f.store.Fail(errors.New("disk write failed"))
 	newAgent := oldAgent
 	newAgent.Key.TerminalID = "term-new"
-	if err := f.rec.Reconcile(f.ctx, []domain.Agent{newAgent}); err != nil {
-		t.Fatal(err)
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{newAgent}); err == nil {
+		t.Fatal("Reconcile did not report the mapping save failure")
 	}
 	assertCalls(t, f.tg)
 	if _, ok := f.rec.Mapping().TopicFor(newAgent.Key); !ok {
@@ -783,6 +803,94 @@ func TestReconcilerSaveFailureDoesNotClaimDurableReassociation(t *testing.T) {
 	if !strings.Contains(logs.String(), "mapping save failed") || !strings.Contains(logs.String(), "topic reassociation is not durable") {
 		t.Fatalf("save failure was not clearly logged: %s", logs.String())
 	}
+}
+
+func TestReconcilerCreateSaveFailureReturnsErrorAndKeepsThread(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	store := &failAfterMappingStore{inner: f.store, allow: 1}
+	f.rec = app.NewReconciler(f.tg, f.herdr, store, f.rec.Mapping(), nil, f.clock, nil)
+	if err := f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err == nil {
+		t.Fatal("Handle did not report the mapping save failure")
+	}
+	if saved := f.store.Saved(); saved == nil || !saved.PendingCreates[a.Key.String()] {
+		t.Fatalf("durable create intent missing: %+v", saved)
+	}
+	entry, ok := f.rec.Mapping().TopicFor(a.Key)
+	if !ok || entry.ThreadID == 0 {
+		t.Fatalf("created thread not retained in memory: %+v, %v", entry, ok)
+	}
+	if err := f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err == nil {
+		t.Fatal("retry did not report the mapping save failure")
+	}
+	if got := len(f.tg.Calls()); got != 1 {
+		t.Fatalf("Telegram calls = %v; want one create", f.tg.Calls())
+	}
+	store.allow = store.calls + 1
+	if err := f.rec.Reconcile(f.ctx, []domain.Agent{a}); err != nil {
+		t.Fatal(err)
+	}
+	if saved := f.store.Saved(); saved == nil {
+		t.Fatal("mapping was not persisted after store recovered")
+	} else if saved.PendingCreates[a.Key.String()] {
+		t.Fatal("create intent still pending after link was persisted")
+	}
+}
+
+func TestReconcilerRestartBlocksUnresolvedCreateIntent(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	store := &failAfterMappingStore{inner: f.store, allow: 1}
+	f.rec = app.NewReconciler(f.tg, f.herdr, store, f.rec.Mapping(), nil, f.clock, nil)
+	if err := f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err == nil {
+		t.Fatal("post-create save did not fail")
+	}
+	loaded, err := f.store.Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := app.NewReconciler(f.tg, f.herdr, f.store, loaded, nil, f.clock, nil)
+	if err := restarted.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err == nil {
+		t.Fatal("restart accepted unresolved create intent")
+	}
+	assertCalls(t, f.tg, "create:reviewer:working")
+}
+
+func TestReconcilerAmbiguousCreateFailureKeepsIntent(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.tg.FailNext("create", errors.New("connection reset after request"))
+	_ = f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a})
+	loaded, err := f.store.Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.PendingCreates[a.Key.String()] {
+		t.Fatal("ambiguous Telegram create outcome lost its durable intent")
+	}
+	restarted := app.NewReconciler(f.tg, f.herdr, f.store, loaded, nil, f.clock, nil)
+	if err := restarted.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err == nil {
+		t.Fatal("restart retried a potentially successful create")
+	}
+	assertCalls(t, f.tg, "create:reviewer:working")
+}
+
+func TestReconcilerFailedIntentSaveCanRetryBeforeTelegramCall(t *testing.T) {
+	f := newRec(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	store := &failAfterMappingStore{inner: f.store, allow: 0}
+	f.rec = app.NewReconciler(f.tg, f.herdr, store, f.rec.Mapping(), nil, f.clock, nil)
+	if err := f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err == nil {
+		t.Fatal("intent save failure was hidden")
+	}
+	if len(f.tg.Calls()) != 0 {
+		t.Fatalf("Telegram was called before intent persisted: %v", f.tg.Calls())
+	}
+	store.allow = store.calls + 3
+	if err := f.rec.Handle(f.ctx, app.AgentEvent{Kind: app.AgentAppeared, Agent: a}); err != nil {
+		t.Fatalf("retry after store recovered: %v", err)
+	}
+	assertCalls(t, f.tg, "create:reviewer:working")
 }
 
 // TestReconcilerReusesTopicWhenKeyReturns: an agent that exits and comes

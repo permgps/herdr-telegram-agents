@@ -18,6 +18,12 @@ No test touches the network or real time: the Herdr adapter talks to a fake
 NDJSON socket server, the Telegram adapter to an in-process HTTP fake, and
 anything that waits takes an injected clock.
 
+The daemon regression suite also checks a failed first Herdr snapshot, resync
+event delivery to every consumer, bridge saturation and cancellation, failed
+mapping saves, retained topic references above 500 entries, and continuation
+after the first 50 stale-topic deletions. The state adapter tests verify that
+pending creation markers survive a mapping file round trip.
+
 ## Herdr capture compatibility (2026-09-23)
 
 An isolated macOS/arm64 sandbox used the official [Herdr 0.9.1 binary](https://github.com/herdrdev/herdr/releases/download/v0.9.1/herdr-macos-aarch64), SHA-256 `5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de`. Its socket protocol was 22; the installed baseline was Herdr 0.7.5, protocol 17. The sandbox used a temporary session and working directory, and was stopped and removed after the checks.

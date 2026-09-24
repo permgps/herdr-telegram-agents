@@ -56,7 +56,7 @@ func TestSweepDeletesOldClosedTopicsOnly(t *testing.T) {
 	if _, ok := m.TopicFor(live.Key); !ok {
 		t.Fatal("live entry dropped")
 	}
-	if f.store.SaveCount() != 2 { // create of the live agent, then the forget
+	if f.store.SaveCount() != 3 { // live topic intent, create result, then the forget
 		t.Fatalf("saves = %d", f.store.SaveCount())
 	}
 	// The next pass has nothing to do.
@@ -115,6 +115,22 @@ func TestSweepStopsOnForbidden(t *testing.T) {
 	}
 }
 
+func TestSweepReportsMappingSaveFailureAfterDelete(t *testing.T) {
+	f := newRec(t)
+	f.clock.Advance(40 * day)
+	key := f.exited(t, "stale", t0)
+	f.store.Fail(errors.New("disk full"))
+	f.tg.Reset()
+	n, err := f.rec.Sweep(f.ctx, 30*day, fullRights)
+	if n != 1 || err == nil {
+		t.Fatalf("Sweep = %d, %v, want one deletion and a persistence error", n, err)
+	}
+	assertCalls(t, f.tg, "delete:101")
+	if _, ok := f.rec.Mapping().TopicFor(key); ok {
+		t.Fatal("deleted topic kept in in-memory mapping")
+	}
+}
+
 func TestSweepBatchAndSkips(t *testing.T) {
 	f := newRec(t)
 	f.clock.Advance(40 * day)
@@ -143,9 +159,15 @@ func TestSweepBatchAndSkips(t *testing.T) {
 	if err != nil || n != 50 || len(f.tg.Calls()) != 50 {
 		t.Fatalf("first pass = %d, %v, calls %d", n, err, len(f.tg.Calls()))
 	}
+	if !f.rec.SweepPending(30 * day) {
+		t.Fatal("remaining stale topics were not exposed for a follow-up pass")
+	}
 	f.tg.Reset()
 	if n, _ := f.rec.Sweep(f.ctx, 30*day, fullRights); n != 5 {
 		t.Fatalf("second pass = %d", n)
+	}
+	if f.rec.SweepPending(30 * day) {
+		t.Fatal("follow-up remains scheduled after all stale topics were deleted")
 	}
 	if len(f.rec.Mapping().Topics) != 0 {
 		t.Fatal("entries left after both passes")

@@ -128,6 +128,12 @@ func copyMapping(m *domain.Mapping) *domain.Mapping {
 	out := domain.NewMapping(m.ChatID)
 	out.Version = m.Version
 	out.Dashboard = m.Dashboard
+	out.PendingDashboard = m.PendingDashboard
+	for key, pending := range m.PendingCreates {
+		if pending {
+			out.PendingCreates[key] = true
+		}
+	}
 	for k, e := range m.Topics {
 		c := *e
 		out.Topics[k] = &c

@@ -166,7 +166,9 @@ func TestDaemonStartupReconcileAndShutdown(t *testing.T) {
 		t.Fatalf("Run = %v", err)
 	}
 	assertCalls(t, f.tg, "rights", "create:reviewer:working", started1, "edit:101:status=idle", stopping)
-	if f.store.SaveCount() != 2 {
+	// Creation persists an intent before the Telegram call, then its topic
+	// link; the later status edit is the third mapping write.
+	if f.store.SaveCount() != 3 {
 		t.Fatalf("saves = %d", f.store.SaveCount())
 	}
 }
@@ -289,6 +291,67 @@ func TestDaemonResyncHealsDrift(t *testing.T) {
 	f.daemon.Resync()
 	f.waitCalls(t, 5)
 	assertCalls(t, f.tg, "rights", "create:a:working", started1, "edit:101:status=exited", "close:101")
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonFailedInitialSnapshotPreservesMappedTopic(t *testing.T) {
+	f := newDaemon(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	topic, err := f.tg.CreateTopic(context.Background(), a.Name, a.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.rec.Mapping().Link(a.Key, topic, a, t0)
+	f.tg.Reset()
+	f.herdr.SetAgents([]domain.Agent{a})
+	f.herdr.FailList(domain.ErrDisconnected)
+	f.start(t)
+	f.waitCalls(t, 2)
+	waitFor(t, "failed initial snapshot", func() bool { return f.herdr.ListCalls() >= 1 })
+	if calls := f.tg.Calls(); strings.Contains(strings.Join(calls, "|"), "close:") || strings.Contains(strings.Join(calls, "|"), "status=exited") {
+		t.Fatalf("failed snapshot changed live topic: %v", calls)
+	}
+	f.herdr.FailList(nil)
+	f.daemon.Resync()
+	waitFor(t, "successful retry", func() bool { return f.herdr.ListCalls() >= 2 })
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonFailedResyncDoesNotApplyOrphanDrift(t *testing.T) {
+	f := newDaemon(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetAgents([]domain.Agent{a})
+	f.start(t)
+	f.waitCalls(t, 3)
+	f.herdr.SetAgents(nil)
+	f.herdr.FailList(domain.ErrDisconnected)
+	f.daemon.Resync()
+	waitFor(t, "failed resync snapshot", func() bool { return f.herdr.ListCalls() >= 2 })
+	time.Sleep(20 * time.Millisecond)
+	if calls := f.tg.Calls(); len(calls) != 3 {
+		t.Fatalf("failed resync wrote to Telegram: %v", calls)
+	}
+	if err := f.stop(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonResyncDeliversSnapshotChangesToBridge(t *testing.T) {
+	f := newDaemon(t)
+	a := agent("p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetAgents([]domain.Agent{a})
+	f.start(t)
+	f.waitCalls(t, 3)
+	f.waitHandled(t, 1)
+	before := f.bridge.Handled()
+	f.herdr.SetAgents(nil)
+	f.daemon.Resync()
+	f.waitCalls(t, 5)
+	f.waitHandled(t, before+1)
 	if err := f.stop(t); err != nil {
 		t.Fatal(err)
 	}

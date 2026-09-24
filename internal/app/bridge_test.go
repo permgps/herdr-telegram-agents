@@ -115,18 +115,113 @@ func TestBridgeServesCommandFollowUp(t *testing.T) {
 	}
 }
 
-func TestBridgeOverflowDrops(t *testing.T) {
+func TestBridgeStateIngressWaitsForCapacityAndCancel(t *testing.T) {
 	f := newBridgeFixture(t)
-	b := &Bridge{out: f.out, in: f.in, jobs: make(chan any, 2), fatal: make(chan error, 1), log: f.out.log, CallTimeout: time.Second}
-	for i := 0; i < 5; i++ {
-		b.Submit(topicMsg(101, i, "x"))
+	b := &Bridge{out: f.out, in: f.in, jobs: make(chan any, 1), control: make(chan any, 1), fatal: make(chan error, 1), log: f.out.log, CallTimeout: time.Second}
+	b.Submit(AgentEvent{Kind: AgentChanged})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- b.SubmitContext(ctx, AgentEvent{Kind: AgentGone}) }()
+	select {
+	case err := <-result:
+		t.Fatalf("state returned before capacity: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
-	if b.Dropped() != 3 {
-		t.Fatalf("Dropped = %d, want 3", b.Dropped())
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled state = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled state producer remained blocked")
 	}
-	b.Submit("not a job")
-	if b.Dropped() != 3 || len(b.jobs) != 2 {
-		t.Fatalf("unknown job type changed the queue: dropped=%d queued=%d", b.Dropped(), len(b.jobs))
+	if b.Dropped() != 0 || len(b.jobs) != 1 {
+		t.Fatalf("state lost: dropped=%d queued=%d", b.Dropped(), len(b.jobs))
+	}
+}
+
+func TestBridgeControlIngressWaitsForCapacityAndCancel(t *testing.T) {
+	f := newBridgeFixture(t)
+	b := &Bridge{out: f.out, in: f.in, jobs: make(chan any, 1), control: make(chan any, 1), fatal: make(chan error, 1), log: f.out.log, CallTimeout: time.Second}
+	b.Submit(topicMsg(101, 1, "first"))
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- b.SubmitContext(ctx, topicMsg(101, 2, "second")) }()
+	select {
+	case err := <-result:
+		t.Fatalf("control work returned before capacity was available: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-b.control
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("SubmitContext = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("control work did not enter queue")
+	}
+	if b.Dropped() != 0 {
+		t.Fatalf("control work dropped: %d", b.Dropped())
+	}
+	result = make(chan error, 1)
+	go func() { result <- b.SubmitContext(ctx, topicMsg(101, 3, "third")) }()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled SubmitContext = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled producer remained blocked")
+	}
+}
+
+func TestBridgeControlTypesNeverCountAsRecoverableDrops(t *testing.T) {
+	types := []any{
+		topicMsg(101, 1, "hello"),
+		domain.TopicAttachment{},
+		domain.ButtonPressed{},
+		domain.GeneralCommand{},
+		startResult{},
+		inboxResult{},
+		domain.StrangerSeen{},
+	}
+	for _, job := range types {
+		f := newBridgeFixture(t)
+		b := &Bridge{out: f.out, in: f.in, jobs: make(chan any, 1), control: make(chan any, 1), fatal: make(chan error, 1), log: f.out.log}
+		b.control <- presenceAway{}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() { result <- b.SubmitContext(ctx, job) }()
+		select {
+		case err := <-result:
+			t.Fatalf("%T returned before capacity: %v", job, err)
+		case <-time.After(5 * time.Millisecond):
+		}
+		<-b.control
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("%T: %v", job, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%T did not enter control queue", job)
+		}
+		cancel()
+		if b.Dropped() != 0 {
+			t.Fatalf("%T counted as dropped", job)
+		}
+	}
+}
+
+func TestBridgeAcceptsStrangerSeen(t *testing.T) {
+	r := newRunningBridge(t)
+	r.bridge.Submit(domain.StrangerSeen{FromID: 777, Name: "Ann", At: r.clock.Now()})
+	waitUntil(t, "stranger observation", func() bool { return r.bridge.Handled() == 1 })
+	if len(r.bridge.in.strangers) != 1 {
+		t.Fatalf("strangers = %d", len(r.bridge.in.strangers))
 	}
 }
 
@@ -155,34 +250,44 @@ func TestBridgeReportsFatalOnce(t *testing.T) {
 	}
 }
 
-// TestBridgeOverflowCountsDrops fills the job buffer while nothing serves
-// it, so every extra job is counted rather than silently lost.
-func TestBridgeOverflowCountsDrops(t *testing.T) {
+// TestBridgeFullStateQueueDrains fills the queue before Run starts and checks
+// that an additional state transition waits until Run can accept it.
+func TestBridgeFullStateQueueDrains(t *testing.T) {
 	f := newBridgeFixture(t)
 	cfg := domain.Config{ChatID: -1001234567890, BotUsername: "agents_bot"}
 	registry := NewRegistry(f.herdr, f.clock, nil)
 	reconciler := NewReconciler(f.tg, f.herdr, testkit.NewMemMappingStore(), f.mapping, nil, f.clock, nil)
 	b := NewBridge(cfg, f.herdr, f.tg, registry, reconciler, f.capture, nil, Services{Git: f.git, Inbox: f.inbox}, f.clock, nil)
 
-	for i := range bridgeBuffer + 10 {
-		b.Submit(topicMsg(101, i+1, "hello"))
+	for range bridgeBuffer {
+		b.Submit(AgentEvent{Kind: AgentChanged})
 	}
-	if got := b.Dropped(); got != 10 {
-		t.Fatalf("Dropped = %d, want 10", got)
-	}
-	// An unknown job type is rejected without counting as an overflow.
-	b.Submit("not a job")
-	if got := b.Dropped(); got != 10 {
-		t.Fatalf("Dropped after a bad job = %d, want 10", got)
+	ctx, cancel := context.WithCancel(context.Background())
+	accepted := make(chan error, 1)
+	go func() { accepted <- b.SubmitContext(ctx, AgentEvent{Kind: AgentGone}) }()
+	select {
+	case err := <-accepted:
+		t.Fatalf("full queue accepted extra state early: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
 	// The buffered jobs drain once the loop runs, and cancelling stops it.
-	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		b.Run(ctx)
 	}()
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("state not accepted after drain: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("state remained blocked after Run started")
+	}
 	waitUntil(t, "jobs drained", func() bool { return len(b.jobs) == 0 })
+	if b.Dropped() != 0 {
+		t.Fatalf("state dropped: %d", b.Dropped())
+	}
 	cancel()
 	select {
 	case <-done:

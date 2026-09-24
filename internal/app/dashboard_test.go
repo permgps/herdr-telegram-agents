@@ -28,6 +28,24 @@ type dashFixture struct {
 	ctx    context.Context
 }
 
+type failAfterDashboardStore struct {
+	inner *testkit.MemMappingStore
+	calls int
+	allow int
+}
+
+func (s *failAfterDashboardStore) Load(ctx context.Context) (*domain.Mapping, error) {
+	return s.inner.Load(ctx)
+}
+
+func (s *failAfterDashboardStore) Save(ctx context.Context, m *domain.Mapping) error {
+	s.calls++
+	if s.calls > s.allow {
+		return errors.New("disk write failed")
+	}
+	return s.inner.Save(ctx, m)
+}
+
 func newDashFixture(t *testing.T) *dashFixture {
 	t.Helper()
 	f := &dashFixture{
@@ -153,6 +171,95 @@ func TestDashboardCreatesPinsAndEdits(t *testing.T) {
 	f.fire(t, 1)
 	if calls = f.board(); len(calls) != 1 || !strings.Contains(calls[0], "✅ <a") {
 		t.Fatalf("coalesced edit = %q", calls)
+	}
+}
+
+func TestDashboardCreateSaveFailureRetainsMessageID(t *testing.T) {
+	f := newDashFixture(t)
+	store := &failAfterDashboardStore{inner: f.store, allow: 1}
+	f.rec.store = store
+	if err := f.dash.Fire(f.ctx); err == nil {
+		t.Fatal("dashboard create did not report the mapping save failure")
+	}
+	if saved := f.store.Saved(); saved == nil || !saved.PendingDashboard {
+		t.Fatalf("durable dashboard create intent missing: %+v", saved)
+	}
+	if id := f.rec.DashboardID(); id != 1000 {
+		t.Fatalf("dashboard id = %d, want in-memory created id 1000", id)
+	}
+	if got := f.board(); len(got) != 2 {
+		t.Fatalf("first create calls = %v", got)
+	}
+	if err := f.dash.Fire(f.ctx); err == nil {
+		t.Fatal("second refresh did not report pending mapping write")
+	}
+	if got := f.board(); len(got) != 2 {
+		t.Fatalf("pending write created another dashboard: %v", got)
+	}
+	store.allow = store.calls + 1
+	if err := f.dash.Fire(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if saved := f.store.Saved(); saved == nil || saved.Dashboard != 1000 {
+		t.Fatalf("dashboard id was not persisted after recovery: %+v", saved)
+	}
+}
+
+func TestDashboardRestartBlocksUnresolvedCreateIntent(t *testing.T) {
+	f := newDashFixture(t)
+	store := &failAfterDashboardStore{inner: f.store, allow: 1}
+	f.rec.store = store
+	if err := f.dash.Fire(f.ctx); err == nil {
+		t.Fatal("post-send save did not fail")
+	}
+	loaded, err := f.store.Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.rec = NewReconciler(f.tg, testkit.NewFakeHerdr(nil), f.store, loaded, f.opts, f.clock, nil)
+	f.dash = NewDashboard(f.tg, f.rec, f.opts, f.rec.topics(), nil, nil, -1001234567890, f.clock, nil)
+	if err := f.dash.Fire(f.ctx); err == nil {
+		t.Fatal("restart accepted unresolved dashboard intent")
+	}
+	if got := f.board(); len(got) != 2 {
+		t.Fatalf("restart sent another dashboard: %v", got)
+	}
+}
+
+func TestDashboardAmbiguousSendFailureKeepsIntent(t *testing.T) {
+	f := newDashFixture(t)
+	f.tg.FailNext("send", errors.New("connection reset after request"))
+	_ = f.dash.Fire(f.ctx)
+	loaded, err := f.store.Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.PendingDashboard {
+		t.Fatal("ambiguous dashboard send outcome lost its durable intent")
+	}
+	restarted := NewReconciler(f.tg, testkit.NewFakeHerdr(nil), f.store, loaded, f.opts, f.clock, nil)
+	board := NewDashboard(f.tg, restarted, f.opts, restarted.topics(), nil, nil, -1001234567890, f.clock, nil)
+	if err := board.Fire(f.ctx); err == nil {
+		t.Fatal("restart retried a potentially successful dashboard send")
+	}
+}
+
+func TestDashboardFailedIntentSaveCanRetryBeforeSend(t *testing.T) {
+	f := newDashFixture(t)
+	store := &failAfterDashboardStore{inner: f.store, allow: 0}
+	f.rec.store = store
+	if err := f.dash.Fire(f.ctx); err == nil {
+		t.Fatal("intent save failure was hidden")
+	}
+	if got := f.board(); len(got) != 0 {
+		t.Fatalf("Telegram was called before intent persisted: %v", got)
+	}
+	store.allow = store.calls + 3
+	if err := f.dash.Fire(f.ctx); err != nil {
+		t.Fatalf("retry after store recovered: %v", err)
+	}
+	if got := f.board(); len(got) != 2 {
+		t.Fatalf("dashboard send and pin missing: %v", got)
 	}
 }
 
@@ -407,15 +514,16 @@ func TestDashboardFatalErrorIsReturned(t *testing.T) {
 	if err := f.dash.Fire(f.ctx); !errors.Is(err, domain.ErrBotUnauthorized) {
 		t.Fatalf("Fire = %v, want ErrBotUnauthorized", err)
 	}
-	// A plain failure is retried on the next refresh.
+	// A transport failure has an ambiguous outcome and blocks automatic
+	// retry until the operator checks whether Telegram accepted the send.
 	f.tg.FailNext("send", errors.New("boom"))
-	if err := f.dash.Tick(f.ctx); err != nil {
-		t.Fatal(err)
+	if err := f.dash.Tick(f.ctx); err == nil {
+		t.Fatal("ambiguous send failure was hidden")
 	}
-	if !strings.Contains(f.logBuf.String(), `"msg":"dashboard create failed"`) {
-		t.Error("log lacks the create failure")
+	if !f.rec.mapping.PendingDashboard {
+		t.Fatal("ambiguous send did not retain the intent")
 	}
-	if err := f.dash.Tick(f.ctx); err != nil || f.rec.DashboardID() == 0 {
-		t.Fatalf("retry: err=%v id=%d", err, f.rec.DashboardID())
+	if err := f.dash.Tick(f.ctx); err == nil {
+		t.Fatal("automatic retry ignored unresolved intent")
 	}
 }

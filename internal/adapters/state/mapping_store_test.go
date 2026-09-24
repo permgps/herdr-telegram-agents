@@ -72,6 +72,25 @@ func TestMappingStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMappingStorePendingIntentsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewMappingStore(dir, nil)
+	mapping := domain.NewMapping(-1001)
+	key := domain.Key{PaneID: "pane", TerminalID: "terminal"}.String()
+	mapping.PendingCreates[key] = true
+	mapping.PendingDashboard = true
+	if err := store.Save(context.Background(), mapping); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.PendingCreates[key] || !loaded.PendingDashboard {
+		t.Fatalf("create intents lost after restart: %+v", loaded)
+	}
+}
+
 func TestMappingStoreMigratesV1WithoutLosingTopicState(t *testing.T) {
 	dir := t.TempDir()
 	var logs bytes.Buffer

@@ -486,13 +486,24 @@ default) and deletes them through `deleteForumTopic`, which needs the
 **Delete messages** right; the entries are then forgotten. Reopening such a
 topic by hand takes it out of the sweep until it is closed again, and the
 clock restarts from the last change. Live agents, open topics and the
-General topic are never candidates. At most 50 topics go per pass; the rest
-wait for the next one. While sync is off, while the bot cannot manage
+General topic are never candidates. At most 50 topics go per pass; while
+eligible topics remain, the daemon schedules another pass after one minute.
+If a pass deletes none, it waits five minutes before retrying. While sync is
+off, while the bot cannot manage
 topics or while it lacks **Delete messages** the sweep does nothing and
-says so in the log (once per run for the missing right). `Off` disables it;
-`mapping.json` then keeps the entries of exited agents until it holds more
-than 500, when the oldest exited ones are dropped without touching Telegram
-(as before the cleanup existed).
+says so in the log (once per run for the missing right). `Off` disables it
+and retains every topic and mapping entry. The mapping can grow when cleanup
+is off or the bot lacks the required rights; entries are never discarded
+merely to meet a size limit.
+
+Before creating a topic or the dashboard message, the daemon saves a pending
+creation marker in `mapping.json`. It clears the marker only after saving the
+Telegram thread or message id. If the Telegram result is uncertain, or the
+result cannot be saved, the marker prevents an automatic duplicate after a
+restart. The daemon logs the affected agent key or dashboard message id with
+`[FIX]`. Resolve a pending marker only after checking Telegram: retain the
+existing topic or message and restore its id in the mapping when it exists;
+clear the marker only when the external creation definitely did not happen.
 
 ## Inbox
 
@@ -552,7 +563,7 @@ in `config.json`:
 | File | Location | Content |
 |------|----------|---------|
 | `config.json` | Herdr plugin config dir (`HERDR_PLUGIN_CONFIG_DIR`), mode 0600 | bot token, chat id and title, operator ids, observer ids (`observer_ids`, written by `/observers`), log level |
-| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping and the dashboard message id (`dashboard_message_id`); entries of exited agents stay until the topic cleanup deletes their topic, or beyond 500 entries |
+| `mapping.json` | Herdr plugin state dir (`HERDR_PLUGIN_STATE_DIR`) | agent to topic mapping, the dashboard message id (`dashboard_message_id`), and pending creation markers; exited entries stay until topic cleanup confirms deletion |
 | `options.json` | config dir, mode 0600 | the `/options` choices |
 | `inbox/` | state dir, mode 0700, files 0600 | attachments sent to topics, swept daily after `Delete files after` |
 | `daemon.pid` | state dir | pid of the running daemon |

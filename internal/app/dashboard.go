@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -133,9 +134,10 @@ func (b *Dashboard) Schedule(reason string) {
 
 // setID records the message id through the reconciler and keeps the
 // hasMessage mirror in step.
-func (b *Dashboard) setID(ctx context.Context, id int) {
-	b.rec.SetDashboardID(ctx, id)
+func (b *Dashboard) setID(ctx context.Context, id int) error {
+	err := b.rec.SetDashboardID(ctx, id)
 	b.hasMessage.Store(id != 0)
+	return err
 }
 
 // Due fires when the coalescing timer ran out; call Fire.
@@ -194,6 +196,9 @@ func (b *Dashboard) view() statusView {
 // refresh is the one write path: remove, edit or create as the option and
 // the message state demand.
 func (b *Dashboard) refresh(ctx context.Context, reason string) error {
+	if err := b.rec.persistPending(ctx); err != nil {
+		return err
+	}
 	id := b.rec.DashboardID()
 	if !b.opts.DashboardEnabled() {
 		if id == 0 {
@@ -224,12 +229,35 @@ func (b *Dashboard) refresh(ctx context.Context, reason string) error {
 			return b.failed("dashboard edit failed", id, err)
 		}
 	}
+	if b.rec.mapping.PendingDashboard {
+		b.log.Error("[FIX] dashboard create blocked by unresolved intent")
+		return errors.New("dashboard creation has unresolved durable intent")
+	}
+	b.rec.mapping.PendingDashboard = true
+	if err := b.rec.save(ctx); err != nil {
+		// No Telegram send was attempted, so this in-memory marker can be
+		// retried once the store works again.
+		b.rec.mapping.PendingDashboard = false
+		b.log.Error("[FIX] dashboard create intent save failed", slog.String("err", err.Error()))
+		return err
+	}
 	newID, err := b.tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: text, HTML: true, Notify: false})
 	if err != nil {
-		return b.failed("dashboard create failed", id, err)
+		if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrBotUnauthorized) || errors.Is(err, domain.ErrPollerConflict) || errors.Is(err, domain.ErrChatMigrated) {
+			b.rec.mapping.PendingDashboard = false
+			if saveErr := b.rec.save(ctx); saveErr != nil {
+				return saveErr
+			}
+			return b.failed("dashboard create failed", id, err)
+		}
+		b.log.Error("[FIX] dashboard create outcome unknown; durable intent retained", slog.String("err", err.Error()))
+		return fmt.Errorf("dashboard create outcome unknown, inspect Telegram before clearing pending intent: %w", err)
 	}
 	pinned := b.pin(ctx, newID)
-	b.setID(ctx, newID)
+	if err := b.setID(ctx, newID); err != nil {
+		b.log.Error("[FIX] dashboard id save failed after create", slog.Int("message_id", newID), slog.String("err", err.Error()))
+		return err
+	}
 	b.lastHash = hash
 	b.log.Info("dashboard created", slog.Int("message_id", newID), slog.Bool("pinned", pinned), slog.Int("agents", agents), slog.String("reason", reason))
 	return nil
@@ -271,7 +299,9 @@ func (b *Dashboard) Repin(ctx context.Context) {
 		b.log.Info("dashboard re-pinned", slog.Int("message_id", id))
 	case errors.Is(err, domain.ErrMessageGone):
 		b.log.Info("dashboard recreated: message gone", slog.Int("message_id", id))
-		b.setID(ctx, 0)
+		if saveErr := b.setID(ctx, 0); saveErr != nil {
+			b.log.Error("[FIX] dashboard id clear failed", slog.Int("message_id", id), slog.String("err", saveErr.Error()))
+		}
 		b.lastHash = ""
 	default:
 		_ = b.pin(ctx, id)
@@ -307,7 +337,9 @@ func (b *Dashboard) remove(ctx context.Context, id int) error {
 			b.log.Info("dashboard not deleted, marked off instead", slog.Int("message_id", id))
 		}
 	}
-	b.setID(ctx, 0)
+	if err := b.setID(ctx, 0); err != nil {
+		return err
+	}
 	b.lastHash = ""
 	b.log.Info("dashboard removed", slog.Int("message_id", id))
 	return nil

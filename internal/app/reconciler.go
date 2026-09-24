@@ -45,6 +45,10 @@ type Reconciler struct {
 	// view is the read-only copy of the mapping the bridge goroutine
 	// consults; it is republished after every save.
 	view *topicView
+	// dirty means Telegram or an in-memory transition succeeded but the
+	// resulting mapping has not been persisted yet. Retry it before more
+	// external topic writes in this process.
+	dirty bool
 }
 
 type reassociatedTopic struct {
@@ -106,13 +110,14 @@ func (r *Reconciler) Mapping() *domain.Mapping { return r.mapping }
 func (r *Reconciler) DashboardID() int { return r.mapping.Dashboard }
 
 // SetDashboardID records the dashboard message (0 forgets it) and saves.
-func (r *Reconciler) SetDashboardID(ctx context.Context, id int) {
-	if r.mapping.Dashboard == id {
-		return
+func (r *Reconciler) SetDashboardID(ctx context.Context, id int) error {
+	if r.mapping.Dashboard == id && !r.mapping.PendingDashboard {
+		return r.persistPending(ctx)
 	}
 	r.log.Debug("dashboard id set", slog.Int("message_id", id), slog.Int("previous", r.mapping.Dashboard))
 	r.mapping.Dashboard = id
-	r.save(ctx)
+	r.mapping.PendingDashboard = false
+	return r.save(ctx)
 }
 
 // ReadOnly reports whether writes are paused because the bot lost the
@@ -173,6 +178,9 @@ func (r *Reconciler) SetReadOnly(ro bool) {
 
 // Handle applies one registry event.
 func (r *Reconciler) Handle(ctx context.Context, ev AgentEvent) error {
+	if err := r.persistPending(ctx); err != nil {
+		return err
+	}
 	r.reassociated = map[domain.Key]reassociatedTopic{}
 	key := ev.Agent.Key
 	r.log.Debug("reconcile event", slog.String("kind", string(ev.Kind)), slog.String("key", key.String()),
@@ -248,6 +256,9 @@ func (r *Reconciler) Resync(ctx context.Context, live []domain.Agent) error {
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
+	if err := r.persistPending(ctx); err != nil {
+		return err
+	}
 	if r.blocked() {
 		// Lost rights are worth a line per pass; the operator's own switch
 		// was logged once when it took effect.
@@ -261,7 +272,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 	r.log.Info("reconcile pass", slog.Int("agents", len(live)), slog.Int("entries", len(r.mapping.Topics)))
 	if n := r.mapping.DedupeThreads(); n > 0 {
 		r.log.Warn("duplicate topic entries dropped", slog.Int("count", n))
-		r.save(ctx)
+		if err := r.save(ctx); err != nil {
+			return err
+		}
 	}
 	liveSet := make(map[domain.Key]struct{}, len(live))
 	r.agents = make(map[domain.Key]domain.Agent, len(live))
@@ -299,10 +312,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, live []domain.Agent) error {
 		if err != nil {
 			return err
 		}
-	}
-	if n := r.mapping.Prune(mappingMaxEntries); n > 0 {
-		r.log.Info("mapping pruned", slog.Int("removed", n))
-		r.save(ctx)
 	}
 	return nil
 }
@@ -372,7 +381,7 @@ func (r *Reconciler) reassociate(ctx context.Context, live []domain.Agent) error
 	if !changed {
 		return nil
 	}
-	if persisted := r.save(ctx); !persisted {
+	if err := r.save(ctx); err != nil {
 		for _, assignment := range plan.Assignments {
 			if assignment.From == assignment.To {
 				continue
@@ -384,7 +393,7 @@ func (r *Reconciler) reassociate(ctx context.Context, live []domain.Agent) error
 				slog.String("reason", string(assignment.Reason)),
 				slog.Int("thread_id", entry.ThreadID))
 		}
-		return nil
+		return err
 	}
 	for _, assignment := range plan.Assignments {
 		if assignment.From == assignment.To {
@@ -424,7 +433,9 @@ func (r *Reconciler) revive(ctx context.Context, a domain.Agent, entry *domain.T
 	}
 	now := r.clock.Now()
 	r.mapping.MarkReopened(key, now)
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return err
+	}
 	// The entry still says exited, which Diff treats as final, so the
 	// patch is built here: the live icon always, the name when it moved.
 	name, status := domain.Desired(a)
@@ -436,25 +447,62 @@ func (r *Reconciler) revive(ctx context.Context, a domain.Agent, entry *domain.T
 		if errors.Is(err, domain.ErrTopicGone) {
 			r.log.Warn("old topic gone, creating a new one", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
 			r.mapping.Forget(key)
-			r.save(ctx)
+			if err := r.save(ctx); err != nil {
+				return err
+			}
 			return r.createTopic(ctx, a)
 		}
 		return r.fail(ctx, key, "editForumTopic", err)
 	}
 	r.mapping.Apply(key, patch, r.clock.Now())
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return err
+	}
 	r.log.Info("topic revived", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID), slog.String("status", string(status)))
 	return nil
 }
 
 func (r *Reconciler) createTopic(ctx context.Context, a domain.Agent) error {
+	key := a.Key.String()
+	if r.mapping.PendingCreates[key] {
+		r.log.Error("[FIX] topic create blocked by unresolved intent", slog.String("key", key))
+		return fmt.Errorf("topic creation for %s has unresolved durable intent", key)
+	}
+	if r.mapping.PendingCreates == nil {
+		r.mapping.PendingCreates = make(map[string]bool)
+	}
+	r.mapping.PendingCreates[key] = true
+	if err := r.save(ctx); err != nil {
+		// Telegram has not been called yet. Roll back only the in-memory
+		// intent; the next pass may retry after storage recovers.
+		delete(r.mapping.PendingCreates, key)
+		r.log.Error("[FIX] topic create intent save failed", slog.String("key", key), slog.String("err", err.Error()))
+		return fmt.Errorf("persist topic create intent for %s: %w", key, err)
+	}
+	r.log.Debug("[FIX] topic create intent saved", slog.String("key", key))
 	name, status := domain.Desired(a)
 	topic, err := r.tg.CreateTopic(ctx, name, status)
 	if err != nil {
-		return r.fail(ctx, a.Key, "createForumTopic", err)
+		// A transport failure may have happened after Telegram created the
+		// topic but before its response arrived. Keep the durable intent so
+		// a restart cannot create a duplicate with an unknown thread id.
+		if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrBotUnauthorized) || errors.Is(err, domain.ErrPollerConflict) || errors.Is(err, domain.ErrChatMigrated) {
+			delete(r.mapping.PendingCreates, key)
+			if saveErr := r.save(ctx); saveErr != nil {
+				return fmt.Errorf("clear topic create intent for %s after rejected create: %w", key, saveErr)
+			}
+			return r.fail(ctx, a.Key, "createForumTopic", err)
+		}
+		r.log.Error("[FIX] topic create outcome unknown; durable intent retained", slog.String("key", key), slog.String("err", err.Error()))
+		return fmt.Errorf("create topic %s outcome unknown, inspect Telegram before clearing pending intent: %w", key, err)
 	}
 	r.mapping.Link(a.Key, topic, a, r.clock.Now())
-	r.save(ctx)
+	delete(r.mapping.PendingCreates, key)
+	if err := r.save(ctx); err != nil {
+		r.log.Error("[FIX] created topic mapping save failed", slog.String("key", key), slog.Int("thread_id", topic.ThreadID), slog.String("err", err.Error()))
+		return fmt.Errorf("persist created topic %s thread %d: %w", key, topic.ThreadID, err)
+	}
+	r.log.Debug("[FIX] created topic mapping saved", slog.String("key", key), slog.Int("thread_id", topic.ThreadID))
 	r.log.Info("topic created", slog.String("key", a.Key.String()), slog.Int("thread", topic.ThreadID), slog.String("name", name))
 	return nil
 }
@@ -490,8 +538,7 @@ func (r *Reconciler) edit(ctx context.Context, key domain.Key) error {
 		return r.fail(ctx, key, "editForumTopic", err)
 	}
 	r.mapping.Apply(key, patch, r.clock.Now())
-	r.save(ctx)
-	return nil
+	return r.save(ctx)
 }
 
 // exit writes the finished marker and closes the topic. Either half may
@@ -510,7 +557,9 @@ func (r *Reconciler) exit(ctx context.Context, key domain.Key) error {
 		// and only remember that the agent is gone.
 		r.mapping.MarkExited(key, r.clock.Now())
 		r.mapping.MarkClosed(key, r.clock.Now())
-		r.save(ctx)
+		if err := r.save(ctx); err != nil {
+			return err
+		}
 		r.log.Info("topic muted, exit recorded without telegram calls", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
 		return nil
 	}
@@ -520,7 +569,9 @@ func (r *Reconciler) exit(ctx context.Context, key domain.Key) error {
 			return r.fail(ctx, key, "editForumTopic", err)
 		}
 		r.mapping.MarkExited(key, r.clock.Now())
-		r.save(ctx)
+		if err := r.save(ctx); err != nil {
+			return err
+		}
 		r.log.Info("topic marked exited", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
 	}
 	return r.close(ctx, key)
@@ -538,7 +589,9 @@ func (r *Reconciler) close(ctx context.Context, key domain.Key) error {
 		return r.fail(ctx, key, "closeForumTopic", err)
 	}
 	r.mapping.MarkClosed(key, r.clock.Now())
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return err
+	}
 	r.log.Info("topic closed", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
 	return nil
 }
@@ -555,12 +608,16 @@ func (r *Reconciler) OnTopicClosed(ctx context.Context, threadID int) error {
 	entry, _ := r.mapping.TopicFor(key)
 	if !entry.Status.Live() {
 		r.mapping.MarkClosed(key, r.clock.Now())
-		r.save(ctx)
+		if err := r.save(ctx); err != nil {
+			return err
+		}
 		r.log.Debug("exited topic closed by operator", slog.String("key", key.String()), slog.Int("thread", threadID))
 		return nil
 	}
 	r.mapping.Mute(key, r.clock.Now())
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return err
+	}
 	r.log.Info("topic muted", slog.String("key", key.String()), slog.Int("thread_id", threadID))
 	return nil
 }
@@ -577,7 +634,9 @@ func (r *Reconciler) OnTopicReopened(ctx context.Context, threadID int) error {
 	entry, _ := r.mapping.TopicFor(key)
 	r.mapping.Unmute(key, r.clock.Now())
 	r.mapping.MarkReopened(key, r.clock.Now())
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return err
+	}
 	r.log.Info("topic unmuted", slog.String("key", key.String()), slog.Int("thread_id", threadID))
 	if a, live := r.agents[key]; live {
 		r.deb.Cancel(key)
@@ -601,7 +660,9 @@ func (r *Reconciler) finish(ctx context.Context, key domain.Key) error {
 		return r.fail(ctx, key, "editForumTopic", err)
 	}
 	r.mapping.MarkExited(key, r.clock.Now())
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return err
+	}
 	r.log.Info("topic marked exited after reopen", slog.String("key", key.String()), slog.Int("thread", entry.ThreadID))
 	return r.close(ctx, key)
 }
@@ -654,7 +715,9 @@ func (r *Reconciler) OnTopicRenamed(ctx context.Context, threadID int, name stri
 	r.agents[key] = a
 	entry.Name = name
 	entry.UpdatedAt = r.clock.Now()
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return false, err
+	}
 	r.log.Info("agent renamed from telegram", slog.String("key", key.String()), slog.Int("thread_id", threadID),
 		slog.String("name", name), slog.String("agent_name", rest))
 	return true, nil
@@ -667,7 +730,9 @@ func (r *Reconciler) renameTab(ctx context.Context, key domain.Key, a domain.Age
 	if label == "" || label == a.TabLabel {
 		entry.Name = name
 		entry.UpdatedAt = r.clock.Now()
-		r.save(ctx)
+		if err := r.save(ctx); err != nil {
+			return false, err
+		}
 		r.deb.Schedule(key)
 		r.log.Debug("topic rename ignored, tab label unchanged", slog.String("key", key.String()),
 			slog.Int("thread", entry.ThreadID), slog.String("name", name))
@@ -680,7 +745,9 @@ func (r *Reconciler) renameTab(ctx context.Context, key domain.Key, a domain.Age
 	r.agents[key] = a
 	entry.Name = name
 	entry.UpdatedAt = r.clock.Now()
-	r.save(ctx)
+	if err := r.save(ctx); err != nil {
+		return false, err
+	}
 	r.deb.Schedule(key)
 	r.log.Info("tab renamed from telegram", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 		slog.String("tab_id", a.TabID), slog.String("name", name), slog.String("label", label))
@@ -724,7 +791,9 @@ func (r *Reconciler) fail(ctx context.Context, key domain.Key, method string, er
 	switch {
 	case errors.Is(err, domain.ErrTopicGone):
 		r.mapping.Forget(key)
-		r.save(ctx)
+		if saveErr := r.save(ctx); saveErr != nil {
+			return saveErr
+		}
 		r.log.Warn("topic gone, entry dropped", attrs...)
 		return nil
 	case errors.Is(err, domain.ErrTopicClosed):
@@ -745,14 +814,25 @@ func (r *Reconciler) fail(ctx context.Context, key domain.Key, method string, er
 	}
 }
 
-func (r *Reconciler) save(ctx context.Context) bool {
+func (r *Reconciler) save(ctx context.Context) error {
 	if err := r.store.Save(ctx, r.mapping); err != nil {
-		r.log.Error("mapping save failed", slog.String("err", err.Error()))
+		r.dirty = true
+		r.log.Error("[FIX] mapping save failed; in-memory state retained", slog.String("err", err.Error()), slog.Int("entries", len(r.mapping.Topics)), slog.Int("dashboard_id", r.mapping.Dashboard))
 		r.view.publish(r.mapping)
-		return false
+		return fmt.Errorf("save topic mapping: %w", err)
 	}
+	r.dirty = false
+	r.log.Debug("[FIX] mapping saved", slog.Int("entries", len(r.mapping.Topics)), slog.Int("dashboard_id", r.mapping.Dashboard))
 	r.view.publish(r.mapping)
-	return true
+	return nil
+}
+
+func (r *Reconciler) persistPending(ctx context.Context) error {
+	if !r.dirty {
+		return nil
+	}
+	r.log.Info("[FIX] retrying pending mapping write")
+	return r.save(ctx)
 }
 
 func sortKeys(keys []domain.Key) {

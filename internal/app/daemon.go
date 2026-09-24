@@ -52,6 +52,9 @@ type Daemon struct {
 
 	resync chan struct{}
 	sweep  chan struct{}
+	// sweepContinuation runs the next bounded stale-topic batch without
+	// waiting for the daily sweep while eligible entries remain.
+	sweepContinuation <-chan time.Time
 	// probe asks the loop to check the operators' private chats again
 	// (the posts.pager option turned on); pagerNoticed keeps the General
 	// notice at one per unreachable episode.
@@ -344,9 +347,18 @@ func (d *Daemon) SweepNow() {
 // runSweep deletes stale topics with the option and rights in force, then
 // old inbox files. An inbox failure is logged and never ends the loop.
 func (d *Daemon) runSweep(ctx context.Context) error {
-	_, err := d.reconciler.Sweep(ctx, d.opts.DeleteAfter(), d.rights)
+	deleted, err := d.reconciler.Sweep(ctx, d.opts.DeleteAfter(), d.rights)
 	if err := d.handleErr(ctx, err); err != nil {
 		return err
+	}
+	d.sweepContinuation = nil
+	if d.rights.CanDeleteMessages && d.reconciler.SweepPending(d.opts.DeleteAfter()) {
+		delay := sweepContinueInterval
+		if deleted == 0 {
+			delay = sweepRetryInterval
+		}
+		d.sweepContinuation = d.clock.After(delay)
+		d.log.Info("[FIX] stale topic sweep continuation scheduled", slog.Int("deleted", deleted), slog.Int64("delay_seconds", int64(delay/time.Second)))
 	}
 	d.sweepInbox(ctx)
 	return nil
@@ -411,11 +423,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	initial, err := d.registry.Snapshot(ctx)
 	if err != nil {
-		d.log.Warn("initial agent snapshot failed, will retry", slog.String("err", err.Error()))
-	}
-	if err := d.reconciler.Reconcile(ctx, d.registry.Live()); err != nil {
-		if err := d.handleErr(ctx, err); err != nil {
-			return err
+		d.log.Warn("[FIX] initial agent snapshot failed; reconciliation skipped until a successful snapshot", slog.String("err", err.Error()))
+	} else {
+		if err := d.reconciler.Reconcile(ctx, d.registry.Live()); err != nil {
+			if err := d.handleErr(ctx, err); err != nil {
+				return err
+			}
 		}
 	}
 	// The dashboard message survives restarts in mapping.json: pin it
@@ -450,7 +463,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	for _, ev := range initial {
 		d.capture.Observe(ev)
 		d.dashboard.Observe(ev)
-		d.bridge.Submit(ev)
+		if err := d.submitBridge(ctx, ev); err != nil {
+			return err
+		}
 	}
 	if !d.opts.RedactEnabled() {
 		d.log.Debug("redaction off", slog.String("option", domain.OptionRedact))
@@ -483,7 +498,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if err := d.replay(ctx, false); err != nil {
 				return err
 			}
-			d.bridge.Submit(presenceAway{})
+			if err := d.submitBridge(ctx, presenceAway{}); err != nil {
+				return err
+			}
 		case <-ctx.Done():
 			d.shutdown()
 			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
@@ -493,17 +510,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.log.Info("daemon exit", slog.String("reason", "stopped"))
 			return nil
 		case ev := <-events:
-			if err := d.reconciler.Handle(ctx, ev); err != nil {
-				if err := d.handleErr(ctx, err); err != nil {
-					return err
-				}
+			if err := d.dispatchAgentEvent(ctx, ev); err != nil {
+				return err
 			}
-			if from, ok := d.reconciler.TakeReassociatedFrom(ev.Agent.Key); ok {
-				ev.ReassociatedFrom = &from
-			}
-			d.capture.Observe(ev)
-			d.dashboard.Observe(ev)
-			d.bridge.Submit(ev)
 		case err := <-d.bridge.Fatal():
 			d.shutdown()
 			return d.fatal(ctx, err)
@@ -542,6 +551,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if err := d.runSweep(ctx); err != nil {
 				return err
 			}
+		case <-d.sweepContinuation:
+			d.sweepContinuation = nil
+			if err := d.runSweep(ctx); err != nil {
+				return err
+			}
 		case <-sweep:
 			sweep = d.clock.After(sweepInterval)
 			d.log.Debug("daily sweep due")
@@ -559,6 +573,31 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// dispatchAgentEvent applies each registry event to every dependent view in
+// the same order, whether it came from the registry stream or an explicit
+// snapshot. Reassociation must be attached before consumers observe it.
+func (d *Daemon) dispatchAgentEvent(ctx context.Context, ev AgentEvent) error {
+	if err := d.reconciler.Handle(ctx, ev); err != nil {
+		if err := d.handleErr(ctx, err); err != nil {
+			return err
+		}
+	}
+	if from, ok := d.reconciler.TakeReassociatedFrom(ev.Agent.Key); ok {
+		ev.ReassociatedFrom = &from
+	}
+	d.capture.Observe(ev)
+	d.dashboard.Observe(ev)
+	return d.submitBridge(ctx, ev)
+}
+
+func (d *Daemon) submitBridge(ctx context.Context, job any) error {
+	err := d.bridge.SubmitContext(ctx, job)
+	if ctx.Err() != nil {
+		return nil // the run loop handles shutdown at its context case
+	}
+	return err
 }
 
 // checkRights verifies the bot's standing once at start. Missing rights
@@ -605,8 +644,7 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 		}
 		return nil
 	case domain.TopicMessage, domain.TopicAttachment, domain.ButtonPressed, domain.GeneralCommand, domain.StrangerSeen:
-		d.bridge.Submit(raw)
-		return nil
+		return d.submitBridge(ctx, raw)
 	case domain.TopicClosed:
 		return d.handleErr(ctx, d.reconciler.OnTopicClosed(ctx, ev.ThreadID))
 	case domain.TopicReopened:
@@ -629,16 +667,12 @@ func (d *Daemon) onTelegramEvent(ctx context.Context, raw domain.Event) error {
 func (d *Daemon) replay(ctx context.Context, force bool) error {
 	evs, err := d.registry.Snapshot(ctx)
 	if err != nil {
-		d.log.Warn("snapshot for replay failed", slog.String("err", err.Error()))
+		d.log.Warn("[FIX] replay snapshot failed; reconciliation skipped", slog.String("err", err.Error()))
+		return nil
 	}
 	for _, ev := range evs {
-		if err := d.reconciler.Handle(ctx, ev); err != nil {
-			if err := d.handleErr(ctx, err); err != nil {
-				return err
-			}
-		}
-		if from, ok := d.reconciler.TakeReassociatedFrom(ev.Agent.Key); ok {
-			ev.ReassociatedFrom = &from
+		if err := d.dispatchAgentEvent(ctx, ev); err != nil {
+			return err
 		}
 	}
 	if err := d.reconciler.Flush(ctx); err != nil {

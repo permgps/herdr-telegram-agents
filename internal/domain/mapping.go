@@ -92,16 +92,21 @@ func (e *TopicEntry) Label() string {
 // has been created. The field is optional in the file so an older binary
 // loads and saves the mapping without it (leaving one stale pinned message
 // behind after a downgrade).
+// PendingCreates and PendingDashboard record durable intent before Telegram
+// creates a topic or dashboard message, which cannot be replayed safely after
+// an ambiguous failure.
 type Mapping struct {
-	Version   int
-	ChatID    int64
-	Topics    map[string]*TopicEntry
-	Dashboard int
+	Version          int
+	ChatID           int64
+	Topics           map[string]*TopicEntry
+	Dashboard        int
+	PendingCreates   map[string]bool
+	PendingDashboard bool
 }
 
 // NewMapping returns an empty mapping for the given chat.
 func NewMapping(chatID int64) *Mapping {
-	return &Mapping{Version: MappingVersion, ChatID: chatID, Topics: map[string]*TopicEntry{}}
+	return &Mapping{Version: MappingVersion, ChatID: chatID, Topics: map[string]*TopicEntry{}, PendingCreates: map[string]bool{}}
 }
 
 // ParseKey is the inverse of Key.String. It accepts the legacy
@@ -568,39 +573,11 @@ func (m *Mapping) Unclosed() []Key {
 	return out
 }
 
-// Prune keeps the mapping under maxEntries by dropping the oldest exited
-// entries; live entries are never removed and nothing is removed by age
-// (the stale-topic sweep deletes a topic and forgets its entry instead).
-// It returns the number of removed entries.
+// Prune is retained for callers of older releases but never drops a topic
+// reference. A mapping entry can be forgotten only after Telegram confirms
+// its topic was deleted or is already gone; a size cap cannot establish that.
 func (m *Mapping) Prune(maxEntries int) int {
-	if maxEntries <= 0 || len(m.Topics) <= maxEntries {
-		return 0
-	}
-	type aged struct {
-		key string
-		at  time.Time
-	}
-	var exited []aged
-	for key, e := range m.Topics {
-		if !e.Status.Live() {
-			exited = append(exited, aged{key, e.UpdatedAt})
-		}
-	}
-	sort.Slice(exited, func(i, j int) bool {
-		if exited[i].at.Equal(exited[j].at) {
-			return exited[i].key < exited[j].key
-		}
-		return exited[i].at.Before(exited[j].at)
-	})
-	removed := 0
-	for _, a := range exited {
-		if len(m.Topics) <= maxEntries {
-			break
-		}
-		delete(m.Topics, a.key)
-		removed++
-	}
-	return removed
+	return 0
 }
 
 // Stale lists the candidates of the stale-topic sweep: exited entries whose

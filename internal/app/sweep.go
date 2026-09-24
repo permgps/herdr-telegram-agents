@@ -14,8 +14,9 @@ import (
 // daemon loop once at start, once a day and when the option changes. A
 // zero maxAge, paused writes (sync off or rights lost) and a bot without
 // the can_delete_messages right make it a no-op; the last case is logged
-// at warn once per daemon run. At most sweepBatch topics go per pass, the
-// rest wait for the next one. It returns how many topics were deleted.
+// at warn once per daemon run. At most sweepBatch topics go per pass; the
+// daemon can use SweepPending to schedule a bounded continuation. It returns
+// how many topics were deleted.
 func (r *Reconciler) Sweep(ctx context.Context, maxAge time.Duration, rights domain.Rights) (int, error) {
 	if maxAge <= 0 {
 		r.log.Debug("sweep skipped", slog.String("reason", "off"))
@@ -57,9 +58,14 @@ func (r *Reconciler) Sweep(ctx context.Context, maxAge time.Duration, rights dom
 		switch {
 		case err == nil, errors.Is(err, domain.ErrTopicGone):
 			r.mapping.Forget(key)
-			r.save(ctx)
 			deleted++
-			r.log.Info("topic deleted", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
+			if saveErr := r.save(ctx); saveErr != nil {
+				r.log.Error("[FIX] sweep mapping save failed after topic deletion",
+					slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID), slog.String("err", saveErr.Error()))
+				stop = saveErr
+				break
+			}
+			r.log.Info("[FIX] topic deleted and mapping saved", slog.String("key", key.String()), slog.Int("thread_id", entry.ThreadID),
 				slog.Int("age_days", age), slog.Bool("already_gone", err != nil))
 		case errors.Is(err, domain.ErrForbidden):
 			failed++
@@ -79,10 +85,19 @@ func (r *Reconciler) Sweep(ctx context.Context, maxAge time.Duration, rights dom
 	}
 	r.log.Info("stale topics sweep", slog.Int("max_age_days", days(maxAge)), slog.Int("candidates", candidates),
 		slog.Int("deleted", deleted), slog.Int("failed", failed), slog.Bool("batch_cut", cut))
-	if errors.Is(stop, context.Canceled) || errors.Is(stop, context.DeadlineExceeded) {
+	if stop != nil && !errors.Is(stop, domain.ErrForbidden) {
 		return deleted, stop
 	}
 	return deleted, nil
+}
+
+// SweepPending reports whether a later pass can make progress. It does not
+// inspect rights; the daemon checks those before scheduling the next pass.
+func (r *Reconciler) SweepPending(maxAge time.Duration) bool {
+	if maxAge <= 0 || r.blocked() {
+		return false
+	}
+	return len(r.mapping.Stale(r.clock.Now(), maxAge)) > 0
 }
 
 func days(d time.Duration) int { return int(d / (24 * time.Hour)) }
