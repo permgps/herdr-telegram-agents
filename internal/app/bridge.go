@@ -37,7 +37,16 @@ type Bridge struct {
 	wg     sync.WaitGroup
 
 	// CallTimeout bounds one job; tests shorten it.
-	CallTimeout time.Duration
+	CallTimeout   time.Duration
+	pendingUpdate *domain.UpdateJob
+}
+
+// RestoreUpdate schedules a persisted progress view for the first bridge
+// loop iteration, after the Telegram queue has started.
+func (b *Bridge) RestoreUpdate(job domain.UpdateJob) {
+	if job.PanelMessageID > 0 && !job.Terminal() {
+		b.pendingUpdate = &job
+	}
 }
 
 // Services are the optional machine-side helpers the bridge uses: the
@@ -49,7 +58,11 @@ type Services struct {
 	Inbox   domain.InboxStore
 	// Config saves config.json when /observers changes the observer list;
 	// nil refuses the change with a notice.
-	Config domain.ConfigStore
+	Config        domain.ConfigStore
+	Updates       *UpdateManager
+	UpdateJobs    domain.UpdateJobStore
+	LaunchUpdate  func(context.Context, string) (int, error)
+	UpdateRunning func() bool
 }
 
 // NewBridge wires the outbound and inbound use cases around the registry,
@@ -78,6 +91,16 @@ func NewBridge(cfg domain.Config, herdr domain.HerdrGateway, tg domain.TelegramG
 		fatal:       make(chan error, 1),
 		log:         log,
 		CallTimeout: bridgeCallTimeout,
+	}
+	in.panel.chatID, in.panel.operators = cfg.ChatID, append([]int64(nil), cfg.OperatorIDs...)
+	in.panel.updates, in.panel.jobs = svc.Updates, svc.UpdateJobs
+	in.panel.launch, in.panel.running = svc.LaunchUpdate, svc.UpdateRunning
+	in.panel.async = func(run func(context.Context) any) {
+		b.spawn(func(ctx context.Context) {
+			if err := b.SubmitContext(ctx, run(ctx)); err != nil && ctx.Err() == nil {
+				b.log.Warn("update result not accepted", slog.String("err", err.Error()))
+			}
+		})
 	}
 	// Slow work (agent.start, a file download) runs off the loop and
 	// reports back as a job, so the bridge stays the only writer to
@@ -172,7 +195,7 @@ func (b *Bridge) SubmitContext(ctx context.Context, job any) error {
 	switch job.(type) {
 	case AgentEvent:
 		queue = b.jobs
-	case domain.TopicMessage, domain.TopicAttachment, domain.ButtonPressed, domain.GeneralCommand, domain.StrangerSeen, presenceAway, startResult, inboxResult:
+	case domain.TopicMessage, domain.TopicAttachment, domain.ButtonPressed, domain.GeneralCommand, domain.StrangerSeen, presenceAway, startResult, inboxResult, updateCheckResult, updateStartResult:
 		queue = b.control
 	default:
 		b.log.Warn("bridge job of unknown type dropped", slog.String("type", fmt.Sprintf("%T", job)))
@@ -204,6 +227,10 @@ func (b *Bridge) Handled() int64 { return b.handled.Load() }
 // Fatal and the daemon decides.
 func (b *Bridge) Run(ctx context.Context) {
 	b.log.Info("bridge started")
+	if b.pendingUpdate != nil {
+		job := *b.pendingUpdate
+		b.run(ctx, "update_resume", func(ctx context.Context) error { return b.in.panel.restoreUpdate(ctx, job) })
+	}
 	defer func() {
 		b.log.Info("[FIX] bridge stopped", slog.Int64("handled", b.handled.Load()), slog.Int64("dropped", b.dropped.Load()))
 	}()
@@ -318,6 +345,10 @@ func (b *Bridge) handle(ctx context.Context, job any) {
 	case startResult:
 		b.log.Debug("bridge job", slog.String("kind", "start_result"), slog.Int("message_id", j.messageID), slog.Bool("ok", j.err == nil))
 		b.run(ctx, "start_result", func(ctx context.Context) error { return b.in.StartFinished(ctx, j) })
+	case updateCheckResult:
+		b.run(ctx, "update_check_result", func(ctx context.Context) error { return b.in.panel.checkFinished(ctx, j) })
+	case updateStartResult:
+		b.run(ctx, "update_start_result", func(ctx context.Context) error { return b.in.panel.startFinished(ctx, j) })
 	}
 }
 

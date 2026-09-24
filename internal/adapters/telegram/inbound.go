@@ -248,6 +248,11 @@ func attachmentOf(m *models.Message) *domain.TopicAttachment {
 func (g *Gateway) onCallback(ctx context.Context, _ *bot.Bot, u *models.Update) {
 	q := u.CallbackQuery
 	m := callbackMessage(q)
+	if m.Chat.ID != g.chatID {
+		g.drop("wrong_chat", m.Chat.ID, q.From.ID)
+		_, _ = g.api.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: q.ID, Text: "not allowed"})
+		return
+	}
 	if role := g.access.Load().role(q.From.ID); role != domain.RoleOperator {
 		if role == domain.RoleObserver {
 			g.drop("observer", m.Chat.ID, q.From.ID)

@@ -366,3 +366,67 @@ type Clock interface {
 	Now() time.Time
 	After(d time.Duration) <-chan time.Time
 }
+
+// ReleaseSource discovers published releases and verifies the host asset's
+// checksum entry before an update can be offered.
+type ReleaseSource interface {
+	Latest(ctx context.Context, installed Version) (Release, bool, error)
+	Checksum(ctx context.Context, release Release) (string, error)
+	Manifest(ctx context.Context, release Release) (ReleaseManifest, error)
+}
+
+// PluginInstallation is Herdr's registration plus independently read local
+// versions. Source metadata is kept separate from the running daemon version.
+type PluginInstallation struct {
+	Root, ManifestVersion, BinaryVersion, RunningVersion  string
+	SourceKind, Owner, Repo, RequestedRef, ResolvedCommit string
+	ManagedPath                                           string
+	Running                                               bool
+}
+
+// InstallationReader reads Herdr's authoritative plugin registration and
+// the current root's manifest and executable without modifying either.
+type InstallationReader interface {
+	ReadInstallation(ctx context.Context) (PluginInstallation, error)
+}
+
+// CheckoutState describes a linked checkout at the selected release.
+type CheckoutState struct {
+	Branch, Origin, Commit, TargetCommit string
+	Dirty, FastForward                   bool
+}
+
+// CheckoutInspector reads Git metadata and fetches the exact release tag
+// before deciding whether a local link can fast-forward safely.
+type CheckoutInspector interface {
+	InspectCheckout(ctx context.Context, root, tag string) (CheckoutState, error)
+}
+
+// UpdateJobStore and UpdateLock keep one durable update transaction across
+// daemon handoff. The lock lives outside the checkout being replaced.
+type UpdateJobStore interface {
+	Load(ctx context.Context) (UpdateJob, error)
+	Save(ctx context.Context, job UpdateJob) error
+	Recover(ctx context.Context, workerAlive bool) (UpdateJob, error)
+}
+
+type UpdateLock interface {
+	Acquire() error
+	Active() bool
+	Release() error
+}
+
+// UpdateInstaller performs bounded installation commands and backup/restore.
+// It does not start a Telegram poller or decide whether a job succeeded.
+type UpdateInstaller interface {
+	Backup(ctx context.Context, job UpdateJob) (UpdateJob, error)
+	Install(ctx context.Context, job UpdateJob) error
+	Verify(ctx context.Context, job UpdateJob, root string) error
+	Rollback(ctx context.Context, job UpdateJob) error
+}
+
+// UpdateNotifier edits the already-created General panel message. Repeating
+// the same edit after a crash cannot create a duplicate completion message.
+type UpdateNotifier interface {
+	EditUpdate(ctx context.Context, messageID int, text string) error
+}

@@ -454,8 +454,8 @@ func TestBridgeTurnTimerFiresThroughRun(t *testing.T) {
 	r.bridge.Submit(AgentEvent{Kind: AgentChanged, Agent: r.setStatus(a, domain.StatusIdle)})
 	waitUntil(t, "turn timer armed", func() bool { return r.clock.Pending() == 1 })
 	r.clock.Advance(turnSettle)
-	waitUntil(t, "check mark", func() bool { return len(r.tg.Calls()) == 2 })
-	assertCallsEqual(t, r.tg, "react:101:4:👀", "react:101:4:👌")
+	waitUntil(t, "idle completion", func() bool { return len(r.tg.Calls()) == 3 })
+	assertCallsEqual(t, r.tg, "react:101:4:👀", "react:101:4:👌", "send:101:screen")
 }
 
 func TestBridgeRunsDownloadOffTheLoop(t *testing.T) {

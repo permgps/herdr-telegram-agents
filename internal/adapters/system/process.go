@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -60,10 +62,24 @@ func (p *Process) Spawn(ctx context.Context, args []string) (int, error) {
 			return 0, fmt.Errorf("locate executable: %w", err)
 		}
 	}
+	return p.spawnExecutable(ctx, exe, args, ErrLogFileName, "")
+}
+
+// SpawnAt starts the daemon from the explicit installed root. The updater
+// uses it because its own executable is a copy under the state directory.
+func (p *Process) SpawnAt(ctx context.Context, root string, args []string) (int, error) {
+	name := "herdr-tg"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return p.spawnExecutable(ctx, filepath.Join(root, "bin", name), args, ErrLogFileName, root)
+}
+
+func (p *Process) spawnExecutable(ctx context.Context, exe string, args []string, logName, rootEnv string) (int, error) {
 	if err := os.MkdirAll(p.stateDir, 0o755); err != nil {
 		return 0, fmt.Errorf("mkdir state dir: %w", err)
 	}
-	errPath := filepath.Join(p.stateDir, ErrLogFileName)
+	errPath := filepath.Join(p.stateDir, logName)
 	errLog, err := os.OpenFile(errPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", errPath, err)
@@ -71,6 +87,14 @@ func (p *Process) Spawn(ctx context.Context, args []string) (int, error) {
 	defer errLog.Close()
 
 	cmd := exec.CommandContext(ctx, exe, args...)
+	if rootEnv != "" {
+		for _, value := range os.Environ() {
+			if !strings.HasPrefix(value, "HERDR_PLUGIN_ROOT=") {
+				cmd.Env = append(cmd.Env, value)
+			}
+		}
+		cmd.Env = append(cmd.Env, "HERDR_PLUGIN_ROOT="+rootEnv)
+	}
 	cmd.Stdin = nil
 	cmd.Stdout = errLog
 	cmd.Stderr = errLog

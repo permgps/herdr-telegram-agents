@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -100,4 +101,16 @@ func (i *Inspector) SendTest(ctx context.Context, text string) (int, error) {
 	}
 	i.log.Info("test message sent", slog.Int("message_id", msg.ID))
 	return msg.ID, nil
+}
+
+// EditUpdate writes the terminal result into the existing General panel.
+// The inspector does not start polling or alter the webhook.
+func (i *Inspector) EditUpdate(ctx context.Context, messageID int, text string) error {
+	_, err := i.api.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: i.chatID, MessageID: messageID, Text: text})
+	if err = translate(err); err != nil && !errors.Is(err, ErrMessageNotModified) {
+		i.log.Warn("update result edit failed", slog.Int("message_id", messageID), slog.String("err", redact(err, i.token)))
+		return fmt.Errorf("edit update result: %w", err)
+	}
+	i.log.Info("update result displayed", slog.Int("message_id", messageID))
+	return nil
 }

@@ -53,8 +53,8 @@ breaks installs with a 404 until the workflow finishes.
    Changes to the manifest (actions, panes, startup) and to the install
    scripts ship in that same commit: an installer always runs the manifest
    from `main` against the binary of the released version.
-2. `make lint && make test`, and make sure CI is green on the parent commit.
-3. `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`, without pushing
+2. Run `make lint`, then `make test`, and make sure CI is green on the parent commit.
+3. Run `git tag -a vX.Y.Z -m vX.Y.Z`, then `git push origin vX.Y.Z`, without pushing
    `main` yet. The release workflow builds the five binaries and
    `checksums.txt` from the tagged commit; GoReleaser writes the release
    notes from the commit list.
@@ -83,6 +83,30 @@ bin/herdr-tg dev watch    # stream agent events until Ctrl-C
 The socket path comes from `HERDR_SOCKET_PATH` and falls back to
 `~/.config/herdr/herdr.sock`.
 
+## Telegram update worker
+
+The General options panel calls the release checker in a background bridge
+job. `internal/adapters/github/` lists published releases, checks the exact
+host asset and checksum entry, and reads the manifest at the selected tag.
+The installation reader uses `herdr plugin list --plugin
+permgps.telegram-agents --json`; a linked checkout is inspected with Git.
+The check result creates an in-memory, five-minute Update intent bound to
+the operator and panel. Pressing Update consumes and revalidates it.
+
+`update.json` is an atomic state-dir journal. The daemon writes a queued job
+and launches `update-worker <job-id>` from a copy of its executable in the
+state dir. The worker takes `update.lock/`, backs up the old version, stops
+the daemon if it was running, installs the selected tag, and starts the
+binary at the new plugin root. The status control channel must report a
+new pid, target version, `herdr=ok` and `telegram=ready` before success.
+Only then does the worker edit the original General panel with the final
+result. A failure attempts one guarded rollback. A stopped daemon stays
+stopped. The worker never starts a second Telegram poller.
+
+The updater is tested with `httptest`, fake runners and disposable directories.
+The release verification script still checks published install assets; see
+[Testing](testing.md#telegram-update-checks) for the update matrix.
+
 ## Layout
 
 | Path | Purpose |
@@ -91,10 +115,11 @@ The socket path comes from `HERDR_SOCKET_PATH` and falls back to
 | `internal/domain/` | Agents, statuses, topics, mapping, commands, config, options, presence, secret redaction, doctor checks, events and the ports (standard library only) |
 | `internal/app/` | Use cases: agent registry, reconciler, debounce, bridge (screens out, commands in), screen capture for `/screen all`, the options panel, presence and quiet mode, the topic sweep, doctor, setup wizard, supervisor, daemon loop |
 | `internal/adapters/herdr/` | Herdr socket adapter: dialers (Unix socket or Win32 named pipe normalized from `HERDR_SOCKET_PATH`), one-shot calls, event stream, `herdr` CLI runner |
+| `internal/adapters/github/` | Published release discovery, asset checksums and tagged manifest reads |
 | `internal/adapters/telegram/` | Telegram Bot API adapter: bot, queue, formatting, icons, inbound updates, setup probe |
-| `internal/adapters/state/` | `config.json`, `mapping.json`, `options.json` and pid file stores |
+| `internal/adapters/state/` | `config.json`, `mapping.json`, `options.json`, pid and atomic update job stores |
 | `internal/adapters/logging/` | JSON file logger with size-based rotation |
-| `internal/adapters/system/` | `HERDR_*` environment, detached process spawn, signals, the control channel (unix socket or named pipe), the input idle source for presence (macOS, Windows) |
+| `internal/adapters/system/` | `HERDR_*` environment, detached process spawn, update lock and installer, signals, the control channel (Unix socket or named pipe), the input idle source for presence (macOS, Windows) |
 | `internal/cli/` | Subcommands behind the single binary |
 | `internal/compose/` | Composition root wiring adapters into the use cases |
 | `internal/testkit/` | Fakes for every port and a fake Herdr socket server |
@@ -111,4 +136,4 @@ a fake socket server and the Telegram adapter against an in-process HTTP fake.
 
 - [Testing](testing.md): automated gates and the manual checklist before a release
 - [README: Install](../README.md#install): how users get the prebuilt binary
-- [README: Upgrade](../README.md#upgrade): reinstall-based updates and what survives them
+- [Plugin updates](behaviour.md#plugin-updates): two-press flow and recovery

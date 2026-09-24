@@ -330,10 +330,10 @@ func (o *outbound) observeTurn(ev AgentEvent) {
 }
 
 // EndTurn runs when an agent has stayed idle for turnSettle: the open turn
-// ends with its ✅ and is dropped. An agent that moved on meanwhile keeps
-// its turn. Only fatal Telegram errors are returned.
+// ends with its reaction and a silent completion post. An agent that moved on
+// meanwhile keeps its turn. Only fatal Telegram errors are returned.
 func (o *outbound) EndTurn(ctx context.Context, key domain.Key) error {
-	t, ok := o.turns[key]
+	_, ok := o.turns[key]
 	if !ok {
 		o.log.Debug("turn end without turn", slog.String("key", key.String()))
 		return nil
@@ -343,8 +343,9 @@ func (o *outbound) EndTurn(ctx context.Context, key domain.Key) error {
 		o.log.Debug("turn end skipped", slog.String("key", key.String()), slog.Bool("alive", alive), slog.String("status", string(agent.Status)))
 		return nil
 	}
-	delete(o.turns, key)
-	return o.finishTurn(ctx, key, t, "idle")
+	// Some agents settle directly into idle after producing a final answer.
+	// Treat that settled turn like done so its answer reaches the topic.
+	return o.fire(ctx, key, false, true)
 }
 
 // finishTurn logs the end of a turn and pays the ✅ owed on its prompt.
@@ -491,25 +492,33 @@ func (o *outbound) Forget(ctx context.Context, key domain.Key) error {
 // While quiet mode is on the post follows the posts mode: held (not sent),
 // silent (no sound) or normal.
 func (o *outbound) Fire(ctx context.Context, key domain.Key) error {
-	return o.fire(ctx, key, false)
+	return o.fire(ctx, key, false, false)
 }
 
 // fire is Fire with a force flag for the catch-up: force bypasses the
 // duplicate check and the quiet rules and always rings.
-func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
+func (o *outbound) fire(ctx context.Context, key domain.Key, force, idleCompletion bool) error {
 	agent, ok := o.agents(key)
 	if !ok {
 		return o.skip(key, "exited")
+	}
+	status := agent.Status
+	if idleCompletion && status == domain.StatusIdle {
+		status = domain.StatusDone
 	}
 	// A done status ends the turn here, before any reason to skip the
 	// post: the ✅ is owed even when the post is muted, held or short.
 	var t turn
 	var hasTurn bool
-	if agent.Status == domain.StatusDone {
+	if status == domain.StatusDone {
 		if t, hasTurn = o.turns[key]; hasTurn {
 			delete(o.turns, key)
 			o.turnDeb.Cancel(key)
-			if err := o.finishTurn(ctx, key, t, "done"); err != nil {
+			reason := "done"
+			if idleCompletion {
+				reason = "idle"
+			}
+			if err := o.finishTurn(ctx, key, t, reason); err != nil {
 				return err
 			}
 		}
@@ -529,7 +538,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		}
 	}
 	var lines int
-	switch agent.Status {
+	switch status {
 	case domain.StatusBlocked:
 		lines = blockedLines
 	case domain.StatusDone:
@@ -541,7 +550,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	// A done post of a turn shorter than posts.min_seconds is skipped; a
 	// turn whose start the daemon never saw posts. The catch-up never
 	// reaches here with done, so force needs no exception.
-	if minTurn := o.minTurn(); agent.Status == domain.StatusDone && minTurn > 0 && hasTurn && !t.started.IsZero() {
+	if minTurn := o.minTurn(); status == domain.StatusDone && minTurn > 0 && hasTurn && !t.started.IsZero() {
 		if elapsed := o.clock.Now().Sub(t.started); elapsed < minTurn {
 			o.log.Debug("screen skipped", slog.String("key", key.String()), slog.String("reason", "short_turn"),
 				slog.Int64("duration_ms", elapsed.Milliseconds()), slog.Int64("min_ms", minTurn.Milliseconds()))
@@ -557,7 +566,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	case entry.Muted:
 		return o.skip(key, "muted")
 	}
-	notify := agent.Status == domain.StatusBlocked
+	notify := status == domain.StatusBlocked
 	if force {
 		notify = true
 	} else if o.quiet() {
@@ -571,7 +580,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	// A done post may come from the agent's transcript instead of the
 	// screen; any failure there falls back to the screen with one info line.
 	mode := domain.DoneScreen
-	if agent.Status == domain.StatusDone {
+	if status == domain.StatusDone {
 		mode = o.doneMode()
 	}
 	var text string
@@ -579,7 +588,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	// With a blocked delay the first capture waits for a second one; the
 	// catch-up never waits and drops whatever was kept.
 	captured := false
-	if agent.Status == domain.StatusBlocked {
+	if status == domain.StatusBlocked {
 		switch delay := o.blockedDelay(); {
 		case force:
 			delete(o.captures, key)
@@ -599,7 +608,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 	// transcript last written before the turn started belongs to an
 	// earlier turn (two Claude panes in one directory) and counts as
 	// unavailable. A failure costs the screen mode nothing but the line.
-	wantMeta := agent.Status == domain.StatusDone && o.meta() && o.replies != nil
+	wantMeta := status == domain.StatusDone && o.meta() && o.replies != nil
 	var footer string
 	if !captured && (mode != domain.DoneScreen || wantMeta) {
 		r, err := o.replies.LastReply(ctx, agent)
@@ -650,14 +659,14 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		out.Fold = o.fold()
 	}
 	var dialog domain.Dialog
-	if agent.Status == domain.StatusBlocked {
+	if status == domain.StatusBlocked {
 		dialog = domain.ParseDialog(text)
 		out.Buttons = choiceButtons(dialog)
 		o.logChoices(key, dialog)
 	}
 	// With the pager the topic post stays silent and the ring comes from
 	// the bot's private chat, so a muted group still rings exactly once.
-	paged := notify && agent.Status == domain.StatusBlocked && o.paging()
+	paged := notify && status == domain.StatusBlocked && o.paging()
 	if paged {
 		out.Notify = false
 	}
@@ -679,7 +688,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force bool) error {
 		if rang {
 			o.announced[key] = true
 		}
-	case notify && agent.Status == domain.StatusBlocked:
+	case notify && status == domain.StatusBlocked:
 		o.announced[key] = true
 	}
 	if mode != domain.DoneScreen {
@@ -858,7 +867,7 @@ func (o *outbound) CatchUp(ctx context.Context) error {
 			continue
 		}
 		before := len(o.lastPosted)
-		if err := o.fire(ctx, key, true); err != nil {
+		if err := o.fire(ctx, key, true, false); err != nil {
 			return err
 		}
 		if o.announced[key] || len(o.lastPosted) > before {

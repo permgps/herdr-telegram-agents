@@ -202,8 +202,11 @@ at DEBUG without screen text; a final failed read produces one WARN.
 
 ## Done posts
 
-When an agent turns 🏆 done the topic gets one silent post. What it holds is
-the `Done post` option of the Posts group:
+When an agent turns 🏆 done, or settles in idle for five seconds after a
+working turn, the topic gets one silent completion post. The idle fallback
+covers agents that finish an answer without reporting `done`. Duplicate
+screen text is still suppressed. What the post holds is the `Done post`
+option of the Posts group:
 
 - **Screen** (default): the last 12 lines of the terminal, as a code block,
   without Claude Code's input frame at the bottom (the two `─` rules with the
@@ -304,9 +307,9 @@ Two things hang on it:
 `/options` in the General topic answers with one message that is edited in
 place as you press its buttons; only operators can press them, and every
 string on it is English. A new `/options` retires the previous panel's
-keyboard, `✖ Close` leaves a one-line-per-option summary behind. The buttons
-carry everything they need, so a panel still works after the daemon was
-restarted.
+keyboard, `✖ Close` leaves a one-line-per-option summary behind. Option
+buttons still work after a daemon restart; an Update authorization expires
+and needs a fresh check.
 
 - **Level 1** lists the groups (Sync, Quiet, Posts, Inbox, Appearance,
   Privacy, Topics) with a description each.
@@ -363,6 +366,55 @@ Values are saved in `options.json` next to `config.json` (mode 0600) as
 Missing keys take their defaults and unknown keys survive a save. The file
 is read once at daemon start: edit it by hand and restart the daemon, or use
 the panel, which applies a change immediately.
+
+## Plugin updates
+
+`/options` in General has a **Check for updates** action below the option
+groups. It is an action, not a value in `options.json`. Only an operator in
+the configured group may press it. The first press checks the public GitHub
+releases list, including prereleases but excluding drafts, and compares
+semantic versions with the installed manifest and binary. It scans every
+release page within a fixed bound; a network error or incomplete scan is
+shown as a failure rather than as "up to date". No GitHub token is required.
+The check verifies the host binary and its exact entry in `checksums.txt`,
+the release manifest version, and its minimum Herdr version.
+
+If a newer release is eligible, the panel shows a separate **Update** button.
+That button expires after five minutes and is bound to the operator, group,
+panel message, tag, and installation state. Pressing it repeats the release
+and installation checks before an update worker starts. A replaced panel,
+changed target, duplicate press, or press by another account cannot start
+another job. There are no scheduled checks or unattended installs.
+
+Herdr-managed GitHub installs use `herdr plugin install
+permgps/herdr-telegram-agents --ref <exact-tag> --yes`. An intentional
+`--ref` pin is left alone. A previous exact tag installed by this update
+action is recognised from `update.json`, so it does not block a later update.
+A local link stays local: its `main` branch must be clean, have the expected
+GitHub origin, and be able to fast-forward to the release commit on the
+remote mainline. The worker saves the old binary, stops a running daemon,
+fast-forwards, and runs the release's checksum-verified install script.
+Detached branches, local changes, another repository, and an incompatible
+Herdr version show the release and a reason without an Update button.
+
+The worker runs from a copy under the plugin state directory. It preserves
+the prior running or stopped state. For a previously running daemon, success
+requires a new daemon pid serving the target version, a healthy Herdr
+connection, and a started Telegram poller. A failure after replacement makes
+one rollback attempt. If rollback cannot be verified, `update.json` records
+`stuck` and the panel points to manual recovery. The final outcome edits the
+same General panel message, so retrying delivery cannot create a duplicate.
+Checking and editing the panel does not change forum topics or create topic
+service messages.
+
+For manual recovery, inspect `update.json`, `daemon.log`, and
+`update-worker.err.log` in the state directory. A managed installation can
+be restored with `herdr plugin install
+permgps/herdr-telegram-agents --ref <old-commit> --yes`. For a linked
+checkout, keep any new local changes, then restore the recorded old commit
+and the binary backup under `update-backups/<job-id>/`; run the install
+script from the desired release if a fresh binary is needed. Start or
+restart the daemon through the Herdr action after the files are sound.
 
 ## Silence the group
 
@@ -567,6 +619,10 @@ in `config.json`:
 | `options.json` | config dir, mode 0600 | the `/options` choices |
 | `inbox/` | state dir, mode 0700, files 0600 | attachments sent to topics, swept daily after `Delete files after` |
 | `daemon.pid` | state dir | pid of the running daemon |
+| `update.json` | state dir, mode 0600 | current or last update job, phases, source, versions, rollback data and notification state |
+| `update.lock/` | state dir | exclusive worker ownership; a dead owner can be recovered |
+| `update-worker-<job-id>` and `update-worker.err.log` | state dir | detached worker copy and its stderr; `.exe` on Windows |
+| `update-backups/<job-id>/` | state dir | old linked binary kept for guarded rollback |
 | `daemon.log`, `daemon.log.1`, `daemon.log.2` | state dir | JSON log, rotated at 5 MiB |
 | `daemon.err.log` | state dir | stderr of the last daemon start |
 | `control.sock` | state dir | the daemon's control channel for the stop, resync and status actions (a named pipe on Windows, so no file) |
@@ -576,7 +632,7 @@ A daemon from an older build that does not answer still receives SIGTERM or
 SIGHUP on Unix and is killed if it answers neither. The `status` action prints
 the daemon's own line: `version=… pid=… uptime=… agents=… dropped=… herdr=ok|failing
 since … sync=on|off cleanup=<n>d|off quiet=on|away|away-manual|off
-pager=on|off|unreachable`.
+pager=on|off|unreachable telegram=ready` while polling has started.
 
 `LOG_LEVEL=debug|info|warn|error` in Herdr's environment overrides the level
 saved in `config.json` (default `info`). The daemon writes JSON lines to

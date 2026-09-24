@@ -1128,7 +1128,7 @@ func TestOutboundIdleEndsTurnAfterSettle(t *testing.T) {
 	// Five seconds of idle end it.
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
 	f.endTurns(t, 1)
-	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌")
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌", "send:101:screen")
 	if _, open := f.out.turns[a.Key]; open {
 		t.Fatal("turn still open after idle settle")
 	}
@@ -1140,8 +1140,18 @@ func TestOutboundIdleEndsTurnAfterSettle(t *testing.T) {
 	}
 	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
 	f.endTurns(t, 1)
-	if calls := f.tg.Calls(); len(calls) != 2 {
-		t.Fatalf("reaction without a prompt: %q", calls)
+	assertCallsEqual(t, f.tg, "react:101:2:👀", "react:101:2:👌", "send:101:screen")
+}
+
+func TestOutboundIdleCompletionPostsScreen(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	f.herdr.SetScreen("p1", "What would you like me to check?")
+	f.out.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusIdle)})
+	f.endTurns(t, 1)
+	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "What would you like me to check?" || sent[0].Notify {
+		t.Fatalf("idle completion posts = %+v", sent)
 	}
 }
 

@@ -126,6 +126,11 @@ func (p *FakeProcess) Spawn(_ context.Context, args []string) (int, error) {
 	return pid, nil
 }
 
+// SpawnAt models an explicit-root daemon launch by the updater.
+func (p *FakeProcess) SpawnAt(ctx context.Context, _ string, args []string) (int, error) {
+	return p.Spawn(ctx, args)
+}
+
 func (p *FakeProcess) Alive(pid int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

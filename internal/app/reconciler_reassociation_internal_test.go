@@ -205,7 +205,7 @@ func TestSameSessionRestartKeepsBridgeAndDashboardState(t *testing.T) {
 	if got := herdr.Keys(); len(got) != 1 || got[0].Target != "p1" || len(got[0].Keys) != 1 || got[0].Keys[0] != "1" {
 		t.Fatalf("retained keyboard callback keys = %+v", got)
 	}
-	if err := out.fire(ctx, newAgent.Key, false); err != nil {
+	if err := out.fire(ctx, newAgent.Key, false, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range tg.Calls() {

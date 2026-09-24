@@ -130,7 +130,7 @@ var botCommands = []models.BotCommand{
 	{Command: "status", Description: "Agent status here, all agents in General"},
 	{Command: "away", Description: "Treat me as away (General): /away or /away 2h"},
 	{Command: "here", Description: "Back to automatic presence (General)"},
-	{Command: "options", Description: "Settings panel (General): sync, quiet mode, posts, icons, redaction, topic cleanup"},
+	{Command: "options", Description: "Settings and update check (General)"},
 	{Command: "help", Description: "List the commands"},
 }
 

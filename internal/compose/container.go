@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/permgps/herdr-telegram-agents/internal/adapters/github"
 	"github.com/permgps/herdr-telegram-agents/internal/adapters/herdr"
 	"github.com/permgps/herdr-telegram-agents/internal/adapters/logging"
 	"github.com/permgps/herdr-telegram-agents/internal/adapters/state"
@@ -204,6 +206,44 @@ func BuildSupervisor(env PluginEnv, log *slog.Logger) *Supervisor {
 	return app.NewSupervisor(pid, proc, realClock{}, log)
 }
 
+// BuildUpdateManager wires the read-only check and approval flow used by
+// the options panel. Every press uses fresh Herdr and Git observations.
+func BuildUpdateManager(env PluginEnv, log *slog.Logger) *app.UpdateManager {
+	proc := system.NewProcess(env.StateDir, log)
+	reader := &herdr.InstallationReader{Bin: env.BinPath, ExpectedRoot: env.Root, Status: proc.Status, Log: log}
+	preflight := &app.UpdatePreflight{Installation: reader, Checkout: &system.CheckoutInspector{Log: log}, ExpectedRoot: env.Root, History: state.NewUpdateStore(env.StateDir, log), Log: log}
+	return &app.UpdateManager{Releases: github.NewSource(&http.Client{Timeout: 10 * time.Second}, log), Preflight: preflight,
+		Herdr: herdr.NewGateway(env.SocketPath, log, herdr.DefaultBackoff), Log: log}
+}
+
+func BuildUpdateWorker(env PluginEnv, log *slog.Logger) *app.UpdateWorker {
+	proc := system.NewProcess(env.StateDir, log)
+	reader := &herdr.InstallationReader{Bin: env.BinPath, Status: proc.Status, Log: log}
+	return &app.UpdateWorker{Store: state.NewUpdateStore(env.StateDir, log), Lock: system.NewUpdateLock(env.StateDir, proc.Alive, log),
+		Installer: &system.UpdateInstaller{StateDir: env.StateDir, HerdrBin: env.BinPath, Log: log},
+		Reader:    reader, Supervisor: BuildSupervisor(env, log), Log: log}
+}
+
+func LaunchUpdateWorker(ctx context.Context, env PluginEnv, jobID string, log *slog.Logger) (int, error) {
+	return system.LaunchUpdateWorker(ctx, env.StateDir, jobID, log)
+}
+
+// DeliverUpdateResult edits the existing General panel. Repeated attempts
+// are idempotent because they target one known message id.
+func DeliverUpdateResult(ctx context.Context, env PluginEnv, cfg domain.Config, log *slog.Logger) error {
+	client, err := telegram.NewInspector(cfg.BotToken, cfg.ChatID, log)
+	if err != nil {
+		return err
+	}
+	return app.DeliverUpdateResult(ctx, state.NewUpdateStore(env.StateDir, log), client, cfg.ChatID, log)
+}
+
+func RecoverUpdate(ctx context.Context, env PluginEnv, log *slog.Logger) (domain.UpdateJob, error) {
+	proc := system.NewProcess(env.StateDir, log)
+	lock := system.NewUpdateLock(env.StateDir, proc.Alive, log)
+	return state.NewUpdateStore(env.StateDir, log).Recover(ctx, lock.Active())
+}
+
 // BuildSetup wires the wizard with the real Telegram probe.
 func BuildSetup(env PluginEnv, ui domain.SetupUI, log *slog.Logger) *Setup {
 	probe := func(token string) (domain.SetupProbe, error) {
@@ -284,7 +324,15 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 	capture := app.NewCapture(hg, registry.Live, clock, log)
 	inbox := state.NewInbox(env.StateDir, log)
 	bridge := app.NewBridge(cfg, hg, tg, registry, reconciler, capture, opts,
-		app.Services{Replies: transcript.NewReader(log), Git: system.NewGitRunner(log), Inbox: inbox, Config: state.NewConfigStore(env.ConfigDir, log)}, clock, log)
+		app.Services{Replies: transcript.NewReader(log), Git: system.NewGitRunner(log), Inbox: inbox, Config: state.NewConfigStore(env.ConfigDir, log),
+			Updates: BuildUpdateManager(env, log), UpdateJobs: state.NewUpdateStore(env.StateDir, log),
+			LaunchUpdate:  func(ctx context.Context, id string) (int, error) { return LaunchUpdateWorker(ctx, env, id, log) },
+			UpdateRunning: func() bool { return BuildSupervisor(env, log).Status().Running }}, clock, log)
+	if job, err := state.NewUpdateStore(env.StateDir, log).Load(ctx); err == nil {
+		bridge.RestoreUpdate(job)
+	} else if !os.IsNotExist(err) {
+		log.Warn("update state unreadable", slog.String("err", err.Error()))
+	}
 	presence := app.NewPresence(system.NewIdleSource(log), opts, clock, log)
 	d = app.NewDaemon(cfg, hg, tg, registry, reconciler, bridge, capture, state.NewConfigStore(env.ConfigDir, log), opts, presence, clock, log)
 	d.SetInbox(inbox)

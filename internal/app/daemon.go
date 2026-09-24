@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -70,6 +71,7 @@ type Daemon struct {
 	// lastDropped and lastDropReport rate-limit the overflow warning.
 	lastDropped    int64
 	lastDropReport time.Time
+	telegramReady  atomic.Bool
 }
 
 // Stats is the daemon's self-description for the status action, served
@@ -89,7 +91,8 @@ type Stats struct {
 	// Quiet is the presence word: off, on, away or away-manual.
 	Quiet string
 	// Pager is on, off or unreachable (on, but no operator chat answers).
-	Pager string
+	Pager         string
+	TelegramReady bool
 }
 
 // Stats snapshots the running daemon. It is safe to call from another
@@ -106,6 +109,7 @@ func (d *Daemon) Stats() Stats {
 		DeleteAfterDays: days(d.opts.DeleteAfter()),
 		Quiet:           d.presence.State().Word(),
 		Pager:           d.pagerWord(),
+		TelegramReady:   d.telegramReady.Load(),
 	}
 	if h.LastErr != nil {
 		s.HerdrFailingSince = h.LastOK
@@ -116,6 +120,9 @@ func (d *Daemon) Stats() Stats {
 	d.log.Debug("daemon stats requested", slog.Int("agents", s.Agents), slog.Int64("dropped", s.Dropped), slog.Bool("herdr_ok", s.HerdrOK))
 	return s
 }
+
+// SetTelegramReady is called by the owner of the polling goroutine.
+func (d *Daemon) SetTelegramReady(ready bool) { d.telegramReady.Store(ready) }
 
 // pagerWord is the status word of the pager: off, on, or unreachable when
 // the option is on but no operator's private chat takes messages.
@@ -160,8 +167,12 @@ func StatsLine(s Stats, now time.Time) string {
 	if pager == "" {
 		pager = "off"
 	}
-	return fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s quiet=%s pager=%s",
+	line := fmt.Sprintf("version=%s pid=%d uptime=%s agents=%d dropped=%d herdr=%s sync=%s cleanup=%s quiet=%s pager=%s",
 		version, s.PID, uptime, s.Agents, s.Dropped, herdr, sync, cleanup, quiet, pager)
+	if s.TelegramReady {
+		line += " telegram=ready"
+	}
+	return line
 }
 
 // reportDrops warns about bridge jobs lost since the last report, at most

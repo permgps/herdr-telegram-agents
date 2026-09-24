@@ -82,15 +82,16 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 // initialization cycle.
 func commands() map[string]command {
 	return map[string]command{
-		"version":     runVersion,
-		"startup":     runStartup,
-		"daemon":      runDaemon,
-		"action":      runAction,
-		"setup-pane":  runSetupPane,
-		"logs-pane":   runLogsPane,
-		"doctor-pane": runDoctorPane,
-		"event":       notImplemented("event"),
-		"dev":         runDev,
+		"version":       runVersion,
+		"startup":       runStartup,
+		"daemon":        runDaemon,
+		"update-worker": runUpdateWorker,
+		"action":        runAction,
+		"setup-pane":    runSetupPane,
+		"logs-pane":     runLogsPane,
+		"doctor-pane":   runDoctorPane,
+		"event":         notImplemented("event"),
+		"dev":           runDev,
 	}
 }
 

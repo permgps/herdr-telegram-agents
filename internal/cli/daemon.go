@@ -66,6 +66,15 @@ func runDaemon(rc *runContext, _ []string) int {
 	defer func() { _ = pid.Release() }()
 	log.Info("daemon starting", slog.String("version", rc.version), slog.Int("pid", os.Getpid()),
 		slog.String("state_dir", env.StateDir))
+	if recovered, recoverErr := compose.RecoverUpdate(ctx, env, log); recoverErr != nil {
+		log.Warn("update recovery failed", slog.Any("err", recoverErr))
+	} else if recovered.Phase == "interrupted" || recovered.Terminal() && recovered.NotificationStatus != "sent" {
+		deliveryCtx, cancelDelivery := context.WithTimeout(ctx, 10*time.Second)
+		if err := compose.DeliverUpdateResult(deliveryCtx, env, cfg, log); err != nil {
+			log.Warn("update result pending delivery", slog.Any("err", err))
+		}
+		cancelDelivery()
+	}
 
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -106,7 +115,11 @@ func runDaemon(rc *runContext, _ []string) int {
 		defer stopControl()
 	}
 
-	runErr := runWithTelegram(ctx, runCtx, d.Run, runTelegram, telegramStopTimeout, log)
+	runErr := runWithTelegram(ctx, runCtx, d.Run, func(ctx context.Context) {
+		d.SetTelegramReady(true)
+		defer d.SetTelegramReady(false)
+		runTelegram(ctx)
+	}, telegramStopTimeout, log)
 	cancel(nil)
 
 	code, reason := exitOK, "stopped"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -65,11 +66,32 @@ func (s *Supervisor) Status() DaemonStatus {
 // Start spawns the daemon unless one is already running. It waits until the
 // child is alive and has claimed the pid file.
 func (s *Supervisor) Start(ctx context.Context) (pid int, alreadyRunning bool, err error) {
+	return s.start(ctx, "")
+}
+
+// StartAt launches the installed binary at root. An updater worker may be
+// running from a copy elsewhere, so os.Executable would start the wrong one.
+func (s *Supervisor) StartAt(ctx context.Context, root string) (pid int, alreadyRunning bool, err error) {
+	if root == "" {
+		return 0, false, fmt.Errorf("new plugin root is empty")
+	}
+	return s.start(ctx, root)
+}
+
+func (s *Supervisor) start(ctx context.Context, root string) (pid int, alreadyRunning bool, err error) {
 	if st := s.Status(); st.Running {
 		s.log.Info("daemon already running", slog.Int("pid", st.PID))
 		return st.PID, true, nil
 	}
-	pid, err = s.proc.Spawn(ctx, []string{"daemon"})
+	if root == "" {
+		pid, err = s.proc.Spawn(ctx, []string{"daemon"})
+	} else if at, ok := s.proc.(interface {
+		SpawnAt(context.Context, string, []string) (int, error)
+	}); ok {
+		pid, err = at.SpawnAt(ctx, root, []string{"daemon"})
+	} else {
+		return 0, false, fmt.Errorf("process control cannot spawn from a selected root")
+	}
 	if err != nil {
 		return 0, false, fmt.Errorf("spawn daemon: %w", err)
 	}
@@ -88,6 +110,29 @@ func (s *Supervisor) Start(ctx context.Context) (pid int, alreadyRunning bool, e
 		}
 		if err := s.sleep(ctx); err != nil {
 			return pid, false, err
+		}
+	}
+}
+
+// WaitHealthy requires the claimed pid, target version, Herdr health and
+// observable Telegram polling readiness to stay present together.
+func (s *Supervisor) WaitHealthy(ctx context.Context, pid int, version string, timeout time.Duration) error {
+	deadline := s.clock.Now().Add(timeout)
+	for {
+		st := s.Status()
+		if !st.Running || st.PID != pid {
+			return fmt.Errorf("replacement daemon exited or pid changed")
+		}
+		line, err := s.proc.Status(ctx)
+		if err == nil && strings.Contains(line, "version="+version+" ") && strings.Contains(line, "herdr=ok") && strings.Contains(line, "telegram=ready") {
+			s.log.Info("replacement daemon healthy", slog.Int("pid", pid), slog.String("version", version))
+			return nil
+		}
+		if !s.clock.Now().Before(deadline) {
+			return fmt.Errorf("replacement daemon did not become healthy within %s", timeout)
+		}
+		if err := s.sleep(ctx); err != nil {
+			return err
 		}
 	}
 }

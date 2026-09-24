@@ -29,7 +29,7 @@ const helpText = `Commands
 /away [2h]: treat you as away until /here or for the given time, so Telegram gets everything (General only)
 /here: back to automatic presence (General only)
 /new <workspace> [kind]: start an agent in a new tab of that workspace (General only; kind defaults to claude)
-/options: settings panel (General only): sync, quiet mode, status icons, secret redaction, topic cleanup
+/options: settings and update check (General only)
 /observers [add|remove <id>]: list or change who may watch the group without driving agents (General only)
 /help: this list
 
