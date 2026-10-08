@@ -10,6 +10,12 @@ const codeNotFound = "not_found"
 // an agent is working.
 const codeNotIdle = "agent_not_idle"
 
+// codeBlocked is Herdr's refusal of agent.prompt for an agent waiting at a
+// dialog (0.9.3: "If the agent is already blocked, submission is rejected
+// with agent_blocked before any input is sent"); the gateway maps it to
+// domain.ErrAgentBlocked.
+const codeBlocked = "agent_blocked"
+
 // APIError is an error line returned by the Herdr server for a request.
 // Codes are Herdr's snake_case identifiers such as "not_found".
 type APIError struct {

@@ -246,6 +246,13 @@ func (g *Gateway) SendKeys(ctx context.Context, target string, keys []string) er
 	return g.call(ctx, "agent.send_keys", target, sendKeysParams{Target: target, Keys: keys}, nil)
 }
 
+// SendText types literal text into the pane through pane.send_text; it
+// presses no enter. The text itself is never logged, only its length.
+func (g *Gateway) SendText(ctx context.Context, paneID, text string) error {
+	g.log.Debug("herdr send_text", slog.String("pane", paneID), slog.Int("text_len", len(text)))
+	return g.call(ctx, "pane.send_text", paneID, sendTextParams{PaneID: paneID, Text: text}, nil)
+}
+
 // Focus brings the agent's pane to the front in Herdr.
 func (g *Gateway) Focus(ctx context.Context, target string) error {
 	return g.call(ctx, "agent.focus", target, focusParams{Target: target}, nil)
@@ -381,7 +388,8 @@ func (g *Gateway) call(ctx context.Context, method, target string, params, out a
 	return err
 }
 
-// translateCallErr maps not_found to ErrAgentGone and tags other server
+// translateCallErr maps not_found to ErrAgentGone, agent_not_idle to
+// ErrAgentBusy and agent_blocked to ErrAgentBlocked, and tags other server
 // errors with the method name.
 func translateCallErr(method string, err error) error {
 	var apiErr *APIError
@@ -390,6 +398,9 @@ func translateCallErr(method string, err error) error {
 	}
 	if apiErr.Code == codeNotIdle {
 		return fmt.Errorf("herdr %s: %w: %w", method, domain.ErrAgentBusy, apiErr)
+	}
+	if apiErr.Code == codeBlocked {
+		return fmt.Errorf("herdr %s: %w: %w", method, domain.ErrAgentBlocked, apiErr)
 	}
 	if apiErr.Code == codeNotFound {
 		return fmt.Errorf("herdr %s: %w", method, domain.ErrAgentGone)

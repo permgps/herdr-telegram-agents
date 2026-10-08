@@ -112,6 +112,32 @@ func TestParseCommand(t *testing.T) {
 	}
 }
 
+func TestDialogText(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		want  string
+		lines int
+	}{
+		{"single line", "use the staging db", "use the staging db", 1},
+		{"line feed", "first\nsecond", "first second", 2},
+		{"crlf", "first\r\nsecond", "first second", 2},
+		{"bare cr", "first\rsecond", "first second", 2},
+		{"blank lines and spaces", "  first  \n\n \n second \n", "first second", 2},
+		{"inner spaces kept", "a  b", "a  b", 1},
+		{"attachment prompt", domain.AttachmentPrompt("look at this", []string{"/in/a.png", "/in/b.png"}), "look at this /in/a.png /in/b.png", 3},
+		{"empty", " \n ", "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, lines := domain.DialogText(tt.in)
+			if got != tt.want || lines != tt.lines {
+				t.Fatalf("DialogText(%q) = %q,%d want %q,%d", tt.in, got, lines, tt.want, tt.lines)
+			}
+		})
+	}
+}
+
 func TestShortReply(t *testing.T) {
 	tests := []struct {
 		in   string

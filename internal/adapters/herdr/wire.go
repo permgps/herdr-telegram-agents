@@ -176,6 +176,12 @@ type sendKeysParams struct {
 	Keys   []string `json:"keys"`
 }
 
+// sendTextParams is pane.send_text (protocol 22): literal text, no enter.
+type sendTextParams struct {
+	PaneID string `json:"pane_id"`
+	Text   string `json:"text"`
+}
+
 type focusParams struct {
 	Target string `json:"target"`
 }
