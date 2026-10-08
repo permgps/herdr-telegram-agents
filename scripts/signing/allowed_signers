@@ -10,6 +10,5 @@
 # the old key; release N+1 is signed with the new key; a later release drops
 # the old line. See docs/development.md.
 #
-# PLACEHOLDER: the key below is a development key. Replace it with the
-# owner's release key before this reaches main.
-herdr-tg-release namespaces="herdr-tg-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPzkP3fJ0S5Nf/A72mAo93Z5KnnvNrP1STZKgC5FphmA herdr-tg-release
+# Key SHA256:E49OgE36B6uolr2X/0Vwjd22wNyPIVnZupWDa/lmJME, added 2026-10-09.
+herdr-tg-release namespaces="herdr-tg-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPCU62HCGZcMB/qDk4T3HZ8T5kLrBXYw7PK3ktv9Z5ik herdr-tg-release

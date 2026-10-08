@@ -13,10 +13,8 @@ const releaseNamespace = "herdr-tg-release"
 // must equal the key fields of scripts/signing/allowed_signers
 // (TestReleaseSignersMatchScripts). The updater trusts only this compiled-in
 // list, never a key file fetched from GitHub or read from a checkout.
-//
-// PLACEHOLDER: a development key until the owner's release key is set.
 const releaseSigners = `
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPzkP3fJ0S5Nf/A72mAo93Z5KnnvNrP1STZKgC5FphmA
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPCU62HCGZcMB/qDk4T3HZ8T5kLrBXYw7PK3ktv9Z5ik
 `
 
 // releaseKeys parses releaseSigners. A broken constant fails every check
