@@ -3,6 +3,8 @@ package app_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +212,162 @@ func TestAlbumRevokedBeforeSettlement(t *testing.T) {
 	if len(inbox.Saved()) != 0 || len(f.h.Prompts()) != 0 {
 		t.Fatal("revoked album reached inbox or agent")
 	}
+}
+
+// inboxControl wires an inbox and a synchronous transfer runner into a
+// Control fixture and sets the owner's Inbox options explicitly.
+func inboxControl(f *privateFixture, enabled bool, max int64) *testkit.FakeInbox {
+	ctx := context.Background()
+	inbox := testkit.NewFakeInbox("/inbox")
+	f.p.Inbox = inbox
+	f.p.InboxEnabled = func() bool { return enabled }
+	f.p.InboxMaxBytes = func() int64 { return max }
+	f.p.Async = func(fn func(context.Context) func(context.Context) error) bool {
+		if result := fn(ctx); result != nil {
+			_ = result(ctx)
+		}
+		return true
+	}
+	return inbox
+}
+
+// lastPrivate returns the text of the last message sent to recipient 10.
+func (f *privateFixture) lastPrivate(t *testing.T) string {
+	t.Helper()
+	sent := f.tg.Destination(10).Sent()
+	if len(sent) == 0 {
+		t.Fatal("nothing sent to the recipient")
+	}
+	return sent[len(sent)-1].Text
+}
+
+// downloads returns the recorded download calls.
+func (f *privateFixture) downloads() []string {
+	var calls []string
+	for _, c := range f.tg.Calls() {
+		if strings.HasPrefix(c, "download:") {
+			calls = append(calls, c)
+		}
+	}
+	return calls
+}
+
+func (f *privateFixture) attach(t *testing.T, at domain.TopicAttachment) {
+	t.Helper()
+	if err := f.p.Handle(context.Background(), domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 99, Attachment: &at}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPrivateAttachmentFollowsInboxOptions: a recipient's file obeys the
+// owner's Inbox switch and per-file limit before any download, and the
+// download itself is capped at the option.
+func TestPrivateAttachmentFollowsInboxOptions(t *testing.T) {
+	t.Run("inbox_off", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, false, 20<<20)
+		f.tg.SetFile("file", []byte("x"))
+		f.attach(t, domain.TopicAttachment{FileID: "file", Name: "a.txt", Kind: "document", Size: 1})
+		if d := f.downloads(); len(d) != 0 || len(inbox.Saved()) != 0 {
+			t.Fatalf("downloaded with the inbox off: %v", d)
+		}
+		if got := f.lastPrivate(t); got != "⚠️ inbox is off (/options → Inbox)" {
+			t.Fatalf("refusal = %q", got)
+		}
+	})
+	t.Run("too_big", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inboxControl(f, true, 1<<20)
+		f.tg.SetFile("file", make([]byte, 10))
+		f.attach(t, domain.TopicAttachment{FileID: "file", Name: "a.bin", Kind: "document", Size: 2 << 20})
+		if d := f.downloads(); len(d) != 0 {
+			t.Fatalf("oversized file downloaded: %v", d)
+		}
+		if got := f.lastPrivate(t); got != "⚠️ file too big: 2.0 MB > 1.0 MB" {
+			t.Fatalf("refusal = %q", got)
+		}
+	})
+	t.Run("under_limit", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 1<<20)
+		f.tg.SetFile("file", []byte("private attachment"))
+		f.attach(t, domain.TopicAttachment{FileID: "file", Name: "a.txt", Kind: "document", Size: 18})
+		if d := f.downloads(); len(d) != 1 || d[0] != "download:file:1048576" {
+			t.Fatalf("downloads = %v", d)
+		}
+		saved := inbox.Saved()
+		if len(saved) != 1 || !strings.HasPrefix(saved[0].Name, "shared-10-") {
+			t.Fatalf("saved = %+v", saved)
+		}
+		if p := f.h.Prompts(); len(p) != 1 {
+			t.Fatalf("prompts = %v", p)
+		}
+	})
+	t.Run("album_too_big", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 1<<20)
+		f.tg.SetFile("part", make([]byte, 800<<10))
+		for range 3 {
+			f.attach(t, domain.TopicAttachment{FileID: "part", Name: "a.bin", Kind: "document", GroupID: "album"})
+		}
+		f.now = f.now.Add(2 * time.Second)
+		if err := f.p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.lastPrivate(t); got != "Album exceeds 2.0 MB." {
+			t.Fatalf("refusal = %q", got)
+		}
+		if len(f.h.Prompts()) != 0 || len(inbox.Saved()) != 2 {
+			t.Fatalf("album over twice the limit: prompts=%v saved=%d", f.h.Prompts(), len(inbox.Saved()))
+		}
+	})
+	// The recipients' share of the inbox can be smaller than Largest file
+	// (Inbox size under four times it): such a file is refused before the
+	// download, not fetched and then refused as "inbox full".
+	t.Run("over_shared_quota", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 5<<20)
+		f.p.InboxSharedMax = func() int64 { return 1 << 20 }
+		f.tg.SetFile("file", make([]byte, 10))
+		f.attach(t, domain.TopicAttachment{FileID: "file", Name: "a.bin", Kind: "document", Size: 2 << 20})
+		if d := f.downloads(); len(d) != 0 || len(inbox.Saved()) != 0 {
+			t.Fatalf("file over the shared quota downloaded: %v", d)
+		}
+		if got := f.lastPrivate(t); got != "⚠️ file too big: 2.0 MB > 1.0 MB" {
+			t.Fatalf("refusal = %q", got)
+		}
+	})
+	// An album over the shared quota would evict its own first files to
+	// save the last ones, and the prompt would name deleted paths.
+	t.Run("album_over_shared_quota", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 1<<20)
+		f.p.InboxSharedMax = func() int64 { return 1 << 20 }
+		f.tg.SetFile("part", make([]byte, 800<<10))
+		for range 2 {
+			f.attach(t, domain.TopicAttachment{FileID: "part", Name: "a.bin", Kind: "document", GroupID: "album"})
+		}
+		f.now = f.now.Add(2 * time.Second)
+		if err := f.p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.lastPrivate(t); got != "Album exceeds 1.0 MB." {
+			t.Fatalf("refusal = %q", got)
+		}
+		if len(f.h.Prompts()) != 0 || len(inbox.Saved()) != 1 {
+			t.Fatalf("album over the shared quota: prompts=%v saved=%d", f.h.Prompts(), len(inbox.Saved()))
+		}
+	})
+	t.Run("shared_inbox_full", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 1<<20)
+		inbox.FailNext("save", fmt.Errorf("inbox: %w", domain.ErrFileTooBig))
+		f.tg.SetFile("file", []byte("x"))
+		f.attach(t, domain.TopicAttachment{FileID: "file", Name: "a.txt", Kind: "document", Size: 1})
+		if got := f.lastPrivate(t); got != "Attachment not saved: the shared inbox is full." {
+			t.Fatalf("reply = %q", got)
+		}
+	})
 }
 
 // A session change in the shared pane is a re-grant boundary: from the

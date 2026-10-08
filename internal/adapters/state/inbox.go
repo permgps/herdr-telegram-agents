@@ -30,6 +30,15 @@ const (
 // not set; it matches the default of domain.OptionInboxMaxTotalMB.
 const defaultInboxMaxTotal = 500 << 20
 
+// inboxSharedPrefix marks the files private recipients send. SaveShared
+// adds it itself; owner names never start with it (domain.InboxFileName
+// starts with a date).
+const inboxSharedPrefix = "shared-"
+
+// inboxSharedShare is the part of the total quota the shared files hold
+// together: at most MaxTotal()/inboxSharedShare.
+const inboxSharedShare = 4
+
 // Inbox implements domain.InboxStore over STATE_DIR/inbox.
 type Inbox struct {
 	dir string
@@ -58,9 +67,30 @@ func (i *Inbox) Dir() string { return i.dir }
 // Save writes data as name inside the inbox (mode 0600, through a temp
 // file and rename) and returns the absolute path. A name that is taken
 // gets -2, -3 … before its extension. A name with a path separator or a
-// ".." component is refused.
+// ".." component is refused. Room is made from the oldest files, shared
+// ones included.
 func (i *Inbox) Save(_ context.Context, name string, data []byte) (string, error) {
-	if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
+	return i.save(name, data, i.makeRoom)
+}
+
+// SaveShared is Save for a file a private recipient sent: it is stored as
+// shared-<name>, and room is made only from the oldest shared files, which
+// together stay within a quarter of the total quota. The owner's files are
+// never deleted for it.
+func (i *Inbox) SaveShared(_ context.Context, name string, data []byte) (string, error) {
+	if unsafeInboxName(name) {
+		return "", fmt.Errorf("inbox: unsafe name %q", name)
+	}
+	return i.save(inboxSharedPrefix+name, data, i.makeSharedRoom)
+}
+
+// unsafeInboxName reports a name with a path separator or a ".." component.
+func unsafeInboxName(name string) bool {
+	return name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".."
+}
+
+func (i *Inbox) save(name string, data []byte, makeRoom func(need int64) error) (string, error) {
+	if unsafeInboxName(name) {
 		return "", fmt.Errorf("inbox: unsafe name %q", name)
 	}
 	if err := os.MkdirAll(i.dir, inboxDirMode); err != nil {
@@ -68,7 +98,7 @@ func (i *Inbox) Save(_ context.Context, name string, data []byte) (string, error
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if err := i.makeRoom(int64(len(data))); err != nil {
+	if err := makeRoom(int64(len(data))); err != nil {
 		return "", err
 	}
 	path, err := i.freePath(name)
@@ -86,27 +116,30 @@ func (i *Inbox) Save(_ context.Context, name string, data []byte) (string, error
 	return abs, nil
 }
 
-// makeRoom deletes the oldest files until need more bytes fit under the
-// total quota. A file larger than the whole quota is refused.
-func (i *Inbox) makeRoom(need int64) error {
-	limit := int64(defaultInboxMaxTotal)
+// inboxFile is one regular file of the inbox.
+type inboxFile struct {
+	path   string
+	size   int64
+	mod    time.Time
+	shared bool
+}
+
+// limit is the total quota in bytes.
+func (i *Inbox) limit() int64 {
 	if i.MaxTotal != nil {
-		limit = i.MaxTotal()
+		return i.MaxTotal()
 	}
-	if need > limit {
-		i.log.Warn("[FIX] inbox file exceeds the total quota", slog.Int64("bytes", need), slog.Int64("quota", limit))
-		return fmt.Errorf("inbox: %d bytes exceed the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
-	}
+	return defaultInboxMaxTotal
+}
+
+// list returns the inbox's regular files, oldest first, and their total
+// size. Temp files of a Save in flight (dot names) are left out.
+func (i *Inbox) list() ([]inboxFile, int64, error) {
 	entries, err := os.ReadDir(i.dir)
 	if err != nil {
-		return fmt.Errorf("inbox: list %s: %w", i.dir, err)
+		return nil, 0, fmt.Errorf("inbox: list %s: %w", i.dir, err)
 	}
-	type file struct {
-		path string
-		size int64
-		mod  time.Time
-	}
-	var files []file
+	var files []inboxFile
 	var total int64
 	for _, e := range entries {
 		if !e.Type().IsRegular() || strings.HasPrefix(e.Name(), ".") {
@@ -116,13 +149,34 @@ func (i *Inbox) makeRoom(need int64) error {
 		if err != nil {
 			continue
 		}
-		files = append(files, file{filepath.Join(i.dir, e.Name()), info.Size(), info.ModTime()})
+		files = append(files, inboxFile{filepath.Join(i.dir, e.Name()), info.Size(), info.ModTime(), strings.HasPrefix(e.Name(), inboxSharedPrefix)})
 		total += info.Size()
+	}
+	sort.Slice(files, func(a, b int) bool { return files[a].mod.Before(files[b].mod) })
+	return files, total, nil
+}
+
+// SharedQuota is the room the shared files hold together: a quarter of
+// the total quota.
+func (i *Inbox) SharedQuota() int64 {
+	return i.limit() / inboxSharedShare
+}
+
+// makeRoom deletes the oldest files until need more bytes fit under the
+// total quota. A file larger than the whole quota is refused.
+func (i *Inbox) makeRoom(need int64) error {
+	limit := i.limit()
+	if need > limit {
+		i.log.Warn("[FIX] inbox file exceeds the total quota", slog.Int64("bytes", need), slog.Int64("quota", limit))
+		return fmt.Errorf("inbox: %d bytes exceed the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
+	}
+	files, total, err := i.list()
+	if err != nil {
+		return err
 	}
 	if total+need <= limit {
 		return nil
 	}
-	sort.Slice(files, func(a, b int) bool { return files[a].mod.Before(files[b].mod) })
 	for _, f := range files {
 		if total+need <= limit {
 			break
@@ -136,6 +190,57 @@ func (i *Inbox) makeRoom(need int64) error {
 	}
 	if total+need > limit {
 		return fmt.Errorf("inbox: no room for %d bytes under the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
+	}
+	return nil
+}
+
+// makeSharedRoom deletes the oldest shared files until need more bytes fit
+// both under the shared quota (a quarter of the total) and under the total
+// quota. A file larger than the shared quota, or one that would need the
+// owner's files deleted, is refused.
+func (i *Inbox) makeSharedRoom(need int64) error {
+	limit := i.limit()
+	quota := i.SharedQuota()
+	if need > quota {
+		i.log.Warn("[FIX] inbox shared file exceeds the shared quota", slog.Int64("bytes", need), slog.Int64("quota", quota))
+		return fmt.Errorf("inbox: %d bytes exceed the %d byte shared quota: %w", need, quota, domain.ErrFileTooBig)
+	}
+	files, total, err := i.list()
+	if err != nil {
+		return err
+	}
+	var shared int64
+	for _, f := range files {
+		if f.shared {
+			shared += f.size
+		}
+	}
+	// Even with every shared file gone the owner's files leave no room:
+	// refuse without deleting anything.
+	if total-shared+need > limit {
+		i.log.Warn("[FIX] inbox shared save refused", slog.Int64("bytes", need), slog.Int64("shared_total", shared), slog.Int64("quota", quota),
+			slog.String("reason", "owner_files"))
+		return fmt.Errorf("inbox: no room for %d shared bytes under the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
+	}
+	for _, f := range files {
+		if shared+need <= quota && total+need <= limit {
+			break
+		}
+		if !f.shared {
+			continue
+		}
+		if err := os.Remove(f.path); err != nil {
+			i.log.Warn("inbox delete failed", slog.String("file", filepath.Base(f.path)), slog.String("err", err.Error()))
+			continue
+		}
+		shared -= f.size
+		total -= f.size
+		i.log.Info("[FIX] inbox shared quota: oldest shared file deleted", slog.String("file", filepath.Base(f.path)), slog.Int64("bytes", f.size), slog.Int64("quota", quota))
+	}
+	if shared+need > quota || total+need > limit {
+		i.log.Warn("[FIX] inbox shared save refused", slog.Int64("bytes", need), slog.Int64("shared_total", shared), slog.Int64("quota", quota),
+			slog.String("reason", "no_room"))
+		return fmt.Errorf("inbox: no room for %d shared bytes under the %d byte shared quota: %w", need, quota, domain.ErrFileTooBig)
 	}
 	return nil
 }

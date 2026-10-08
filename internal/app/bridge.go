@@ -464,6 +464,9 @@ type privateResult struct{ run func(context.Context) error }
 func (b *Bridge) SetPrivateControl(p *PrivateControl) {
 	b.PrivateControl = p
 	b.PrivateHandler = p.Handle
+	// Both run on this bridge goroutine, where the owner's hold lives.
+	p.HoldPicker = b.in.PickerHold
+	p.ReleasePicker = b.in.ReleasePicker
 	slots := make(chan struct{}, 4)
 	p.Async = func(run func(context.Context) func(context.Context) error) bool {
 		select {

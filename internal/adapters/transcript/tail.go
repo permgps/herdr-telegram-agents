@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -181,16 +182,21 @@ func editedPaths(raw json.RawMessage) []string {
 // goes on past the text until the prompt so the stats cover the whole
 // turn; when the budget or the file runs out first, a text already found
 // is returned with partial stats (complete false) rather than an error.
+//
+// The transcript is opened through openRegular below its directory, so a
+// link or FIFO in place of the newest transcript is refused rather than
+// followed or waited on.
 func lastReplyIn(path string, budget int64) (string, turnStats, scanStats, error) {
-	f, err := os.Open(path)
+	dir, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
-		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: open transcript: %v", domain.ErrNoReply, err)
+		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: the transcript directory could not be opened", domain.ErrNoReply)
+	}
+	defer dir.Close()
+	f, info, err := openRegular(dir, filepath.Base(path))
+	if err != nil {
+		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: the transcript %v", domain.ErrNoReply, err)
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return "", turnStats{}, scanStats{}, fmt.Errorf("%w: stat transcript: %v", domain.ErrNoReply, err)
-	}
 	return lastReplyFrom(f, info.Size(), budget)
 }
 

@@ -1,11 +1,13 @@
 package logging_test
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/adapters/logging"
 )
@@ -93,6 +95,66 @@ func TestRotatingWriterOversizedRecordStillWritten(t *testing.T) {
 	}
 	if got := readOr(t, path); got != "0123456789\n" {
 		t.Fatalf("live = %q", got)
+	}
+}
+
+func TestRotatingWriterFailedRotationKeepsWriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.log")
+	// With keep=1 the rotation first removes path.1; a non-empty directory
+	// there makes that step fail.
+	if err := os.MkdirAll(filepath.Join(path+".1", "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w, err := logging.NewRotatingWriter(path, 10, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	var errOut bytes.Buffer
+	w.SetClockAndErrOut(func() time.Time { return now }, &errOut)
+
+	write := func(s string) {
+		t.Helper()
+		if n, err := w.Write([]byte(s)); err != nil || n != len(s) {
+			t.Fatalf("Write(%q) = %d, %v", s, n, err)
+		}
+	}
+	write("aaaa\nbbbb\n")
+	write("cccc\n") // rotation fails, the record still lands
+	if got := strings.Count(errOut.String(), "\n"); got != 1 || !strings.Contains(errOut.String(), "remove") {
+		t.Fatalf("stderr after the failed rotation = %q", errOut.String())
+	}
+	now = now.Add(logging.RotateRetry - time.Second)
+	write("dddd\n")
+	write("eeee\n")
+	if got := strings.Count(errOut.String(), "\n"); got != 1 {
+		t.Fatalf("rotation retried before rotateRetry: %q", errOut.String())
+	}
+	if got := readOr(t, path); got != "aaaa\nbbbb\ncccc\ndddd\neeee\n" {
+		t.Fatalf("live = %q, want every record", got)
+	}
+
+	if err := os.RemoveAll(path + ".1"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	write("ffff\n")
+	if got := strings.Count(errOut.String(), "\n"); got != 1 {
+		t.Fatalf("stderr after the recovered rotation = %q", errOut.String())
+	}
+	if got := readOr(t, path); got != "ffff\n" {
+		t.Fatalf("live after rotation = %q", got)
+	}
+	if got := readOr(t, path+".1"); got != "aaaa\nbbbb\ncccc\ndddd\neeee\n" {
+		t.Fatalf(".1 after rotation = %q", got)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("gggg\n")); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("Write after Close = %v, want closed", err)
 	}
 }
 

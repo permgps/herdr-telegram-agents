@@ -169,32 +169,13 @@ func piCheckPath(p string) error {
 	return nil
 }
 
-// openPiSession opens the session file in dir and checks it is a regular
-// file and the same file Lstat saw, so a link planted in place of the
-// session is refused rather than followed.
+// openPiSession opens the session file in dir through openRegular, so a
+// link or FIFO planted in place of the session is refused rather than
+// followed or waited on.
 func openPiSession(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
-	seen, err := dir.Lstat(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, fs.ErrNotExist
-	}
+	f, info, err := openRegular(dir, name)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: the pi session could not be read", domain.ErrNoReply)
-	}
-	if !seen.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("%w: the pi session is not a regular file", domain.ErrNoReply)
-	}
-	f, err := dir.Open(name)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: the pi session could not be opened", domain.ErrNoReply)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: the pi session could not be read", domain.ErrNoReply)
-	}
-	if !info.Mode().IsRegular() || !os.SameFile(seen, info) {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: the pi session changed while it was opened", domain.ErrNoReply)
+		return nil, nil, openFailure("the pi session", err)
 	}
 	return f, info, nil
 }

@@ -74,6 +74,11 @@ const (
 	// still holds back the next plain topic message; past it the bridge
 	// assumes the picker was handled at the desk.
 	pickerHold = 10 * time.Minute
+	// privateButtonsPerActor caps the live private buttons one recipient
+	// holds. 10 grants × 3 dashboard buttons, plus dialogs and confirms, fit
+	// many times over; past it that recipient's oldest buttons go first, so
+	// one recipient cannot fill the table for everyone else.
+	privateButtonsPerActor = 512
 	// sweepInterval is how often the daemon looks for stale topics to
 	// delete, on top of the pass at start and the one an option change
 	// requests.
@@ -98,6 +103,11 @@ const (
 	// goroutine gets for the socket round trip.
 	agentStartTimeout = 60 * time.Second
 	agentStartGrace   = 10 * time.Second
+	// snapshotTimeout bounds one registry snapshot: agent.list plus the
+	// workspace.list and tab.list that resolve its labels are three local
+	// round trips, and a Herdr that accepts a connection but never answers
+	// must not freeze status updates. The next tick tries again.
+	snapshotTimeout = 20 * time.Second
 	// choiceLabelRunes is the longest option label shown on an inline
 	// button; longer labels are cut with an ellipsis so a phone still shows
 	// the number and the start of the text.

@@ -36,7 +36,7 @@ func TestReplySourcesKeepsOpenCodePending(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			export := func(context.Context, string) ([]byte, error) { return []byte(tc.export), nil }
-			r, err := replySources(session, export, noProcesses, nil).LastReply(context.Background(), agent)
+			r, err := replySources(session, export, noProcesses, nil, nil).LastReply(context.Background(), agent)
 			if tc.wantError != nil {
 				if !errors.Is(err, tc.wantError) {
 					t.Fatalf("err = %v, want %v", err, tc.wantError)
@@ -83,7 +83,7 @@ func TestReplySourcesReadsAgy(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), []byte(strings.Join(tc.lines, "\n")+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			r, err := replySources(session, noExport, noProcesses, nil).LastReply(context.Background(), agent)
+			r, err := replySources(session, noExport, noProcesses, nil, nil).LastReply(context.Background(), agent)
 			if tc.wantError != nil {
 				if !errors.Is(err, tc.wantError) {
 					t.Fatalf("err = %v, want %v", err, tc.wantError)
@@ -128,7 +128,7 @@ func TestReplySourcesReadsPi(t *testing.T) {
 			tuple := domain.SessionTuple{Source: "herdr:pi", Agent: "pi", Kind: "path", Value: path}
 			session := func(context.Context, string) (domain.SessionTuple, error) { return tuple, nil }
 			agent := domain.Agent{Key: domain.Key{PaneID: "p1", TerminalID: "t1", SessionDigest: tuple.Digest()}, Kind: "pi", Cwd: t.TempDir()}
-			r, err := replySources(session, noExport, noProcesses, nil).LastReply(context.Background(), agent)
+			r, err := replySources(session, noExport, noProcesses, nil, nil).LastReply(context.Background(), agent)
 			if tc.wantError != nil {
 				if !errors.Is(err, tc.wantError) {
 					t.Fatalf("err = %v, want %v", err, tc.wantError)
@@ -195,7 +195,7 @@ func TestReplySourcesReadsMuse(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(logDir, "session.jsonl"), []byte(strings.Join(tc.lines, "\n")+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			r, err := replySources(session, noExport, processes, nil).LastReply(context.Background(), agent)
+			r, err := replySources(session, noExport, processes, nil, nil).LastReply(context.Background(), agent)
 			if tc.wantError != nil {
 				if !errors.Is(err, tc.wantError) {
 					t.Fatalf("err = %v, want %v", err, tc.wantError)

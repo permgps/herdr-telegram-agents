@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -46,10 +47,11 @@ type Registry struct {
 	clock domain.Clock
 	log   *slog.Logger
 
-	// Interval and Coalesce default to the package constants; tests shorten
-	// them or drive the fake clock.
-	Interval time.Duration
-	Coalesce time.Duration
+	// Interval, Coalesce and SnapshotTimeout default to the package
+	// constants; tests shorten them or drive the fake clock.
+	Interval        time.Duration
+	Coalesce        time.Duration
+	SnapshotTimeout time.Duration
 
 	mu        sync.Mutex
 	agents    map[domain.Key]domain.Agent
@@ -68,15 +70,16 @@ func NewRegistry(herdr domain.HerdrGateway, clock domain.Clock, log *slog.Logger
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Registry{
-		herdr:    herdr,
-		clock:    clock,
-		log:      log,
-		Interval: reconcileInterval,
-		Coalesce: snapshotCoalesce,
-		agents:   map[domain.Key]domain.Agent{},
-		byPane:   map[string]domain.Key{},
-		retired:  map[domain.Key]bool{},
-		request:  make(chan struct{}, 1),
+		herdr:           herdr,
+		clock:           clock,
+		log:             log,
+		Interval:        reconcileInterval,
+		Coalesce:        snapshotCoalesce,
+		SnapshotTimeout: snapshotTimeout,
+		agents:          map[domain.Key]domain.Agent{},
+		byPane:          map[string]domain.Key{},
+		retired:         map[domain.Key]bool{},
+		request:         make(chan struct{}, 1),
 	}
 }
 
@@ -132,14 +135,22 @@ func (r *Registry) RequestSnapshot() {
 // the watched pane set. It returns the resulting events in a stable order.
 // A replacement that still identifies the same agent appears before its
 // previous key goes away, so the reconciler can move the topic first.
+// Both gateway calls run under SnapshotTimeout, so a Herdr that never
+// answers costs one failed snapshot and the loop goes on to the next tick.
 func (r *Registry) Snapshot(ctx context.Context) ([]AgentEvent, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.SnapshotTimeout)
+	defer cancel()
 	agents, err := r.herdr.ListAgents(ctx)
 	now := r.clock.Now()
 	if err != nil {
 		r.mu.Lock()
 		r.lastErr, r.lastErrAt = err, now
 		r.mu.Unlock()
-		r.log.Warn("agent snapshot failed", slog.String("err", err.Error()))
+		attrs := []any{slog.String("err", err.Error())}
+		if errors.Is(err, context.DeadlineExceeded) {
+			attrs = append(attrs, slog.Bool("timeout", true))
+		}
+		r.log.Warn("agent snapshot failed", attrs...)
 		return nil, fmt.Errorf("agent snapshot: %w", err)
 	}
 	events, panes := r.applySnapshot(agents, now)

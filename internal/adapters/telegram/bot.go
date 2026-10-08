@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -39,7 +41,7 @@ func NewBot(token string, log *slog.Logger, fatal context.CancelFunc, opts ...bo
 			models.AllowedUpdateMyChatMember,
 		}),
 		bot.WithDefaultHandler(func(context.Context, *bot.Bot, *models.Update) {}),
-		bot.WithErrorsHandler(errorsHandler(token, log, fatal)),
+		bot.WithErrorsHandler(errorsHandler(token, log, fatal, time.Now)),
 	}
 	b, err := bot.New(token, append(base, opts...)...)
 	if err != nil {
@@ -48,10 +50,23 @@ func NewBot(token string, log *slog.Logger, fatal context.CancelFunc, opts ...bo
 	return b, nil
 }
 
+// pollWarnEvery spaces the warnings about transient polling errors. A
+// network outage makes the library retry every few seconds; one warning per
+// interval with a count keeps the outage visible without flooding the log.
+const pollWarnEvery = 10 * time.Minute
+
 // errorsHandler receives polling and form-building errors from the library,
 // which never stops polling on its own. 401 and 409 are final: log and call
-// fatal. A cancelled context is the normal shutdown path and is ignored.
-func errorsHandler(token string, log *slog.Logger, fatal context.CancelFunc) bot.ErrorsHandler {
+// fatal. A cancelled context is the normal shutdown path and is ignored. Any
+// other error is warned on first sight and then at most once per
+// pollWarnEvery, with the count suppressed since the last warning; the ones
+// in between go to debug. now is injected so tests need no real time.
+func errorsHandler(token string, log *slog.Logger, fatal context.CancelFunc, now func() time.Time) bot.ErrorsHandler {
+	var (
+		mu         sync.Mutex
+		lastWarn   time.Time
+		suppressed int
+	)
 	return func(err error) {
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -62,7 +77,23 @@ func errorsHandler(token string, log *slog.Logger, fatal context.CancelFunc) bot
 			log.Error("another poller owns this bot, stopping", slog.String("err", redact(err, token)))
 			fatal()
 		default:
-			log.Warn("telegram polling error", slog.String("err", redact(err, token)))
+			mu.Lock()
+			defer mu.Unlock()
+			t := now()
+			if lastWarn.IsZero() {
+				log.Warn("telegram polling error", slog.String("err", redact(err, token)))
+				lastWarn = t
+				return
+			}
+			if t.Sub(lastWarn) < pollWarnEvery {
+				suppressed++
+				log.Debug("telegram polling error", slog.String("err", redact(err, token)), slog.Int("suppressed", suppressed))
+				return
+			}
+			log.Warn("telegram polling error", slog.String("err", redact(err, token)),
+				slog.Int("suppressed", suppressed), slog.Int64("since_s", int64(t.Sub(lastWarn)/time.Second)))
+			lastWarn = t
+			suppressed = 0
 		}
 	}
 }

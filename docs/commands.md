@@ -166,7 +166,8 @@ downloaded (off the daemon's message loop, so other messages keep flowing),
 saved under the plugin state dir as `inbox/<yyyymmdd-hhmmss>-<message
 id>-<name>` (the sender's file name reduced to letters, digits, dots,
 hyphens and underscores; `photo.jpg`, `voice.ogg`, `audio.mp3`, `video.mp4`
-or `file.<ext>` when there is none; a taken name gets `-2`, `-3` …) and the
+or `file.<ext>` when there is none; cut to 120 bytes with the extension
+kept; a taken name gets `-2`, `-3` …) and the
 agent is prompted with the caption, a blank line and the absolute path. An
 album (several photos sent together) is collected for a second after its
 last part and becomes one prompt with one path per line; the first caption
@@ -261,13 +262,27 @@ under: once that question is answered elsewhere, or a newer post replaces the
 keyboard, a press answers `That question is no longer open.` and sends
 nothing.
 
+Files from a Control recipient follow the owner's Inbox options: with the
+inbox off they are refused with `⚠️ inbox is off (/options → Inbox)`, and an
+album may hold twice `Largest file`. Recipients' files together use at most a
+quarter of `Inbox size` and only ever replace other recipients' oldest files,
+never the owner's. A file over `Largest file` or over that quarter is refused
+before it is downloaded with `⚠️ file too big: …`, and an album over the
+quarter with `Album exceeds …`; when the owner's files leave no room the reply
+is `Attachment not saved: the shared inbox is full.` A picker left open by an owner command holds a Control
+recipient's next plain message or file once, as in the owner's topics, and the
+hold is shared: whoever is refused first clears it, and a recipient's `/keys`,
+`/stop` or `/interrupt` clears it too.
+
 `/silent` and `/metadata` toggle their settings. `/alias` without a name restores
 the agent label. Pausing suppresses automatic output and status edits; explicit
 screen requests still work. Resuming requests at most the current relevant
 update. Global owner administration and unknown slash commands are refused in
 private topics, even when the recipient is also an owner operator.
 
-`/agents` opens a scoped service topic with status/screen/pause buttons. Its bot
+`/agents` opens a scoped service topic with status/screen/pause buttons. Each
+refresh replaces the previous buttons of that overview, so repeating `/agents`
+never crowds out another recipient's buttons. Its bot
 links identify only an opaque mirror reference and recheck the actual sender.
 Telegram may require manually opening the topic after following a link. Private
 navigation does not use group `t.me/c` links.

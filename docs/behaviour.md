@@ -830,6 +830,12 @@ submitted`. Once a day, at daemon start and as soon as
 are deleted; subdirectories and files of a save in flight are left alone.
 `Off` keeps every file. The sweep logs `inbox sweep deleted=<n>`.
 
+Files from private Control recipients are stored in the same directory with a
+`shared-` prefix. Together they may fill at most a quarter of `Inbox size`; a
+recipient's save makes room only by deleting older `shared-` files and is
+refused when the owner's files leave no room. The owner's saves may still
+delete any oldest file, shared or not.
+
 ## Operators and observers
 
 Two kinds of Telegram accounts may talk to the bot, both listed by user id
@@ -925,6 +931,13 @@ saved in `config.json` (default `info`). The daemon writes JSON lines to
 `15:04:05 INFO message key=value`. Control characters (ESC, BEL, C1) and bidi
 overrides in a line, for example in a stranger's Telegram name, are shown
 escaped (`\x1b`, `\u202e`) and never reach the terminal.
+Message text never reaches the log, not even at debug: command lines carry
+its length (`text_runes`). While Telegram is unreachable a failed poll is
+warned once and then at most once per 10 minutes, with the number of
+failures in between (`suppressed`); the others are at debug. When a rotation
+step fails (a viewer holding `daemon.log.1` open on Windows, a full disk),
+the daemon keeps appending to `daemon.log`, prints the error once to
+`daemon.err.log` and tries again a minute later.
 Delete `mapping.json` while the daemon is
 stopped to forget every topic; the next start creates fresh ones and leaves the
 old topics untouched. Entries of exited agents are no longer dropped by age;
@@ -967,8 +980,11 @@ The overview has its own **service-repair-confirm** action for this case.
 Private output is always redacted. It uses exact-session OpenCode replies where
 available, otherwise the exact target's terminal screen. The Claude reader that
 selects a transcript by working directory is never used for guests. Automatic
-reply delivery excludes replies written before activation. Explicit `/screen`
-can reveal older material still visible in that same session; `/screen all`
+reply delivery and a bare `/screen` both exclude replies written before
+activation and show the screen instead. A done post whose OpenCode turn is
+still running waits like the owner's topics (up to 3 retries 5 s apart, then
+the screen), except in a mirror set to `/display screen`. Explicit `/screen`
+can reveal older material still visible on the screen of that session; `/screen all`
 exports only screens captured since activation, not the owner's earlier buffer.
 
 Blocked output has one notification in each active private topic; done posts are

@@ -270,7 +270,7 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 	i.log.Info("topic command", slog.String("kind", string(cmd.Kind)), slog.String("key", key.String()),
 		slog.Int("thread_id", msg.ThreadID), slog.Int64("from_id", msg.FromID), slog.Int("message_id", msg.MessageID),
 		slog.String("status", string(agent.Status)), slog.Int("len", len(msg.Text)))
-	i.log.Debug("topic command text", slog.String("key", key.String()), slog.String("text", msg.Text), slog.Any("keys", cmd.Keys), slog.Int("lines", cmd.Lines))
+	i.log.Debug("topic command text", slog.String("key", key.String()), slog.Int("text_runes", utf8.RuneCountInString(msg.Text)), slog.Any("keys", cmd.Keys), slog.Int("lines", cmd.Lines))
 	switch cmd.Kind {
 	case domain.CmdPrompt:
 		if word, held := i.holdForPicker(key, agent); held {
@@ -513,6 +513,19 @@ func (i *inbound) holdForPicker(key domain.Key, agent domain.Agent) (string, boo
 	}
 	i.releasePicker(key, "refused")
 	return h.word, true
+}
+
+// PickerHold is holdForPicker for a Control recipient's plain message: the
+// hold is the owner's, so one refusal, by either side, uses it up. Bridge
+// goroutine only.
+func (i *inbound) PickerHold(key domain.Key, agent domain.Agent) (string, bool) {
+	return i.holdForPicker(key, agent)
+}
+
+// ReleasePicker is releasePicker for a Control recipient driving or
+// closing the picker. Bridge goroutine only.
+func (i *inbound) ReleasePicker(key domain.Key, reason string) {
+	i.releasePicker(key, reason)
 }
 
 // releasePicker drops the picker hold of an agent, if any.

@@ -1,8 +1,12 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -427,6 +431,53 @@ func TestRegistrySnapshotLiftsQuarantine(t *testing.T) {
 	}
 	if _, ok := r.Agent(first.Key); !ok {
 		t.Fatal("snapshot did not lift the quarantine")
+	}
+}
+
+// hangingHerdr is a gateway whose agent.list never answers while hang is
+// set: it returns only when the caller's context ends.
+type hangingHerdr struct {
+	*testkit.FakeHerdr
+	hang atomic.Bool
+}
+
+func (h *hangingHerdr) ListAgents(ctx context.Context) ([]domain.Agent, error) {
+	if h.hang.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return h.FakeHerdr.ListAgents(ctx)
+}
+
+func TestRegistrySnapshotDeadline(t *testing.T) {
+	h := &hangingHerdr{FakeHerdr: testkit.NewFakeHerdr(nil)}
+	h.SetAgents([]domain.Agent{agent("p1", "t1", "a", domain.StatusWorking)})
+	h.hang.Store(true)
+	var logBuf bytes.Buffer
+	r := app.NewRegistry(h, testkit.NewFakeClock(t0), slog.New(slog.NewTextHandler(&logBuf, nil)))
+	r.SnapshotTimeout = 50 * time.Millisecond
+
+	_, err := r.Snapshot(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Snapshot err = %v, want a wrapped DeadlineExceeded", err)
+	}
+	if hl := r.Health(); hl.LastErr == nil || !hl.LastOK.IsZero() {
+		t.Errorf("health after a timeout = %+v", hl)
+	}
+	if log := logBuf.String(); !strings.Contains(log, "agent snapshot failed") || !strings.Contains(log, "timeout=true") {
+		t.Errorf("timeout not logged: %s", log)
+	}
+
+	h.hang.Store(false)
+	evs, err := r.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot after recovery: %v", err)
+	}
+	if got := kinds(evs); !equal(got, []string{"appeared:p1/t1"}) {
+		t.Fatalf("events after recovery = %v", got)
+	}
+	if hl := r.Health(); hl.LastErr != nil || hl.LastOK.IsZero() {
+		t.Errorf("health after recovery = %+v", hl)
 	}
 }
 
