@@ -332,6 +332,30 @@ conversation content.
 - [x] Verify owner setup, observers, pager, options/update panel and shutdown
   both with sharing unavailable and with active private mirrors.
 
+## Audit follow-up (2026-10-09)
+
+Use one Read and one Control recipient. Record client versions and outcomes
+only.
+
+- [ ] As the Read recipient, send `/agents` 20 times. The Control recipient's
+  overview and dialog buttons still work, and the Read recipient's newest
+  overview buttons work.
+- [ ] Grant Read on an OpenCode agent that has already answered. A bare
+  `/screen` shows the screen, not that earlier answer. After the next turn,
+  `/screen` shows the new answer.
+- [ ] As the owner, send `/model` to an OpenCode pane. The Control recipient's
+  next plain message is held once with the picker warning and the resend goes
+  through. Repeat with the recipient sending `/keys esc` first: nothing is held
+  afterwards, not even for the owner.
+- [ ] Turn `/options → Inbox` off and send a file as the Control recipient: it
+  is refused without a download. Turn it back on with `Largest file` at 5 MB
+  and send a larger file: refused with `file too big`.
+- [ ] During a multi-step OpenCode tool turn, the recipient's done post shows
+  only the final answer.
+- [ ] Turn Wi-Fi off for 15 minutes with the daemon running: `daemon.log` has
+  one `telegram polling error` warning, then at most one more with
+  `suppressed=…`.
+
 ## See Also
 
 - [Development](development.md): building from source, make targets and the tree layout
