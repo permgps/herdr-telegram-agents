@@ -1,0 +1,5 @@
+# Signed fixtures and the signing self-test are compared byte for byte; a
+# Windows checkout with core.autocrlf would turn LF into CRLF and break
+# every signature. Keep them exactly as committed.
+internal/adapters/github/testdata/sshsig/** -text
+scripts/signing/** -text
