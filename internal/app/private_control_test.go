@@ -442,3 +442,37 @@ func TestPrivateForwardRefusedWhileBusy(t *testing.T) {
 		t.Fatalf("/model on an idle Claude agent not typed: %v", p)
 	}
 }
+
+// A Control recipient's answer to a blocked agent is typed into the dialog
+// when Herdr refuses the prompt (agent_blocked, issue #37).
+func TestPrivatePromptToBlockedAgentIsTyped(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	f.setAgent(domain.StatusBlocked, 1)
+	f.h.FailNext("prompt", domain.ErrAgentBlocked)
+	if err := f.p.Handle(context.Background(), domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "use the\nstaging db"}); err != nil {
+		t.Fatal(err)
+	}
+	if texts := f.h.Texts(); len(texts) != 1 || texts[0] != (testkit.TextCall{Target: "p", Text: "use the staging db"}) {
+		t.Fatalf("Texts = %+v", texts)
+	}
+	if keys := f.h.Keys(); len(keys) != 1 || keys[0].Target != "p" || len(keys[0].Keys) != 1 || keys[0].Keys[0] != domain.KeyEnter {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	for _, c := range f.tg.Calls() {
+		if strings.Contains(c, "not retried") {
+			t.Fatalf("typed delivery reported as a failure: %q", f.tg.Calls())
+		}
+	}
+}
+
+func TestPrivateForwardIntoBlockedAgentIsNotTyped(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	f.h.FailNext("prompt", domain.ErrAgentBlocked)
+	_ = f.p.Handle(context.Background(), domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "/clear"})
+	if texts := f.h.Texts(); len(texts) != 0 {
+		t.Fatalf("forward typed into a dialog: %+v", texts)
+	}
+	if p := f.h.Prompts(); len(p) != 1 {
+		t.Fatalf("Prompts = %v", p)
+	}
+}

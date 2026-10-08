@@ -259,7 +259,7 @@ func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) er
 				return p.send(ctx, o, fmt.Sprintf(pickerRefusedFmt, "/"+word))
 			}
 		}
-		return p.effect(ctx, o, action, func(ctx context.Context) error { return p.Herdr.Prompt(ctx, o.Key.PaneID, cmd.Text) })
+		return p.effect(ctx, o, action, func(ctx context.Context) error { return p.deliver(ctx, o, cmd.Text) })
 	case domain.CmdKeys:
 		p.releasePicker(o.Key, "keys")
 		return p.keys(ctx, o, cmd.Keys)
@@ -756,10 +756,22 @@ func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAtta
 				}
 			}
 			return p.effect(ctx, o, domain.ShareAttachment, func(ctx context.Context) error {
-				return p.Herdr.Prompt(ctx, o.Key.PaneID, domain.AttachmentPrompt(caption, paths))
+				return p.deliver(ctx, o, domain.AttachmentPrompt(caption, paths))
 			})
 		}
 	})
+}
+
+// deliver sends a recipient's text as a prompt, typed into the dialog when
+// Herdr refuses the prompt for a blocked agent (see deliverText). Forwarded
+// commands never come here: they are not typed into a dialog.
+func (p *PrivateControl) deliver(ctx context.Context, o domain.ShareOrigin, text string) error {
+	intoDialog, err := deliverText(ctx, p.Herdr, p.log(), o.Key.PaneID, text)
+	if intoDialog {
+		p.log().Debug("private prompt typed into dialog", slog.String("key", o.Key.String()), slog.Int64("actor", o.ActorID),
+			slog.Bool("submitted", err == nil))
+	}
+	return err
 }
 
 func (p *PrivateControl) Invalidate(ctx context.Context, key domain.Key) error {
