@@ -107,6 +107,32 @@ func TestOpenCodeExporterExactCap(t *testing.T) {
 	}
 }
 
+// TestOpenCodeExporterKillsAtCap: a child that never stops writing is
+// killed once its file is over the cap, long before the timeout, and the
+// file is removed.
+func TestOpenCodeExporterKillsAtCap(t *testing.T) {
+	var logs bytes.Buffer
+	state := t.TempDir()
+	e := NewOpenCodeExporter(state, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	e.bin = fakeOpenCode(t, "while :; do printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; done\n")
+	e.maxBytes = 64 << 10
+	e.poll = 10 * time.Millisecond
+	start := time.Now()
+	out, err := e.Export(context.Background(), "ses_abc")
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("Export took %v, want the watcher to kill the child", took)
+	}
+	if out != nil || err == nil || !strings.Contains(err.Error(), "output over") {
+		t.Fatalf("Export = %q, %v; want the cap error", out, err)
+	}
+	if !strings.Contains(logs.String(), `"killed_at_cap":true`) || !strings.Contains(logs.String(), `"category":"output_cap"`) {
+		t.Fatalf("logs = %s", logs.String())
+	}
+	if left, _ := filepath.Glob(filepath.Join(state, "tmp", "*")); len(left) != 0 {
+		t.Fatalf("files left behind: %v", left)
+	}
+}
+
 func TestOpenCodeExporterContext(t *testing.T) {
 	e := NewOpenCodeExporter(t.TempDir(), nil)
 	ctx, cancel := context.WithCancel(context.Background())

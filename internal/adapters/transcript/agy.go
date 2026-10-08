@@ -180,32 +180,13 @@ func (r *AgyReader) readTranscript(ctx context.Context, root *os.Root, rel, labe
 	return domain.Reply{Text: text, Source: "agy transcript", Age: age, Written: written, Meta: meta}, nil
 }
 
-// openAgyTranscript opens a transcript below root and checks it is a
-// regular file and the same file Lstat saw, so a link planted in place of
-// the transcript is refused rather than followed.
+// openAgyTranscript opens a transcript below root through openRegular, so
+// a link or FIFO planted in place of the transcript is refused rather than
+// followed or waited on.
 func openAgyTranscript(root *os.Root, rel string) (*os.File, os.FileInfo, error) {
-	seen, err := root.Lstat(rel)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, fs.ErrNotExist
-	}
+	f, info, err := openRegular(root, rel)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: the agy transcript could not be read", domain.ErrNoReply)
-	}
-	if !seen.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("%w: the agy transcript is not a regular file", domain.ErrNoReply)
-	}
-	f, err := root.Open(rel)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: the agy transcript could not be opened", domain.ErrNoReply)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: the agy transcript could not be read", domain.ErrNoReply)
-	}
-	if !info.Mode().IsRegular() || !os.SameFile(seen, info) {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: the agy transcript changed while it was opened", domain.ErrNoReply)
+		return nil, nil, openFailure("the agy transcript", err)
 	}
 	return f, info, nil
 }
