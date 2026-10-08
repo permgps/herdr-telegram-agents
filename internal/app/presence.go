@@ -89,25 +89,35 @@ func (p *Presence) state() domain.PresenceState {
 }
 
 // Poll expires a timed /away, samples the idle source and recomputes the
-// effective flag. It runs on the daemon goroutine.
+// effective flag. It runs on the daemon goroutine, driven by one ticker, so
+// polls never overlap: the probe runs without the lock, so a slow source
+// cannot stall Quiet and State on the bridge goroutine, and its result
+// needs no generation check before it is stored.
 func (p *Presence) Poll(ctx context.Context) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	now := p.clock.Now()
 	if p.manualAway && !p.manualUntil.IsZero() && !now.Before(p.manualUntil) {
 		p.manualAway, p.manualUntil = false, time.Time{}
 		p.log.Info("away expired, presence automatic again")
 	}
-	p.sample(ctx)
+	if p.unsupported {
+		p.recompute()
+		p.mu.Unlock()
+		return
+	}
+	threshold := p.opts.QuietIdle()
+	p.mu.Unlock()
+
+	d, err := p.idle.Idle(ctx)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sample(d, err, threshold)
 	p.recompute()
 }
 
-// sample asks the idle source once and updates the automatic verdict.
-func (p *Presence) sample(ctx context.Context) {
-	if p.unsupported {
-		return
-	}
-	d, err := p.idle.Idle(ctx)
+// sample stores one answer of the idle source as the automatic verdict.
+func (p *Presence) sample(d time.Duration, err error, threshold time.Duration) {
 	switch {
 	case errors.Is(err, domain.ErrIdleUnsupported):
 		p.unsupported = true
@@ -125,7 +135,6 @@ func (p *Presence) sample(ctx context.Context) {
 		p.failing = false
 		p.log.Info("presence source recovered")
 	}
-	threshold := p.opts.QuietIdle()
 	atDesk := d < threshold
 	if !p.sampled || atDesk != p.atDesk {
 		p.log.Debug("presence sample", slog.Int64("idle_ms", d.Milliseconds()), slog.Int64("threshold_ms", threshold.Milliseconds()), slog.Bool("at_desk", atDesk))

@@ -223,3 +223,65 @@ func TestPresenceUnsupportedAndFailing(t *testing.T) {
 		t.Error("recovered sample ignored")
 	}
 }
+
+// blockingIdle answers Idle only once release is closed, after signalling
+// entered.
+type blockingIdle struct {
+	entered chan struct{}
+	release chan struct{}
+	d       time.Duration
+}
+
+func (b *blockingIdle) Idle(ctx context.Context) (time.Duration, error) {
+	close(b.entered)
+	select {
+	case <-b.release:
+		return b.d, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func TestPresencePollProbesWithoutTheLock(t *testing.T) {
+	f := newPresence(t, testkit.NewFakeIdle(0))
+	idle := &blockingIdle{entered: make(chan struct{}), release: make(chan struct{}), d: time.Second}
+	p := app.NewPresence(idle, f.opts, f.clock, nil)
+
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		p.Poll(context.Background())
+	}()
+	<-idle.entered
+
+	// While the probe hangs, the bridge goroutine's reads still answer.
+	read := make(chan domain.PresenceState, 1)
+	go func() {
+		quiet := p.Quiet()
+		st := p.State()
+		st.Quiet = st.Quiet || quiet
+		read <- st
+	}()
+	select {
+	case st := <-read:
+		if st.Quiet || st.AtDesk {
+			t.Errorf("state before the probe answered = %+v", st)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Quiet/State blocked behind the idle probe")
+	}
+
+	close(idle.release)
+	<-polled
+	if !p.Quiet() || !p.State().AtDesk {
+		t.Fatalf("probe result not applied: state = %+v", p.State())
+	}
+	select {
+	case v := <-p.Changes():
+		if !v {
+			t.Fatal("change after the probe = false, want true")
+		}
+	default:
+		t.Fatal("no change queued after the probe")
+	}
+}

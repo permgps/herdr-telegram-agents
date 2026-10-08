@@ -270,7 +270,7 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 	i.log.Info("topic command", slog.String("kind", string(cmd.Kind)), slog.String("key", key.String()),
 		slog.Int("thread_id", msg.ThreadID), slog.Int64("from_id", msg.FromID), slog.Int("message_id", msg.MessageID),
 		slog.String("status", string(agent.Status)), slog.Int("len", len(msg.Text)))
-	i.log.Debug("topic command text", slog.String("key", key.String()), slog.String("text", msg.Text), slog.Any("keys", cmd.Keys), slog.Int("lines", cmd.Lines))
+	i.log.Debug("topic command text", slog.String("key", key.String()), slog.Int("text_runes", utf8.RuneCountInString(msg.Text)), slog.Any("keys", cmd.Keys), slog.Int("lines", cmd.Lines))
 	switch cmd.Kind {
 	case domain.CmdPrompt:
 		if word, held := i.holdForPicker(key, agent); held {

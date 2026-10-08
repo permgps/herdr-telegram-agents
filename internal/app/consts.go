@@ -98,6 +98,11 @@ const (
 	// goroutine gets for the socket round trip.
 	agentStartTimeout = 60 * time.Second
 	agentStartGrace   = 10 * time.Second
+	// snapshotTimeout bounds one registry snapshot: agent.list plus the
+	// workspace.list and tab.list that resolve its labels are three local
+	// round trips, and a Herdr that accepts a connection but never answers
+	// must not freeze status updates. The next tick tries again.
+	snapshotTimeout = 20 * time.Second
 	// choiceLabelRunes is the longest option label shown on an inline
 	// button; longer labels are cut with an ellipsis so a phone still shows
 	// the number and the start of the text.

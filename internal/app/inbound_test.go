@@ -57,6 +57,23 @@ func TestInboundPromptAndShortReply(t *testing.T) {
 	assertCallsEqual(t, f.tg, "react:101:5:👀", "react:101:6:👀")
 }
 
+func TestInboundDebugLogCarriesNoText(t *testing.T) {
+	f := newBridgeFixture(t)
+	f.add(t, "p1", "t1", "reviewer", domain.StatusIdle)
+
+	const sentinel = "zebra-sentinel-4711"
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "please "+sentinel)); err != nil {
+		t.Fatal(err)
+	}
+	log := f.logBuf.String()
+	if !strings.Contains(log, `"msg":"topic command text"`) || !strings.Contains(log, `"text_runes":26`) {
+		t.Fatalf("debug line lacks the length:\n%s", log)
+	}
+	if strings.Contains(log, sentinel) {
+		t.Fatalf("message text in the log:\n%s", log)
+	}
+}
+
 func TestInboundPromptReacts(t *testing.T) {
 	f := newBridgeFixture(t)
 	f.reactionsOn(t)

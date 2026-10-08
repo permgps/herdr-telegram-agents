@@ -1,9 +1,12 @@
 package domain_test
 
 import (
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
@@ -16,12 +19,42 @@ func TestSafeFileName(t *testing.T) {
 		{"отчёт за неделю.txt", "file.bin", "отчёт-за-неделю.txt"},
 		{"", "voice.ogg", "voice.ogg"},
 		{"---", "file.bin", "file.bin"},
-		{strings.Repeat("a", 100) + ".txt", "file.bin", strings.Repeat("a", 80)},
+		{strings.Repeat("a", 100) + ".txt", "file.bin", strings.Repeat("a", 100) + ".txt"},
+		{strings.Repeat("a", 300) + ".txt", "file.bin", strings.Repeat("a", 116) + ".txt"},
+		{strings.Repeat("a", 300), "file.bin", strings.Repeat("a", 120)},
+		// The cut stem loses its trailing separators, the extension stays.
+		{strings.Repeat("a", 115) + " (copy).tar", "file.bin", strings.Repeat("a", 115) + ".tar"},
+		// A last dot further back than 16 bytes is not an extension.
+		{"x." + strings.Repeat("b", 200), "file.bin", "x." + strings.Repeat("b", 118)},
 	}
 	for _, tc := range cases {
 		if got := domain.SafeFileName(tc.in, tc.fallback); got != tc.want {
 			t.Errorf("SafeFileName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestSafeFileNameCapsBytesOnRuneBoundary(t *testing.T) {
+	got := domain.SafeFileName(strings.Repeat("文", 200)+".pdf", "file.bin")
+	if len(got) > 120 || !utf8.ValidString(got) || !strings.HasSuffix(got, ".pdf") {
+		t.Fatalf("SafeFileName(CJK) = %q (%d bytes), want <= 120 valid bytes ending .pdf", got, len(got))
+	}
+	// 116 bytes for the stem hold 38 three-byte runes.
+	if want := strings.Repeat("文", 38) + ".pdf"; got != want {
+		t.Fatalf("SafeFileName(CJK) = %q, want %q", got, want)
+	}
+}
+
+// TestInboxNameFitsNameMax: the longest inbox name plus the longest private
+// prefix and a collision suffix leaves room for the 16-byte temp-file
+// decoration under ext4's 255-byte NAME_MAX.
+func TestInboxNameFitsNameMax(t *testing.T) {
+	name := domain.SafeFileName(strings.Repeat("文", 300)+".verylongext1234", "file.bin")
+	at := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	prefix := "shared-" + strconv.FormatInt(math.MinInt64, 10)[:20] + "-" + strings.Repeat("A", 26) + "-"
+	full := prefix + domain.InboxFileName(at, math.MaxInt, name) + "-999"
+	if len(full) >= 239 {
+		t.Fatalf("worst-case name is %d bytes, want under 239", len(full))
 	}
 }
 
