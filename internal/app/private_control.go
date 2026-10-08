@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,7 @@ type PrivateControl struct {
 	// Log receives the control path's diagnostics; nil discards them.
 	Log           *slog.Logger
 	callbacks     map[string]privateButton
+	mints         uint64
 	typing        map[domain.Key]domain.ShareOrigin
 	albums        map[string]*privateAlbum
 	denialNotices map[string]uint64
@@ -52,6 +54,8 @@ type privateButton struct {
 	// seq is the agent's StateChangeSeq when a dialog button was drawn: a
 	// press acts only while the agent still waits at that same dialog.
 	seq int64
+	// minted orders buttons that expire together, oldest first.
+	minted uint64
 }
 
 // log returns the configured logger or a discarding one.
@@ -75,6 +79,68 @@ func (p *PrivateControl) dropDialogButtons(o domain.ShareOrigin) {
 			delete(p.callbacks, ref)
 		}
 	}
+}
+
+// dropButtons forgets actor's buttons of the given kinds drawn on surface
+// (the button's own surface, or its mirror when it has none): a refreshed
+// keyboard replaces them. It returns how many went.
+func (p *PrivateControl) dropButtons(actor int64, surface domain.TopicAddress, kinds ...string) int {
+	removed := 0
+	for ref, b := range p.callbacks {
+		if b.origin.ActorID != actor || b.where() != surface || !slices.Contains(kinds, b.kind) {
+			continue
+		}
+		delete(p.callbacks, ref)
+		removed++
+	}
+	return removed
+}
+
+// bindButtons records the message that carries buttons. A ref that is gone
+// (evicted, or the dead "expired" ref) stays gone.
+func (p *PrivateControl) bindButtons(message int, buttons []domain.Button) {
+	for _, button := range buttons {
+		if b, ok := p.callbacks[button.Data]; ok {
+			b.message = message
+			p.callbacks[button.Data] = b
+		}
+	}
+}
+
+// where is the address a press of the button must come from.
+func (b privateButton) where() domain.TopicAddress {
+	if b.surface.ChatID == 0 {
+		return b.origin.Address
+	}
+	return b.surface
+}
+
+// evictActor makes room for one more button of actor: at
+// privateButtonsPerActor live entries, that recipient's buttons that expire
+// first (the earliest minted among equals) go, so only its own oldest
+// keyboards answer "expired".
+func (p *PrivateControl) evictActor(actor int64) {
+	var refs []string
+	for ref, b := range p.callbacks {
+		if b.origin.ActorID == actor {
+			refs = append(refs, ref)
+		}
+	}
+	excess := len(refs) - privateButtonsPerActor + 1
+	if excess <= 0 {
+		return
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		a, b := p.callbacks[refs[i]], p.callbacks[refs[j]]
+		if !a.expires.Equal(b.expires) {
+			return a.expires.Before(b.expires)
+		}
+		return a.minted < b.minted
+	})
+	for _, ref := range refs[:excess] {
+		delete(p.callbacks, ref)
+	}
+	p.log().Debug("private buttons evicted", slog.Int64("actor", actor), slog.Int("removed", excess), slog.String("reason", "actor_cap"))
 }
 
 type privateAlbum struct {
@@ -266,9 +332,7 @@ func (p *PrivateControl) screen(ctx context.Context, o domain.ShareOrigin, lines
 func (p *PrivateControl) confirmClose(ctx context.Context, o domain.ShareOrigin) error {
 	ref := p.button(privateButton{origin: o, kind: "close", expires: p.Now().Add(time.Minute)})
 	id, err := p.Telegram.SendAt(ctx, o.Address, domain.Outgoing{Text: "Close this agent's pane for everyone?", Buttons: []domain.Button{{Text: "Confirm close", Data: ref}}}, p.Sharing.Guard(o, domain.ShareClose))
-	b := p.callbacks[ref]
-	b.message = id
-	p.callbacks[ref] = b
+	p.bindButtons(id, []domain.Button{{Data: ref}})
 	return err
 }
 
@@ -276,14 +340,26 @@ func (p *PrivateControl) button(b privateButton) string {
 	if p.callbacks == nil {
 		p.callbacks = map[string]privateButton{}
 	}
+	now := p.Now()
 	for id, old := range p.callbacks {
-		if !p.Now().Before(old.expires) {
+		if !now.Before(old.expires) {
 			delete(p.callbacks, id)
 		}
 	}
+	p.evictActor(b.origin.ActorID)
+	// The global cap is a backstop only; the dead ref is answered as stale.
 	if len(p.callbacks) >= 4096 {
+		held := 0
+		for _, old := range p.callbacks {
+			if old.origin.ActorID == b.origin.ActorID {
+				held++
+			}
+		}
+		p.log().Warn("private button table full", slog.Int("size", len(p.callbacks)), slog.Int("actor_entries", held))
 		return "expired"
 	}
+	p.mints++
+	b.minted = p.mints
 	id := "pm:" + rand.Text()
 	p.callbacks[id] = b
 	return id
@@ -291,11 +367,7 @@ func (p *PrivateControl) button(b privateButton) string {
 
 func (p *PrivateControl) press(ctx context.Context, e domain.PrivateMessage) error {
 	b, ok := p.callbacks[e.CallbackData]
-	surface := b.surface
-	if surface.ChatID == 0 {
-		surface = b.origin.Address
-	}
-	if !ok || e.Stale || e.Contact.ActorID != b.origin.ActorID || e.Address != surface || e.MessageID != b.message || !p.Now().Before(b.expires) {
+	if !ok || e.Stale || e.Contact.ActorID != b.origin.ActorID || e.Address != b.where() || e.MessageID != b.message || !p.Now().Before(b.expires) {
 		return p.Transport.AnswerButton(ctx, e.CallbackID, "This button is stale or unavailable.")
 	}
 	_ = p.Transport.AnswerButton(ctx, e.CallbackID, "")

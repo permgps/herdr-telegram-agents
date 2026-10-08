@@ -2,12 +2,14 @@ package app_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/app"
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
+	"github.com/permgps/herdr-telegram-agents/internal/testkit"
 )
 
 func TestPrivateFanoutAndReadKeyboardIsolation(t *testing.T) {
@@ -178,5 +180,174 @@ func TestPrivateOldTextEntryButtonDoesNotAnswerANewDialog(t *testing.T) {
 	after := f.tg.Destination(10).Sent()
 	if last := after[len(after)-1]; last.Text != "That question is no longer open." {
 		t.Fatalf("stale press not answered: %+v", last)
+	}
+}
+
+// openCodeMirror turns the fixture's agent into an OpenCode agent whose
+// exact replies come from the returned fake, wired as the mirror's output
+// and /screen reader.
+func openCodeMirror(f *privateFixture) (*app.PrivateOutput, *testkit.FakeReplies) {
+	f.agent.Kind = "opencode"
+	replies := testkit.NewFakeReplies()
+	replies.SetNow(func() time.Time { return f.now })
+	output := &app.PrivateOutput{Control: f.p, ExactReplies: replies, Automatic: func() bool { return true }}
+	f.p.Output = output
+	f.p.Read = output.Read
+	f.h.SetScreen("p", "screen capture")
+	return output, replies
+}
+
+// posts returns the texts sent to the recipient after the first n.
+func (f *privateFixture) posts(n int) []string {
+	var texts []string
+	for _, o := range f.tg.Destination(10).Sent()[n:] {
+		texts = append(texts, o.Text)
+	}
+	return texts
+}
+
+// TestPrivateScreenReplyFromBeforeGrant: an exact reply written before the
+// grant was active belongs to the owner's private history; /screen and the
+// automatic post show the screen instead, and a later reply as itself.
+func TestPrivateScreenReplyFromBeforeGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		written time.Duration
+		want    string
+	}{
+		{"before_grant", -time.Minute, "screen capture"},
+		{"after_grant", time.Second, "the reply"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newPrivateFixture(t, domain.ShareRead)
+			output, replies := openCodeMirror(f)
+			replies.Set(f.g.Key, "the reply")
+			replies.SetMeta(f.g.Key, domain.TurnMeta{}, f.g.ActivatedAt.Add(tc.written))
+			f.now = f.now.Add(time.Minute)
+			before := len(f.tg.Destination(10).Sent())
+			if err := f.p.Handle(ctx, domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "/screen"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.posts(before); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("/screen posted %q, want %q", got, tc.want)
+			}
+			before = len(f.tg.Destination(10).Sent())
+			output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusDone, 1)})
+			f.now = f.now.Add(3 * time.Second)
+			if err := output.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.posts(before); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("automatic post %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// privatePending scripts the OpenCode reply source to report a running turn.
+func privatePending(f *privateFixture, replies *testkit.FakeReplies) {
+	replies.Fail(f.g.Key, fmt.Errorf("%w: turn running", domain.ErrReplyPending))
+}
+
+// TestPrivateMirrorWaitsForPendingReply: a done event while OpenCode still
+// runs the turn is retried; the reply is posted once it lands, and no
+// screen goes out before it.
+func TestPrivateMirrorWaitsForPendingReply(t *testing.T) {
+	ctx := context.Background()
+	f := newPrivateFixture(t, domain.ShareRead)
+	output, replies := openCodeMirror(f)
+	privatePending(f, replies)
+	before := len(f.tg.Destination(10).Sent())
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusDone, 1)})
+	f.now = f.now.Add(3 * time.Second)
+	if err := output.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.posts(before); len(got) != 0 {
+		t.Fatalf("posted while the reply was pending: %q", got)
+	}
+	replies.Set(f.g.Key, "the reply")
+	for range 3 {
+		f.now = f.now.Add(app.ReplyPendingDelayForTest)
+		if err := output.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.posts(before); len(got) != 1 || got[0] != "the reply" {
+		t.Fatalf("posts after the reply landed: %q", got)
+	}
+}
+
+// TestPrivateMirrorPendingReplyFallsBackToScreen: a reply that stays pending
+// through every retry ends in exactly one screen post.
+func TestPrivateMirrorPendingReplyFallsBackToScreen(t *testing.T) {
+	ctx := context.Background()
+	f := newPrivateFixture(t, domain.ShareRead)
+	output, replies := openCodeMirror(f)
+	privatePending(f, replies)
+	before := len(f.tg.Destination(10).Sent())
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusDone, 1)})
+	f.now = f.now.Add(3 * time.Second)
+	for range app.ReplyPendingRetriesForTest + 3 {
+		if err := output.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		f.now = f.now.Add(app.ReplyPendingDelayForTest)
+	}
+	if got := f.posts(before); len(got) != 1 || got[0] != "screen capture" {
+		t.Fatalf("posts after the retries ran out: %q", got)
+	}
+	if n := len(replies.Calls()); n != app.ReplyPendingRetriesForTest+1 {
+		t.Fatalf("reply source asked %d times", n)
+	}
+}
+
+// TestPrivateMirrorPendingReplyDroppedByWork: the agent going back to work
+// during the wait drops the retry, as on the owner's topics.
+func TestPrivateMirrorPendingReplyDroppedByWork(t *testing.T) {
+	ctx := context.Background()
+	f := newPrivateFixture(t, domain.ShareRead)
+	output, replies := openCodeMirror(f)
+	privatePending(f, replies)
+	before := len(f.tg.Destination(10).Sent())
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusDone, 1)})
+	f.now = f.now.Add(3 * time.Second)
+	if err := output.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusWorking, 2)})
+	for range app.ReplyPendingRetriesForTest + 2 {
+		f.now = f.now.Add(app.ReplyPendingDelayForTest)
+		if err := output.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.posts(before); len(got) != 0 {
+		t.Fatalf("posted after the agent went back to work: %q", got)
+	}
+}
+
+// TestPrivateScreenMirrorDoesNotWaitForReply: a mirror that shows the screen
+// never waits for the reply source.
+func TestPrivateScreenMirrorDoesNotWaitForReply(t *testing.T) {
+	ctx := context.Background()
+	f := newPrivateFixture(t, domain.ShareRead)
+	output, replies := openCodeMirror(f)
+	privatePending(f, replies)
+	st, _ := f.s.Snapshot()
+	prefs := st.Mirrors[f.g.ID].Preferences
+	prefs.Display = "screen"
+	if err := f.s.Preferences(ctx, f.origin, prefs, f.now); err != nil {
+		t.Fatal(err)
+	}
+	before := len(f.tg.Destination(10).Sent())
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusDone, 1)})
+	f.now = f.now.Add(3 * time.Second)
+	if err := output.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.posts(before); len(got) != 1 || got[0] != "screen capture" {
+		t.Fatalf("screen mirror posts: %q", got)
 	}
 }
