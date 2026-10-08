@@ -232,9 +232,11 @@ func (i *inbound) Pending() int { return len(i.pending) }
 func (i *inbound) typed(ctx context.Context, msg domain.TopicMessage, key domain.Key, w typingWait) error {
 	i.log.Info("typed text delivered", slog.String("key", key.String()), slog.Int("thread_id", msg.ThreadID),
 		slog.Int("message_id", msg.MessageID), slog.Int("dialog_message_id", w.messageID), slog.Int("len", len(msg.Text)))
-	if err := i.herdr.Prompt(ctx, key.PaneID, msg.Text); err != nil {
+	typed, err := deliverText(ctx, i.herdr, i.log, key.PaneID, msg.Text)
+	if err != nil {
 		return i.failed(ctx, msg, key, "prompt", err)
 	}
+	i.log.Debug("typed text submitted", slog.String("key", key.String()), slog.Bool("typed_into_dialog", typed))
 	if err := i.out.TypingDone(ctx, key, w, msg.Text); err != nil {
 		return err
 	}
@@ -278,10 +280,12 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 				slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID), slog.Int("len", len(msg.Text)))
 			return i.reply(ctx, msg.ThreadID, msg.MessageID, fmt.Sprintf(pickerRefusedFmt, "/"+word))
 		}
-		if err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text); err != nil {
+		typed, err := deliverText(ctx, i.herdr, i.log, key.PaneID, cmd.Text)
+		if err != nil {
 			return i.failed(ctx, msg, key, "prompt", err)
 		}
-		i.log.Debug("herdr call ok", slog.String("method", "prompt"), slog.String("key", key.String()), slog.Int("message_id", msg.MessageID))
+		i.log.Debug("herdr call ok", slog.String("method", "prompt"), slog.String("key", key.String()), slog.Int("message_id", msg.MessageID),
+			slog.Bool("typed_into_dialog", typed))
 		return i.out.PromptSent(ctx, key, msg.ThreadID, msg.MessageID)
 	case domain.CmdKeys:
 		i.releasePicker(key, "keys")
@@ -1199,12 +1203,17 @@ func (i *inbound) InboxFinished(ctx context.Context, r inboxResult) error {
 			slog.Int("thread_id", r.threadID), slog.Int("message_id", r.messageID), slog.Int("saved", len(r.paths)))
 		return i.reply(ctx, r.threadID, r.messageID, fmt.Sprintf(pickerRefusedFmt, "/"+word))
 	}
-	if err := i.herdr.Prompt(ctx, r.key.PaneID, domain.AttachmentPrompt(r.caption, r.paths)); err != nil {
+	typed, err := deliverText(ctx, i.herdr, i.log, r.key.PaneID, domain.AttachmentPrompt(r.caption, r.paths))
+	if err != nil {
 		return i.failed(ctx, msg, r.key, "prompt", err)
 	}
 	i.log.Info("inbox delivered", slog.String("key", r.key.String()), slog.Int("message_id", r.messageID), slog.Int("saved", len(r.paths)),
-		slog.Int("failed", len(r.failed)), slog.Int64("elapsed_ms", elapsed))
-	i.deb.ScheduleAfter(submitKey(r.key.PaneID), inboxSubmitDelay)
+		slog.Int("failed", len(r.failed)), slog.Int64("elapsed_ms", elapsed), slog.Bool("typed_into_dialog", typed))
+	// Typing into a dialog already pressed enter; a second one would land
+	// on the agent's input once the dialog closes.
+	if !typed {
+		i.deb.ScheduleAfter(submitKey(r.key.PaneID), inboxSubmitDelay)
+	}
 	if err := i.out.PromptSent(ctx, r.key, r.threadID, r.messageID); err != nil {
 		return err
 	}
@@ -1373,6 +1382,8 @@ func failureReason(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrAgentGone):
 		return "agent is gone"
+	case errors.Is(err, domain.ErrAgentBlocked):
+		return "agent is waiting at a dialog: answer it with the buttons or a number first"
 	case errors.Is(err, domain.ErrDisconnected):
 		return "herdr is unreachable"
 	case errors.Is(err, domain.ErrNotRepository):

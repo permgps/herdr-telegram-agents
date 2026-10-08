@@ -372,6 +372,21 @@ only.
   one `telegram polling error` warning, then at most one more with
   `suppressed=…`.
 
+## Blocked agents on Herdr 0.9.3 (issue #37)
+
+Herdr 0.9.3 or later. Record the Herdr version and outcomes only.
+
+- [ ] A Claude Code agent asks a question with a `Type something.` entry:
+  press ✏️ and send a two-line answer. It arrives in the dialog on one line,
+  is submitted once, and the message gets 👀. `daemon.log` has
+  `prompt refused at dialog, typing into pane` with `lines=2`.
+- [ ] A Muse agent waits at a question: send a plain answer. It arrives and
+  is submitted.
+- [ ] Send a photo with a caption to a blocked agent: caption and path
+  arrive on one line, with no second `enter` after the dialog closes.
+- [ ] Send `/clear` to a Claude Code agent waiting at a dialog: it is
+  refused with a hint and nothing is typed into the dialog.
+
 ## See Also
 
 - [Development](development.md): building from source, make targets and the tree layout

@@ -28,6 +28,12 @@ type KeysCall struct {
 	Keys   []string
 }
 
+// TextCall records one SendText call.
+type TextCall struct {
+	Target string
+	Text   string
+}
+
 // RenameCall is one Rename call a fake recorded; Name nil means clear.
 type RenameCall struct {
 	Target string
@@ -69,6 +75,7 @@ type FakeHerdr struct {
 	revisions  map[string]int64
 	reads      []ReadCall
 	keys       []KeysCall
+	texts      []TextCall
 	focused    []string
 	renames    []RenameCall
 	tabRenames []TabRenameCall
@@ -123,7 +130,7 @@ func (f *FakeHerdr) SetScreenAt(target, text string, revision int64) {
 	f.revisions[target] = revision
 }
 
-// FailNext makes the next call of method (read, prompt, keys, focus,
+// FailNext makes the next call of method (read, prompt, keys, text, focus,
 // rename, rename_tab, workspaces, tab, start, close) return err. Only one
 // failure is queued per method.
 func (f *FakeHerdr) FailNext(method string, err error) {
@@ -144,6 +151,13 @@ func (f *FakeHerdr) Keys() []KeysCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]KeysCall(nil), f.keys...)
+}
+
+// Texts returns every SendText call, in order.
+func (f *FakeHerdr) Texts() []TextCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TextCall(nil), f.texts...)
 }
 
 // Focused returns the target of every Focus call, in order.
@@ -333,6 +347,14 @@ func (f *FakeHerdr) SendKeys(_ context.Context, target string, keys []string) er
 	f.keys = append(f.keys, KeysCall{Target: target, Keys: append([]string(nil), keys...)})
 	f.log.Debug("fake herdr send_keys", slog.String("target", target), slog.Any("keys", keys))
 	return f.fail("keys")
+}
+
+func (f *FakeHerdr) SendText(_ context.Context, paneID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.texts = append(f.texts, TextCall{Target: paneID, Text: text})
+	f.log.Debug("fake herdr send_text", slog.String("pane", paneID), slog.Int("len", len(text)))
+	return f.fail("text")
 }
 
 func (f *FakeHerdr) Focus(_ context.Context, target string) error {

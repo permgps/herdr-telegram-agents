@@ -567,6 +567,23 @@ func ShortReply(text string) ([]string, bool) {
 	return nil, false
 }
 
+// DialogText turns text into the one line typed into a blocked agent's
+// dialog. Typed input has no bracketed paste, so a line break would press
+// enter and submit half the answer: lines are trimmed, empty ones dropped
+// and the rest joined with one space. It also returns how many lines were
+// joined.
+func DialogText(text string) (string, int) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	var parts []string
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, " "), len(parts)
+}
+
 // Route decides what a topic message means for an agent in the given status:
 // a slash word is parsed as a command; a short reply to a blocked agent is a
 // key press; everything else is a prompt.

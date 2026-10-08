@@ -299,6 +299,42 @@ func TestGatewayPromptAndSendKeys(t *testing.T) {
 	}
 }
 
+func TestGatewaySendText(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("pane.send_text", ackHandler)
+	g := newGateway(t, s)
+
+	if err := g.SendText(ctxT(t), "w1:p1", "use the staging db"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	// Herdr 0.9.3 schema PaneSendTextParams: pane_id and text, both required.
+	want := map[string]any{"pane_id": "w1:p1", "text": "use the staging db"}
+	if got := lastParams(t, s, "pane.send_text"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("send_text params = %v, want %v", got, want)
+	}
+}
+
+func TestGatewayAgentBlockedMapsBlockedAndPreservesAPIError(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	apiMessage := "agent wB:p15 is blocked and requires interactive input"
+	s.Handle("agent.prompt", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "agent_blocked", Message: apiMessage}
+	})
+	g := newGateway(t, s)
+
+	err := g.Prompt(ctxT(t), "wB:p15", "yes, go ahead")
+	if !errors.Is(err, domain.ErrAgentBlocked) {
+		t.Fatalf("err = %v, want ErrAgentBlocked", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != codeBlocked || apiErr.Message != apiMessage {
+		t.Fatalf("err = %v, want APIError %s with original message", err, codeBlocked)
+	}
+	if errors.Is(err, domain.ErrAgentBusy) || errors.Is(err, domain.ErrAgentGone) {
+		t.Fatalf("agent_blocked must map to ErrAgentBlocked only: %v", err)
+	}
+}
+
 func TestGatewayFocus(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("agent.focus", ackHandler)
