@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,5 +137,92 @@ func TestInboxTotalQuota(t *testing.T) {
 	}
 	if _, err := in.Save(ctx, "huge.bin", make([]byte, 26)); !errors.Is(err, domain.ErrFileTooBig) {
 		t.Fatalf("file over the whole quota = %v", err)
+	}
+}
+
+// saveAged saves a file through save and backdates it by age.
+func saveAged(t *testing.T, save func(context.Context, string, []byte) (string, error), name string, size int, age time.Duration) string {
+	t.Helper()
+	path, err := save(context.Background(), name, make([]byte, size))
+	if err != nil {
+		t.Fatalf("save %s: %v", name, err)
+	}
+	past := time.Now().Add(-age)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// TestInboxSharedQuota: shared files hold at most a quarter of the total
+// quota and make room only from each other; the owner's file, older than
+// every shared one, survives.
+func TestInboxSharedQuota(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 40 }
+	owner := saveAged(t, in.Save, "owner.bin", 10, 3*time.Hour)
+	s1 := saveAged(t, in.SaveShared, "10-a-one.bin", 4, 2*time.Hour)
+	s2 := saveAged(t, in.SaveShared, "10-b-two.bin", 4, time.Hour)
+	if !strings.HasPrefix(filepath.Base(s1), "shared-") {
+		t.Fatalf("shared file name = %q", filepath.Base(s1))
+	}
+	s3, err := in.SaveShared(context.Background(), "10-c-three.bin", make([]byte, 4))
+	if err != nil {
+		t.Fatalf("shared save over the shared quota: %v", err)
+	}
+	if exists(s1) {
+		t.Fatal("oldest shared file kept over the shared quota")
+	}
+	if !exists(owner) || !exists(s2) || !exists(s3) {
+		t.Fatal("shared save deleted more than the oldest shared file")
+	}
+}
+
+// TestInboxSharedSaveNeverEvictsOwner: when only the owner's files could
+// make room, a shared save is refused and nothing is deleted.
+func TestInboxSharedSaveNeverEvictsOwner(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 40 }
+	owner := saveAged(t, in.Save, "owner.bin", 35, time.Hour)
+	if _, err := in.SaveShared(context.Background(), "10-a-one.bin", make([]byte, 8)); !errors.Is(err, domain.ErrFileTooBig) {
+		t.Fatalf("shared save needing owner room = %v", err)
+	}
+	if !exists(owner) {
+		t.Fatal("owner file deleted for a shared save")
+	}
+}
+
+// TestInboxOwnerSaveEvictsShared: the owner's Save still frees room from
+// the oldest file, shared or not.
+func TestInboxOwnerSaveEvictsShared(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 40 }
+	shared := saveAged(t, in.SaveShared, "10-a-one.bin", 8, 2*time.Hour)
+	owner := saveAged(t, in.Save, "owner.bin", 20, time.Hour)
+	if _, err := in.Save(context.Background(), "new.bin", make([]byte, 15)); err != nil {
+		t.Fatal(err)
+	}
+	if exists(shared) || !exists(owner) {
+		t.Fatalf("owner save evicted the wrong file: shared=%v owner=%v", exists(shared), exists(owner))
+	}
+}
+
+// TestInboxSharedFileOverSubQuota: a shared file larger than a quarter of
+// the total quota is refused, as is an unsafe name.
+func TestInboxSharedFileOverSubQuota(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 40 }
+	if _, err := in.SaveShared(context.Background(), "10-a-big.bin", make([]byte, 11)); !errors.Is(err, domain.ErrFileTooBig) {
+		t.Fatalf("shared file over the sub-quota = %v", err)
+	}
+	for _, name := range []string{"", "..", "../escape", "a/b"} {
+		if _, err := in.SaveShared(context.Background(), name, []byte("x")); err == nil {
+			t.Errorf("SaveShared(%q) accepted", name)
+		}
 	}
 }

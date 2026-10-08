@@ -515,6 +515,19 @@ func (i *inbound) holdForPicker(key domain.Key, agent domain.Agent) (string, boo
 	return h.word, true
 }
 
+// PickerHold is holdForPicker for a Control recipient's plain message: the
+// hold is the owner's, so one refusal, by either side, uses it up. Bridge
+// goroutine only.
+func (i *inbound) PickerHold(key domain.Key, agent domain.Agent) (string, bool) {
+	return i.holdForPicker(key, agent)
+}
+
+// ReleasePicker is releasePicker for a Control recipient driving or
+// closing the picker. Bridge goroutine only.
+func (i *inbound) ReleasePicker(key domain.Key, reason string) {
+	i.releasePicker(key, reason)
+}
+
 // releasePicker drops the picker hold of an agent, if any.
 func (i *inbound) releasePicker(key domain.Key, reason string) {
 	h, ok := i.pickers[key]

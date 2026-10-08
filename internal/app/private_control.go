@@ -35,6 +35,16 @@ type PrivateControl struct {
 	Read            func(context.Context, domain.ShareOrigin, domain.Command) error
 	Overview        func(context.Context, domain.PrivateMessage) error
 	InvalidateOwner func(context.Context, domain.Key) error
+	// InboxEnabled and InboxMaxBytes read the owner's Inbox options; nil
+	// means on and 20 MiB, the defaults of domain.OptionInboxEnabled and
+	// domain.OptionInboxMaxMB.
+	InboxEnabled  func() bool
+	InboxMaxBytes func() int64
+	// HoldPicker and ReleasePicker share the owner's picker hold (see
+	// inbound.holdForPicker): a plain message after a kept picker is held
+	// back once, whoever sends it. Nil means no hold.
+	HoldPicker    func(domain.Key, domain.Agent) (string, bool)
+	ReleasePicker func(domain.Key, string)
 	// Log receives the control path's diagnostics; nil discards them.
 	Log           *slog.Logger
 	callbacks     map[string]privateButton
@@ -219,18 +229,30 @@ func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) er
 		}
 		return p.screen(ctx, o, cmd.Lines)
 	case domain.CmdPrompt:
-		if waiting, exists := p.typing[o.Key]; exists {
+		waiting, typed := p.typing[o.Key]
+		if typed {
 			if waiting.ActorID != o.ActorID || waiting.GrantID != o.GrantID || waiting.Revision != o.Revision {
 				return p.notice(ctx, e, "Another controller is entering a dialog answer. Retry after it finishes.")
 			}
 			delete(p.typing, o.Key)
 		}
+		// As on the owner's path, the free text of a ✏️ answer is not held
+		// and leaves the hold alone: it answers the dialog, not the picker.
+		if !typed {
+			if word, held := p.holdPicker(o.Key, a); held {
+				p.log().Info("private prompt held for picker", slog.String("key", o.Key.String()), slog.String("word", word), slog.Int64("actor", o.ActorID))
+				return p.send(ctx, o, fmt.Sprintf(pickerRefusedFmt, "/"+word))
+			}
+		}
 		return p.effect(ctx, o, action, func(ctx context.Context) error { return p.Herdr.Prompt(ctx, o.Key.PaneID, cmd.Text) })
 	case domain.CmdKeys:
+		p.releasePicker(o.Key, "keys")
 		return p.keys(ctx, o, cmd.Keys)
 	case domain.CmdStop:
+		p.releasePicker(o.Key, "stop")
 		return p.keys(ctx, o, []string{domain.KeyEscape})
 	case domain.CmdInterrupt:
+		p.releasePicker(o.Key, "interrupt")
 		return p.keys(ctx, o, []string{domain.KeyInterrupt})
 	case domain.CmdForward:
 		if a.Kind != domain.ClaudeKind || !cmd.Forward.Fits(a.Kind) {
@@ -257,6 +279,35 @@ func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) er
 		return p.git(ctx, o, a, cmd)
 	}
 	return nil
+}
+
+// holdPicker asks the owner's picker hold whether a plain message to key
+// must be held back; the hold is one-shot, so a refusal releases it.
+func (p *PrivateControl) holdPicker(key domain.Key, a domain.Agent) (string, bool) {
+	if p.HoldPicker == nil {
+		return "", false
+	}
+	return p.HoldPicker(key, a)
+}
+
+// releasePicker drops the owner's picker hold of key, if any.
+func (p *PrivateControl) releasePicker(key domain.Key, reason string) {
+	if p.ReleasePicker != nil {
+		p.ReleasePicker(key, reason)
+	}
+}
+
+// inboxEnabled is the owner's Inbox switch; on without a registry.
+func (p *PrivateControl) inboxEnabled() bool {
+	return p.InboxEnabled == nil || p.InboxEnabled()
+}
+
+// inboxMax is the owner's per-file Inbox limit; 20 MiB without a registry.
+func (p *PrivateControl) inboxMax() int64 {
+	if p.InboxMaxBytes == nil {
+		return 20 << 20
+	}
+	return p.InboxMaxBytes()
 }
 
 func (p *PrivateControl) resolve(e domain.PrivateMessage) (domain.ShareOrigin, bool) {
@@ -466,6 +517,15 @@ func (p *PrivateControl) attachment(ctx context.Context, o domain.ShareOrigin, a
 	if p.Inbox == nil || p.Async == nil {
 		return p.send(ctx, o, "Attachments unavailable.")
 	}
+	// The owner's Inbox options bind recipients too, before any download.
+	if !p.inboxEnabled() {
+		p.log().Info("private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "inbox_off"), slog.Int64("bytes", a.Size))
+		return p.send(ctx, o, inboxOff)
+	}
+	if max := p.inboxMax(); a.Size > max {
+		p.log().Info("private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "too_big"), slog.Int64("bytes", a.Size))
+		return p.send(ctx, o, fmt.Sprintf(inboxTooBigFmt, humanBytes(a.Size), humanBytes(max)))
+	}
 	if a.GroupID == "" {
 		if !p.download(o, []domain.TopicAttachment{a}, a.Caption) {
 			return p.send(ctx, o, "Private transfers are busy. Retry shortly.")
@@ -609,7 +669,12 @@ func (p *PrivateControl) Tick(ctx context.Context) error {
 	return nil
 }
 
+// download fetches files off the bridge goroutine within the owner's
+// per-file limit, an album within twice that, and saves them to the shared
+// part of the inbox. Its completion types the paths unless the owner's
+// picker hold takes them.
 func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAttachment, caption string) bool {
+	max := p.inboxMax()
 	return p.Async(func(ctx context.Context) func(context.Context) error {
 		callCtx, done, d := p.Sharing.Begin(ctx, o, domain.ShareAttachment)
 		if !d.Allowed {
@@ -619,25 +684,44 @@ func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAtta
 		var paths []string
 		var total int
 		for _, a := range files {
-			data, err := p.Transport.Download(callCtx, a.FileID, 20<<20)
+			data, err := p.Transport.Download(callCtx, a.FileID, max)
 			if err != nil {
 				return func(ctx context.Context) error { return p.send(ctx, o, "Attachment download failed.") }
 			}
 			total += len(data)
-			if total > 40<<20 {
-				return func(ctx context.Context) error { return p.send(ctx, o, "Album exceeds 40 MiB.") }
+			if int64(total) > 2*max {
+				p.log().Info("private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "album_too_big"), slog.Int("bytes", total))
+				return func(ctx context.Context) error { return p.send(ctx, o, "Album exceeds "+humanBytes(2*max)+".") }
 			}
 			if callCtx.Err() != nil {
 				return nil
 			}
 			name := domain.SafeFileName(a.Name, domain.DefaultAttachmentName(a.Kind, a.MIME))
-			path, err := p.Inbox.Save(callCtx, fmt.Sprintf("%d-%s-%s", o.ActorID, rand.Text(), name), data)
+			path, err := p.Inbox.SaveShared(callCtx, fmt.Sprintf("%d-%s-%s", o.ActorID, rand.Text(), name), data)
+			if errors.Is(err, domain.ErrFileTooBig) {
+				return func(ctx context.Context) error {
+					return p.send(ctx, o, "Attachment not saved: the shared inbox is full.")
+				}
+			}
 			if err != nil {
 				return func(ctx context.Context) error { return p.send(ctx, o, "Attachment save failed.") }
 			}
 			paths = append(paths, path)
 		}
 		return func(ctx context.Context) error {
+			// The prompt ends with an Enter, so a kept picker would take it
+			// as a choice: the file stays saved and is not typed, as on the
+			// owner's path. A revoked grant leaves the hold alone.
+			if _, release, d := p.Sharing.Begin(ctx, o, domain.ShareAttachment); d.Allowed {
+				release()
+				if a, live := p.Agent(o.Key); live {
+					if word, held := p.holdPicker(o.Key, a); held {
+						p.log().Info("[FIX] private attachment held for picker", slog.String("key", o.Key.String()), slog.String("word", word),
+							slog.Int64("actor", o.ActorID), slog.Int("saved", len(paths)))
+						return p.send(ctx, o, fmt.Sprintf(pickerRefusedFmt, "/"+word))
+					}
+				}
+			}
 			return p.effect(ctx, o, domain.ShareAttachment, func(ctx context.Context) error {
 				return p.Herdr.Prompt(ctx, o.Key.PaneID, domain.AttachmentPrompt(caption, paths))
 			})

@@ -504,7 +504,7 @@ func BuildDaemon(ctx context.Context, env PluginEnv, cfg domain.Config, log *slo
 	privateReconciler := &app.PrivateReconciler{Automatic: opts.SyncEnabled, Sharing: d.Sharing, Telegram: privateTelegram, Agent: registry.Agent, Now: clock.Now, Log: log}
 	bridge.Shares.OnGrant = privateReconciler.Grant
 	bridge.PrivateReconciler = privateReconciler
-	bridge.SetPrivateControl(&app.PrivateControl{Sharing: d.Sharing, Telegram: privateTelegram, Transport: tg, Herdr: hg, Git: system.NewGitRunner(log), Inbox: inbox, Agent: registry.Agent, Now: clock.Now, Log: log})
+	bridge.SetPrivateControl(&app.PrivateControl{Sharing: d.Sharing, Telegram: privateTelegram, Transport: tg, Herdr: hg, Git: system.NewGitRunner(log), Inbox: inbox, InboxEnabled: opts.InboxEnabled, InboxMaxBytes: opts.InboxMaxBytes, Agent: registry.Agent, Now: clock.Now, Log: log})
 
 	privateOutput := &app.PrivateOutput{Control: bridge.PrivateControl, Capture: capture, ExactReplies: transcript.NewOpenCodeReader(hg.AgentSession, openCodeExport, log), Automatic: opts.SyncEnabled}
 	bridge.PrivateControl.Output = privateOutput

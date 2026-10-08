@@ -9,7 +9,7 @@ import (
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
-// SavedFile is one Save call recorded by FakeInbox.
+// SavedFile is one Save or SaveShared call recorded by FakeInbox.
 type SavedFile struct {
 	Name string
 	Path string
@@ -81,6 +81,13 @@ func (f *FakeInbox) Save(_ context.Context, name string, data []byte) (string, e
 	saved := path.Join(f.dir, name)
 	f.saved = append(f.saved, SavedFile{Name: name, Path: saved, Data: append([]byte(nil), data...)})
 	return saved, nil
+}
+
+// SaveShared implements domain.InboxStore: it records the file like Save,
+// under the shared- prefix the real store adds. A FailNext("save") fails
+// it too.
+func (f *FakeInbox) SaveShared(ctx context.Context, name string, data []byte) (string, error) {
+	return f.Save(ctx, "shared-"+name, data)
 }
 
 // Sweep implements domain.InboxStore.

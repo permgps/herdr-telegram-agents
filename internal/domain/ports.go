@@ -258,6 +258,11 @@ type InboxStore interface {
 	// Save writes data under a file name derived from name (made unique
 	// when taken) and returns the absolute path of the file.
 	Save(ctx context.Context, name string, data []byte) (string, error)
+	// SaveShared is Save for a file a private recipient sent. The file
+	// counts against a recipient sub-quota and never evicts the owner's
+	// files: when the room cannot be made from other shared files, it is
+	// refused with ErrFileTooBig.
+	SaveShared(ctx context.Context, name string, data []byte) (string, error)
 	// Sweep deletes inbox files not modified for olderThan and returns how
 	// many it removed.
 	Sweep(ctx context.Context, olderThan time.Duration) (int, error)
