@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -43,6 +47,11 @@ func (w *UpdateWorker) Run(ctx context.Context, id string) (domain.UpdateJob, er
 	if job.ID != id || job.Phase != "queued" {
 		return job, fmt.Errorf("update job is not queued for this worker")
 	}
+	// A managed install is bound to the signed commit after the fact; a job
+	// without one cannot be checked, so nothing is touched.
+	if job.SourceKind == "github" && !commitPattern.MatchString(job.TargetCommit) {
+		return w.fail(ctx, job, "commit_unknown", fmt.Errorf("update job has no signed target commit"))
+	}
 	if w.Supervisor.Status().Running != job.PriorRunning {
 		return w.fail(ctx, job, "daemon_state_changed", fmt.Errorf("daemon running state changed after approval"))
 	}
@@ -67,6 +76,7 @@ func (w *UpdateWorker) Run(ctx context.Context, id string) (domain.UpdateJob, er
 	if err := w.phase(ctx, &job, "installed"); err != nil {
 		return w.rollback(ctx, job, "journal_failed", err)
 	}
+	w.logReceipt(ctx, job)
 	// Reading the installation runs the new binary (`herdr-tg version`), so
 	// its checksum is checked at the approved root first; the check against
 	// the registered root below stays.
@@ -79,6 +89,13 @@ func (w *UpdateWorker) Run(ctx context.Context, id string) (domain.UpdateJob, er
 	installed, err := w.Reader.ReadInstallation(ctx)
 	if err != nil {
 		return w.rollback(ctx, job, "inspect_failed", err)
+	}
+	if job.SourceKind == "github" && installed.ResolvedCommit != job.TargetCommit {
+		if w.Log != nil {
+			w.Log.Warn("[FIX] managed install resolved another commit", slog.String("job", job.ID),
+				slog.String("want", shortCommit(job.TargetCommit)), slog.String("got", shortCommit(installed.ResolvedCommit)))
+		}
+		return w.rollback(ctx, job, "commit_mismatch", fmt.Errorf("installed commit is not the signed commit"))
 	}
 	if installed.ManifestVersion != job.TargetVersion || installed.BinaryVersion != job.TargetVersion {
 		return w.rollback(ctx, job, "version_mismatch", fmt.Errorf("installed manifest or binary version does not match target"))
@@ -101,6 +118,33 @@ func (w *UpdateWorker) Run(ctx context.Context, id string) (domain.UpdateJob, er
 	}
 	return job, nil
 }
+
+// logReceipt records what the install script saw. It never decides the
+// update: Verify below re-hashes the binary either way. "approved none" on a
+// managed install means Herdr did not pass HERDR_TG_EXPECTED_SHA256 to the
+// [[build]] step.
+func (w *UpdateWorker) logReceipt(ctx context.Context, job domain.UpdateJob) {
+	if w.Log == nil {
+		return
+	}
+	receipt, err := w.Installer.Receipt(ctx, job.SourceRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		w.Log.Debug("install receipt missing", slog.String("job", job.ID))
+		return
+	}
+	if err != nil {
+		w.Log.Warn("install receipt unreadable", slog.String("job", job.ID), slog.Any("err", err))
+		return
+	}
+	approved := receipt.Approved != "" && receipt.Approved != "none"
+	w.Log.Info("install receipt", slog.String("job", job.ID), slog.String("signature", receipt.Signature),
+		slog.Bool("approved_present", approved), slog.Bool("sha_match", strings.EqualFold(receipt.SHA256, job.TargetChecksum)))
+	if !approved && job.TargetChecksum != "" {
+		w.Log.Warn("[FIX] approved checksum did not reach the install script", slog.String("job", job.ID), slog.String("source_kind", job.SourceKind))
+	}
+}
+
+var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func (w *UpdateWorker) phase(ctx context.Context, job *domain.UpdateJob, phase string) error {
 	job.Phase = phase

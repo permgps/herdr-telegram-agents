@@ -364,7 +364,7 @@ func (p *panel) startUpdate(ctx context.Context, intentID string, panelID int, o
 	job := domain.UpdateJob{
 		ID: intentID, Phase: "queued", OldVersion: check.Installation.ManifestVersion,
 		OldBinaryVersion: check.Installation.BinaryVersion, TargetVersion: strings.TrimPrefix(check.Release.Tag, "v"),
-		TargetTag: check.Release.Tag, TargetCommit: check.Checkout.TargetCommit,
+		TargetTag: check.Release.Tag, TargetCommit: check.Commit, TargetSigner: check.Signer,
 		TargetChecksum: check.Checksum, TargetAssetURL: check.Release.AssetURL, TargetChecksumsURL: check.Release.ChecksumsURL,
 		SourceKind: check.Installation.SourceKind, SourceRoot: check.Installation.Root, OldCommit: oldCommit,
 		PriorRunning: p.running(), StartedAt: p.updates.now().UTC(), NotificationStatus: "pending",
@@ -401,6 +401,9 @@ func (p *panel) checkFinished(ctx context.Context, result updateCheckResult) err
 		text += "\nNo newer release found."
 	} else {
 		text += "\nNew release: " + html.EscapeString(check.Release.Tag)
+		if check.Signer != "" {
+			text += " · signed"
+		}
 		if check.Blocker != "" {
 			text += "\n" + html.EscapeString(check.Blocker)
 		}

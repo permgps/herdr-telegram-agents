@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,5 +161,31 @@ func TestUpdateInstallerPassesApprovedChecksum(t *testing.T) {
 		if strings.HasPrefix(kv, "HERDR_TG_BASE_URL=") || strings.HasPrefix(kv, "HERDR_TG_ALLOW_INSECURE_BASE=") {
 			t.Fatalf("parent override leaked: %s", kv)
 		}
+	}
+}
+
+func TestUpdateInstallerReceipt(t *testing.T) {
+	root := t.TempDir()
+	i := &UpdateInstaller{}
+	if _, err := i.Receipt(context.Background(), root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing receipt err = %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "bin", "install-receipt")
+	body := "sha256 ABCDEF\r\napproved none\r\nsignature verified\r\nfuture value\r\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := i.Receipt(context.Background(), root)
+	if err != nil || got != (domain.InstallReceipt{SHA256: "abcdef", Approved: "none", Signature: "verified"}) {
+		t.Fatalf("receipt = %+v, %v", got, err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxReceipt+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Receipt(context.Background(), root); err == nil {
+		t.Fatal("oversized receipt accepted")
 	}
 }

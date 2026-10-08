@@ -267,3 +267,51 @@ func updateCommand(ctx context.Context, dir string, extra []string, bin string, 
 	}
 	return nil
 }
+
+// maxReceipt bounds bin/install-receipt; the script writes three short lines.
+const maxReceipt = 1 << 10
+
+// Receipt reads the "key value" lines install.sh / install.ps1 wrote to
+// bin/install-receipt. Unknown keys are ignored; a missing file is
+// os.ErrNotExist (older scripts, or the rollback path).
+func (i *UpdateInstaller) Receipt(_ context.Context, root string) (domain.InstallReceipt, error) {
+	path := filepath.Join(root, "bin", "install-receipt")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return domain.InstallReceipt{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return domain.InstallReceipt{}, fmt.Errorf("install receipt is not a regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return domain.InstallReceipt{}, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxReceipt+1))
+	if err != nil {
+		return domain.InstallReceipt{}, fmt.Errorf("read install receipt: %w", err)
+	}
+	if len(data) > maxReceipt {
+		return domain.InstallReceipt{}, fmt.Errorf("install receipt too large")
+	}
+	var r domain.InstallReceipt
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		switch value = strings.TrimSpace(value); key {
+		case "sha256":
+			r.SHA256 = strings.ToLower(value)
+		case "approved":
+			r.Approved = strings.ToLower(value)
+		case "signature":
+			r.Signature = value
+		}
+	}
+	if i.Log != nil {
+		i.Log.Debug("install receipt read", slog.String("signature", r.Signature))
+	}
+	return r, nil
+}

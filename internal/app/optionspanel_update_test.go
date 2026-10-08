@@ -76,6 +76,11 @@ func TestPanelUpdateCheckAuthorizationAndDuplicatePresses(t *testing.T) {
 	if launches != 1 || !strings.Contains(f.tg.Text(id), "Updating to v1.2.0") {
 		t.Fatalf("launches=%d text=%s", launches, f.tg.Text(id))
 	}
+	// The managed job carries the signed commit, not the (empty) checkout one.
+	job := p.jobs.(*memoryUpdateStore).job
+	if job.TargetCommit != "1111111111111111111111111111111111111111" || job.TargetSigner != "SHA256:test" || job.TargetChecksum != "digest" {
+		t.Fatalf("job = %+v", job)
+	}
 }
 
 func TestPanelIgnoresCheckAfterReplacement(t *testing.T) {

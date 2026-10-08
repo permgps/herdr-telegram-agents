@@ -110,6 +110,17 @@ type Release struct {
 	Version      Version
 	AssetURL     string
 	ChecksumsURL string
+	// StatementURL and SignatureURL locate release.txt and release.txt.sig,
+	// the owner-signed statement; empty while the release is unsigned.
+	StatementURL string
+	SignatureURL string
+}
+
+// ReleaseStatement is a release's verified signed statement: the tag, the
+// commit the tag pointed at when it was signed, the host asset's SHA-256 and
+// the fingerprint of the key that signed it.
+type ReleaseStatement struct {
+	Tag, Commit, Checksum, Signer string
 }
 
 // ReleaseManifest is the manifest pinned by the selected GitHub tag.

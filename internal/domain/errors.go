@@ -86,6 +86,12 @@ var (
 	// not a positive number, an operator, already an observer, or not an
 	// observer on removal. Wrapped with the reason.
 	ErrInvalidObserver = errors.New("invalid observer")
+	// ErrReleaseUnsigned means a release carries no signed statement
+	// (release.txt and release.txt.sig) yet; the updater shows a blocker.
+	ErrReleaseUnsigned = errors.New("release is not signed")
+	// ErrReleaseSignature means a release's signed statement does not verify
+	// against the compiled-in release keys or is malformed.
+	ErrReleaseSignature = errors.New("release signature does not verify")
 )
 
 // ChatMigratedError carries the replacement chat id when Telegram reports a

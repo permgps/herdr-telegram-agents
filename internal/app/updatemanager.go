@@ -130,9 +130,20 @@ func (m *UpdateManager) check(ctx context.Context) (domain.UpdateCheck, UpdateEl
 		return result, UpdateEligibility{}, nil
 	}
 	result.Release, result.Available = release, true
-	if result.Checksum, err = m.Releases.Checksum(ctx, release); err != nil {
+	statement, err := m.Releases.Statement(ctx, release)
+	switch {
+	case errors.Is(err, domain.ErrReleaseUnsigned):
+		m.logBlocker(slog.LevelInfo, "unsigned", release.Tag)
+		result.BlockerCode, result.Blocker = "unsigned", "This release is not signed yet. Try again in a few minutes or update manually."
+		return result, UpdateEligibility{}, nil
+	case errors.Is(err, domain.ErrReleaseSignature):
+		m.logBlocker(slog.LevelWarn, "bad_signature", release.Tag)
+		result.BlockerCode, result.Blocker = "bad_signature", "This release's signature does not verify. Do not install it; report it to the maintainer."
+		return result, UpdateEligibility{}, nil
+	case err != nil:
 		return result, UpdateEligibility{}, err
 	}
+	result.Checksum, result.Commit, result.Signer = statement.Checksum, statement.Commit, statement.Signer
 	manifest, err := m.Releases.Manifest(ctx, release)
 	if err != nil {
 		return result, UpdateEligibility{}, err
@@ -159,14 +170,43 @@ func (m *UpdateManager) check(ctx context.Context) (domain.UpdateCheck, UpdateEl
 	}
 	result.BlockerCode, result.Blocker = eligibility.Code, eligibility.Blocker
 	result.Installation, result.Checkout = eligibility.Installation, eligibility.Checkout
+	// A linked checkout fast-forwards to the tag it fetched; that tag must
+	// still point at the commit the owner signed.
+	if result.Blocker == "" && eligibility.Installation.SourceKind == "local" && eligibility.Checkout.TargetCommit != statement.Commit {
+		m.logBlocker(slog.LevelWarn, "commit_mismatch", release.Tag)
+		result.BlockerCode, result.Blocker = "commit_mismatch", "The release tag no longer points at the signed commit."
+	}
+	if m.Log != nil {
+		m.Log.Info("update check", slog.String("tag", release.Tag), slog.String("commit", shortCommit(statement.Commit)),
+			slog.String("signer", statement.Signer), slog.String("blocker", result.BlockerCode))
+	}
 	return result, eligibility, nil
+}
+
+func (m *UpdateManager) logBlocker(level slog.Level, code, tag string) {
+	if m.Log == nil {
+		return
+	}
+	msg := "update blocked"
+	if level >= slog.LevelWarn {
+		msg = "[FIX] update blocked"
+	}
+	m.Log.Log(context.Background(), level, msg, slog.String("code", code), slog.String("tag", tag))
+}
+
+// shortCommit is the 12-character prefix used in logs.
+func shortCommit(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }
 
 func fingerprint(e UpdateEligibility, result domain.UpdateCheck) string {
 	i, c := e.Installation, e.Checkout
 	value := strings.Join([]string{i.Root, i.SourceKind, i.Owner, i.Repo, i.RequestedRef, i.ResolvedCommit,
 		i.ManifestVersion, i.BinaryVersion, i.RunningVersion, c.Commit, c.TargetCommit, c.Origin,
-		result.Release.AssetURL, result.Release.ChecksumsURL, result.Checksum}, "\n")
+		result.Release.AssetURL, result.Release.ChecksumsURL, result.Checksum, result.Commit, result.Signer}, "\n")
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
