@@ -11,6 +11,8 @@ type UpdateCheck struct {
 	Blocker      string
 	BlockerCode  string
 	Checksum     string
+	Commit       string
+	Signer       string
 	IntentID     string
 	Installation PluginInstallation
 	Checkout     CheckoutState

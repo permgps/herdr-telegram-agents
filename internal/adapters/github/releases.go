@@ -3,6 +3,7 @@ package github
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,15 @@ type Source struct {
 	// CheckURL vets asset and checksum URLs taken from API JSON; nil means
 	// assetURLAllowed. Tests that serve assets locally replace it.
 	CheckURL func(*url.URL) error
+	// signers replaces the compiled-in release keys; tests only.
+	signers []ed25519.PublicKey
+}
+
+func (s *Source) logger() *slog.Logger {
+	if s.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return s.Log
 }
 
 // assetHosts may appear in a release's browser_download_url.
@@ -122,10 +132,7 @@ func (s *Source) Latest(ctx context.Context, installed domain.Version) (domain.R
 	if client == nil {
 		client = NewHTTPClient()
 	}
-	log := s.Log
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
+	log := s.logger()
 	base := s.URL
 	if base == "" {
 		base = defaultURL
@@ -213,7 +220,7 @@ func (s *Source) Latest(ctx context.Context, installed domain.Version) (domain.R
 			if v.Compare(installed) <= 0 || bestFound && v.Compare(best.Version) <= 0 {
 				continue
 			}
-			var binaryURL, checksumsURL string
+			var binaryURL, checksumsURL, statementURL, signatureURL string
 			for _, a := range rel.Assets {
 				if a.State != "uploaded" || a.URL == "" {
 					continue
@@ -225,13 +232,19 @@ func (s *Source) Latest(ctx context.Context, installed domain.Version) (domain.R
 				if a.Name == asset {
 					binaryURL = a.URL
 				}
-				if a.Name == "checksums.txt" {
+				switch a.Name {
+				case "checksums.txt":
 					checksumsURL = a.URL
+				case statementName:
+					statementURL = a.URL
+				case signatureName:
+					signatureURL = a.URL
 				}
 			}
 			// An incomplete highest release is a blocker, not a reason to
 			// silently choose an older installable release.
-			best = domain.Release{Tag: rel.Tag, Version: v, AssetURL: binaryURL, ChecksumsURL: checksumsURL}
+			best = domain.Release{Tag: rel.Tag, Version: v, AssetURL: binaryURL, ChecksumsURL: checksumsURL,
+				StatementURL: statementURL, SignatureURL: signatureURL}
 			bestFound = true
 		}
 		log.Info("release page checked", slog.Int("page", page), slog.Int("count", len(releases)))
@@ -253,7 +266,8 @@ func (s *Source) Latest(ctx context.Context, installed domain.Version) (domain.R
 		}
 	}
 	if bestFound {
-		log.Info("release selected", slog.String("tag", best.Tag), slog.Bool("assets_ready", best.AssetURL != "" && best.ChecksumsURL != ""))
+		log.Info("release selected", slog.String("tag", best.Tag), slog.Bool("assets_ready", best.AssetURL != "" && best.ChecksumsURL != ""),
+			slog.Bool("signed", best.StatementURL != "" && best.SignatureURL != ""))
 	} else {
 		log.Info("release scan complete", slog.String("outcome", "up_to_date"))
 	}
@@ -278,61 +292,171 @@ func (s *Source) assetName() string {
 	return asset
 }
 
-// Checksum verifies that the selected release carries an exact SHA-256 entry
-// for the host binary. It returns the digest for a later staged download.
-func (s *Source) Checksum(ctx context.Context, release domain.Release) (string, error) {
+// Statement fetches the release's signed statement (release.txt and
+// release.txt.sig), verifies it against the release keys, and returns the
+// signed tag, commit and host asset digest. The digest must also be the one
+// checksums.txt lists, so the CI-built and the owner-signed files agree.
+func (s *Source) Statement(ctx context.Context, release domain.Release) (domain.ReleaseStatement, error) {
+	log := s.logger()
 	if release.AssetURL == "" || release.ChecksumsURL == "" {
-		return "", fmt.Errorf("release %s is missing the host binary or checksums.txt", release.Tag)
+		return domain.ReleaseStatement{}, fmt.Errorf("release %s is missing the host binary or checksums.txt", release.Tag)
 	}
-	for _, raw := range []string{release.AssetURL, release.ChecksumsURL} {
+	if release.StatementURL == "" || release.SignatureURL == "" {
+		log.Info("release not signed", slog.String("tag", release.Tag))
+		return domain.ReleaseStatement{}, fmt.Errorf("release %s: %w", release.Tag, domain.ErrReleaseUnsigned)
+	}
+	for _, raw := range []string{release.AssetURL, release.ChecksumsURL, release.StatementURL, release.SignatureURL} {
 		if err := s.allowed(raw); err != nil {
-			return "", fmt.Errorf("release %s: %w", release.Tag, err)
+			return domain.ReleaseStatement{}, fmt.Errorf("release %s: %w", release.Tag, err)
 		}
 	}
+	sums, err := s.fetch(ctx, "checksums.txt", release.ChecksumsURL, maxChecksums)
+	if err != nil {
+		return domain.ReleaseStatement{}, err
+	}
+	statement, err := s.fetch(ctx, statementName, release.StatementURL, maxStatement)
+	if err != nil {
+		return domain.ReleaseStatement{}, err
+	}
+	signature, err := s.fetch(ctx, signatureName, release.SignatureURL, maxSignature)
+	if err != nil {
+		return domain.ReleaseStatement{}, err
+	}
+	keys := s.signers
+	if keys == nil {
+		if keys, err = releaseKeys(); err != nil {
+			return domain.ReleaseStatement{}, err
+		}
+	}
+	reject := func(err error) (domain.ReleaseStatement, error) {
+		log.Warn("[FIX] release signature rejected", slog.String("tag", release.Tag), slog.String("err", err.Error()))
+		return domain.ReleaseStatement{}, fmt.Errorf("release %s: %w: %v", release.Tag, domain.ErrReleaseSignature, err)
+	}
+	signer, err := verifySSHSig(signature, statement, releaseNamespace, keys)
+	if err != nil {
+		return reject(err)
+	}
+	asset := s.assetName()
+	result, err := parseStatement(statement, release.Tag, asset)
+	if err != nil {
+		return reject(err)
+	}
+	published, err := checksumFor(sums, asset)
+	if err != nil {
+		return domain.ReleaseStatement{}, err
+	}
+	if published != result.Checksum {
+		return reject(fmt.Errorf("%s lists %s… for %s, checksums.txt %s…", statementName, result.Checksum[:12], asset, published[:12]))
+	}
+	result.Signer = signer
+	log.Info("release statement verified", slog.String("tag", result.Tag), slog.String("commit", result.Commit[:12]),
+		slog.String("signer", signer), slog.String("asset", asset))
+	return result, nil
+}
+
+const (
+	statementName = "release.txt"
+	signatureName = "release.txt.sig"
+	maxStatement  = 64 << 10
+	maxSignature  = 16 << 10
+	maxChecksums  = 1 << 20
+)
+
+var (
+	statementCommit = regexp.MustCompile(`^commit ([0-9a-f]{40})$`)
+	statementDigest = regexp.MustCompile(`^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$`)
+)
+
+// parseStatement reads the signed release.txt strictly: "tag <tag>",
+// "commit <40 hex>", then "<sha256>  <asset>" lines, LF only, a final
+// newline, no blank lines. A signed but malformed statement is a bug in the
+// release process, so it is refused like a bad signature.
+func parseStatement(data []byte, tag, asset string) (domain.ReleaseStatement, error) {
+	text := string(data)
+	if strings.Contains(text, "\r") || !strings.HasSuffix(text, "\n") {
+		return domain.ReleaseStatement{}, fmt.Errorf("malformed statement: line endings")
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if len(lines) < 3 || lines[0] != "tag "+tag {
+		return domain.ReleaseStatement{}, fmt.Errorf("malformed statement: tag line is not %q", "tag "+tag)
+	}
+	m := statementCommit.FindStringSubmatch(lines[1])
+	if m == nil {
+		return domain.ReleaseStatement{}, fmt.Errorf("malformed statement: commit line")
+	}
+	result := domain.ReleaseStatement{Tag: tag, Commit: m[1]}
+	for n, line := range lines[2:] {
+		d := statementDigest.FindStringSubmatch(line)
+		if d == nil {
+			return domain.ReleaseStatement{}, fmt.Errorf("malformed statement: line %d", n+3)
+		}
+		if d[2] != asset {
+			continue
+		}
+		if result.Checksum != "" {
+			return domain.ReleaseStatement{}, fmt.Errorf("malformed statement: %s listed twice", asset)
+		}
+		result.Checksum = d[1]
+	}
+	if result.Checksum == "" {
+		return domain.ReleaseStatement{}, fmt.Errorf("malformed statement: no digest for %s", asset)
+	}
+	return result, nil
+}
+
+// checksumFor finds asset's digest in a checksums.txt body: exactly one
+// "<64 hex>  [*]<name>" line.
+func checksumFor(data []byte, asset string) (string, error) {
+	var digest string
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != asset {
+			continue
+		}
+		if digest != "" {
+			return "", fmt.Errorf("duplicate checksum for %s", asset)
+		}
+		if !checksumPattern.MatchString(fields[0]) {
+			return "", fmt.Errorf("invalid checksum for %s", asset)
+		}
+		digest = strings.ToLower(fields[0])
+	}
+	if digest == "" {
+		return "", fmt.Errorf("checksum missing for %s", asset)
+	}
+	return digest, nil
+}
+
+// fetch GETs one small release file under its own 10 s deadline and size cap.
+func (s *Source) fetch(ctx context.Context, name, raw string, limit int64) ([]byte, error) {
 	client := s.Client
 	if client == nil {
 		client = NewHTTPClient()
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, release.ChecksumsURL, nil)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, raw, nil)
 	if err != nil {
-		return "", fmt.Errorf("checksums request: %w", err)
+		return nil, fmt.Errorf("%s request: %w", name, err)
 	}
 	req.Header.Set("User-Agent", "herdr-telegram-agents")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch checksums: %w", err)
+		return nil, fmt.Errorf("fetch %s: %w", name, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch checksums: HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("fetch %s: HTTP %d", name, resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return "", fmt.Errorf("read checksums: %w", err)
+		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
-	if len(data) > 1<<20 {
-		return "", fmt.Errorf("checksums file too large")
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s too large", name)
 	}
-	var digest string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != s.assetName() {
-			continue
-		}
-		if digest != "" {
-			return "", fmt.Errorf("duplicate checksum for %s", s.assetName())
-		}
-		if !checksumPattern.MatchString(fields[0]) {
-			return "", fmt.Errorf("invalid checksum for %s", s.assetName())
-		}
-		digest = strings.ToLower(fields[0])
-	}
-	if digest == "" {
-		return "", fmt.Errorf("checksum missing for %s", s.assetName())
-	}
-	return digest, nil
+	s.logger().Debug("release file fetched", slog.String("name", name), slog.Int("bytes", len(data)))
+	return data, nil
 }
 
 // Manifest reads the manifest at the exact release tag, not the default

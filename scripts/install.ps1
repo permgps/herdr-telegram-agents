@@ -5,6 +5,14 @@
 # https:// unless $env:HERDR_TG_ALLOW_INSECURE_BASE is "1". The plugin's
 # updater sets $env:HERDR_TG_EXPECTED_SHA256 to the checksum the owner
 # approved: the binary must match it as well as checksums.txt.
+#
+# Signed releases also carry release.txt and release.txt.sig (SSHSIG by a key
+# in scripts\signing\allowed_signers). When ssh-keygen can verify SSHSIG
+# (proven by the self-test fixture in scripts\signing\), a bad signature
+# refuses the install; otherwise the script warns and trusts checksums.txt.
+# The binary runs (`herdr-tg version`) only after a verified signature or a
+# matching approved checksum. bin\install-receipt records sha256, approved
+# and signature for the plugin's updater. Mirrors scripts/install.sh.
 $ErrorActionPreference = "Stop"
 
 # -LiteralPath: a checkout under a folder such as plugin[1] must not be read
@@ -32,6 +40,61 @@ function Get-Sha256Hex([string]$Path) {
     }
 }
 
+# Get-Optional downloads a release file and returns $false when the release
+# has no such asset (HTTP 404); any other failure is thrown. Windows
+# PowerShell 5.1 has no -SkipHttpErrorCheck, so the 404 is read from the
+# exception's response.
+function Get-Optional([string]$Uri, [string]$OutFile) {
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 5
+        return $true
+    } catch {
+        $response = $_.Exception.Response
+        if ($response -and [int]$response.StatusCode -eq 404) { return $false }
+        throw
+    }
+}
+
+# Invoke-SshVerify runs ssh-keygen -Y verify with the message file's exact
+# bytes on stdin. A PowerShell pipe into a native program would re-encode
+# the text, and cmd /c quoting is fragile, so the process is driven directly.
+function Invoke-SshVerify([string]$KeyGen, [string[]]$Arguments, [string]$MessagePath) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $KeyGen
+    $psi.Arguments = ($Arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
+    $psi.WorkingDirectory = (Get-Location).ProviderPath
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $MessagePath).ProviderPath)
+        $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $process.StandardInput.Close()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $null = $process.StandardOutput.ReadToEnd()
+        $null = $stderr.Result
+        $process.WaitForExit()
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
+
+# Test-CanVerify is true when this ssh-keygen verifies the bundled self-test
+# signature, so a later failure means a bad signature, not an old tool.
+function Test-CanVerify([string]$KeyGen) {
+    if (-not $KeyGen) { return $false }
+    try {
+        $code = Invoke-SshVerify $KeyGen @("-Y", "verify", "-f", "scripts\signing\selftest_signers", "-I", "herdr-tg-selftest", "-n", "herdr-tg-selftest", "-s", "scripts\signing\selftest.txt.sig") "scripts\signing\selftest.txt"
+        return $code -eq 0
+    } catch {
+        return $false
+    }
+}
+
 $match = Select-String -Path herdr-plugin.toml -Pattern '^version\s*=\s*"(.*)"' | Select-Object -First 1
 if (-not $match) { throw "install: no version in herdr-plugin.toml" }
 $version = $match.Matches[0].Groups[1].Value
@@ -54,6 +117,10 @@ New-Item -ItemType Directory -Force -Path bin | Out-Null
 $suffix = [System.Guid]::NewGuid().ToString("N")
 $tmp = "bin\herdr-tg.$suffix.tmp"
 $sums = "bin\checksums.$suffix.txt"
+$stmt = "bin\release.$suffix.txt"
+$sig = "bin\release.$suffix.sig"
+$receipt = "bin\receipt.$suffix.tmp"
+$signature = "absent"
 
 try {
     Write-Host "install: downloading $asset"
@@ -74,11 +141,41 @@ try {
     }
     Write-Host "install: checksum ok"
 
+    if ((Get-Optional "$base/release.txt" $stmt) -and (Get-Optional "$base/release.txt.sig" $sig)) {
+        $keygen = (Get-Command ssh-keygen -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if (Test-CanVerify $keygen) {
+            $code = Invoke-SshVerify $keygen @("-Y", "verify", "-f", "scripts\signing\allowed_signers", "-I", "herdr-tg-release", "-n", "herdr-tg-release", "-s", $sig) $stmt
+            if ($code -ne 0) { throw "install: release signature does not verify" }
+            $text = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $stmt).ProviderPath)
+            if (($text -split "`n")[0] -ne "tag v$version") { throw "install: the signed statement is not for v$version" }
+            $signedLines = @(Select-String -Path $stmt -Pattern "\s$([regex]::Escape($asset))$")
+            if ($signedLines.Count -ne 1) { throw "install: the signed statement does not list $asset exactly once" }
+            $signed = ($signedLines[0].Line -split '\s+')[0].ToLower()
+            if ($signed -ne $expected) { throw "install: the signed checksum for $asset differs from checksums.txt" }
+            $signature = "verified"
+            Write-Host "install: release signature ok"
+        } else {
+            $signature = "unverifiable"
+            Write-Warning "install: cannot check the release signature (needs OpenSSH 8.1 or newer); trusting checksums.txt"
+        }
+    } else {
+        Write-Warning "install: release v$version is not signed; trusting checksums.txt"
+    }
+
+    $approvedText = if ($approved) { $approved } else { "none" }
+    $receiptPath = Join-Path (Get-Location).ProviderPath $receipt
+    [System.IO.File]::WriteAllText($receiptPath, "sha256 $actual`napproved $approvedText`nsignature $signature`n", (New-Object System.Text.UTF8Encoding($false)))
     Move-Item -Force -LiteralPath $tmp -Destination "bin\herdr-tg.exe"
+    Move-Item -Force -LiteralPath $receipt -Destination "bin\install-receipt"
     Write-Host "install: installed bin\herdr-tg.exe"
 } finally {
-    if (Test-Path -LiteralPath $tmp) { Remove-Item -Force -LiteralPath $tmp }
-    if (Test-Path -LiteralPath $sums) { Remove-Item -Force -LiteralPath $sums }
+    foreach ($leftover in @($tmp, $sums, $stmt, $sig, $receipt)) {
+        if (Test-Path -LiteralPath $leftover) { Remove-Item -Force -LiteralPath $leftover }
+    }
 }
 
-& ".\bin\herdr-tg.exe" version
+if ($signature -eq "verified" -or $approved) {
+    & ".\bin\herdr-tg.exe" version
+} else {
+    Write-Host "install: skipped running an unverified binary"
+}

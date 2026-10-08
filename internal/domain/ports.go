@@ -379,11 +379,13 @@ type Clock interface {
 	After(d time.Duration) <-chan time.Time
 }
 
-// ReleaseSource discovers published releases and verifies the host asset's
-// checksum entry before an update can be offered.
+// ReleaseSource discovers published releases and verifies the release's
+// signed statement (tag, commit, host asset checksum) before an update can be
+// offered. Statement returns ErrReleaseUnsigned or ErrReleaseSignature
+// (wrapped) when the statement is missing or does not verify.
 type ReleaseSource interface {
 	Latest(ctx context.Context, installed Version) (Release, bool, error)
-	Checksum(ctx context.Context, release Release) (string, error)
+	Statement(ctx context.Context, release Release) (ReleaseStatement, error)
 	Manifest(ctx context.Context, release Release) (ReleaseManifest, error)
 }
 
@@ -435,6 +437,17 @@ type UpdateInstaller interface {
 	Install(ctx context.Context, job UpdateJob) error
 	Verify(ctx context.Context, job UpdateJob, root string) error
 	Rollback(ctx context.Context, job UpdateJob) error
+	// Receipt reads bin/install-receipt the install script left at root;
+	// os.ErrNotExist when the script wrote none (older scripts).
+	Receipt(ctx context.Context, root string) (InstallReceipt, error)
+}
+
+// InstallReceipt is what an install script recorded about the binary it
+// placed: its SHA-256, the approved checksum it was given ("none" when the
+// variable did not reach it) and the signature outcome (verified,
+// unverifiable or absent).
+type InstallReceipt struct {
+	SHA256, Approved, Signature string
 }
 
 // UpdateNotifier edits the already-created General panel message. Repeating

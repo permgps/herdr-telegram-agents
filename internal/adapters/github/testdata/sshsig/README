@@ -1,0 +1,5 @@
+Produced once with a throwaway key that was not kept:
+  ssh-keygen -t ed25519 -N "" -C fixture -f fixture
+  ssh-keygen -Y sign -f fixture -n herdr-tg-release message.txt
+  ssh-keygen -Y sign -f fixture -n herdr-tg-release -O hashalg=sha256 < message.txt > message.sha256.sig
+  cp fixture.pub signer.pub

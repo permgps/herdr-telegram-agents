@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -59,6 +61,16 @@ type fakeUpdateInstaller struct {
 	failVerify   bool
 	rollbacks    int
 	failRollback bool
+	receipt      *domain.InstallReceipt
+	// commit is what Herdr reports as resolved after Install; empty keeps it.
+	commit string
+}
+
+func (f *fakeUpdateInstaller) Receipt(context.Context, string) (domain.InstallReceipt, error) {
+	if f.receipt == nil {
+		return domain.InstallReceipt{}, os.ErrNotExist
+	}
+	return *f.receipt, nil
 }
 
 func (f *fakeUpdateInstaller) Backup(_ context.Context, j domain.UpdateJob) (domain.UpdateJob, error) {
@@ -71,6 +83,9 @@ func (f *fakeUpdateInstaller) Install(_ context.Context, _ domain.UpdateJob) err
 	f.reader.calls = append(f.reader.calls, "install")
 	f.reader.value.ManifestVersion = "1.2.0"
 	f.reader.value.BinaryVersion = "1.2.0"
+	if f.commit != "" {
+		f.reader.value.ResolvedCommit = f.commit
+	}
 	return nil
 }
 func (f *fakeUpdateInstaller) Verify(_ context.Context, _ domain.UpdateJob, root string) error {
@@ -197,6 +212,46 @@ func TestUpdateWorkerVerifiesBeforeExecuting(t *testing.T) {
 			}
 			if tc.failVerify && job.ErrorCode != "checksum_mismatch" {
 				t.Fatalf("error code = %q", job.ErrorCode)
+			}
+		})
+	}
+}
+
+// TestUpdateWorkerBindsManagedInstallToSignedCommit: a managed job without a
+// signed commit touches nothing; a managed install that resolved another
+// commit (the tag moved) rolls back; "approved none" in the receipt is only
+// logged.
+func TestUpdateWorkerBindsManagedInstallToSignedCommit(t *testing.T) {
+	signed := strings.Repeat("a", 40)
+	for _, tc := range []struct {
+		name, target, resolved string
+		phase, code            string
+		calls                  string
+	}{
+		{"signed commit", signed, signed, "succeeded", "", "install,verify /src,read,verify /src"},
+		{"tag moved", signed, strings.Repeat("b", 40), "rolled_back", "commit_mismatch", "install,verify /src,read,rollback,read"},
+		{"no commit", "", signed, "failed", "commit_unknown", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := testkit.NewFakeClock(time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC))
+			proc := testkit.NewFakeProcess(clock.Now)
+			reader := &changingReader{value: domain.PluginInstallation{Root: "/src", ManifestVersion: "1.0.0", BinaryVersion: "1.0.0", ResolvedCommit: "old"}}
+			receipt := domain.InstallReceipt{SHA256: "digest", Approved: "none", Signature: "verified"}
+			installer := &fakeUpdateInstaller{reader: reader, proc: proc, commit: tc.resolved, receipt: &receipt}
+			store := &memoryUpdateStore{job: domain.UpdateJob{ID: "job", Phase: "queued", OldVersion: "1.0.0", OldBinaryVersion: "1.0.0", TargetVersion: "1.2.0",
+				SourceKind: "github", SourceRoot: "/src", TargetCommit: tc.target, TargetChecksum: "digest", OldCommit: "old"}}
+			var logs bytes.Buffer
+			worker := &UpdateWorker{Store: store, Lock: &memoryUpdateLock{}, Installer: installer, Reader: reader,
+				Supervisor: NewSupervisor(proc, proc, clock, nil), Log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+			job, err := worker.Run(context.Background(), "job")
+			if (err != nil) != (tc.code != "") || job.Phase != tc.phase || job.ErrorCode != tc.code {
+				t.Fatalf("job=%+v err=%v", job, err)
+			}
+			if got := strings.Join(reader.calls, ","); got != tc.calls {
+				t.Fatalf("calls = %q, want %q", got, tc.calls)
+			}
+			if tc.code != "commit_unknown" && !strings.Contains(logs.String(), "approved checksum did not reach the install script") {
+				t.Fatalf("receipt warning missing:\n%s", logs.String())
 			}
 		})
 	}

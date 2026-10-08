@@ -15,6 +15,7 @@ type UpdateJob struct {
 	TargetChecksum     string    `json:"target_checksum"`
 	TargetAssetURL     string    `json:"target_asset_url"`
 	TargetChecksumsURL string    `json:"target_checksums_url"`
+	TargetSigner       string    `json:"target_signer,omitempty"`
 	SourceKind         string    `json:"source_kind"`
 	SourceRoot         string    `json:"source_root"`
 	OldCommit          string    `json:"old_commit,omitempty"`

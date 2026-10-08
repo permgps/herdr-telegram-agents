@@ -1,9 +1,13 @@
 #!/bin/sh
 # Verifies that `herdr plugin install` would work on a clean machine: it
 # runs scripts/install.sh where no Go toolchain exists and checks that the
-# downloaded binary runs.
+# downloaded binary runs and that its release signature verified
+# (bin/install-receipt says "signature verified").
 #
-#   sh scripts/verify-install.sh 0.1.0 [linux|macos|all]
+#   sh scripts/verify-install.sh 0.1.0 [linux|macos|all] [--allow-unsigned]
+#
+# --allow-unsigned accepts a release without a verified signature (releases
+# before signing started).
 #
 # linux runs two throwaway debian containers (amd64 and arm64) that clone
 # the tag from GitHub; macos clones the tag into a temporary directory and
@@ -17,10 +21,21 @@ set -eu
 
 version=${1:-}
 targets=${2:-all}
-if [ -z "$version" ]; then
-	echo "usage: sh scripts/verify-install.sh <version> [linux|macos|all]" >&2
+allow_unsigned=${3:-}
+if [ -z "$version" ] || { [ -n "$allow_unsigned" ] && [ "$allow_unsigned" != "--allow-unsigned" ]; }; then
+	echo "usage: sh scripts/verify-install.sh <version> [linux|macos|all] [--allow-unsigned]" >&2
 	exit 2
 fi
+# check_receipt <receipt file> fails unless the signature verified.
+check_receipt() {
+	if [ "$allow_unsigned" = "--allow-unsigned" ]; then
+		return 0
+	fi
+	if ! grep -qx 'signature verified' "$1"; then
+		echo "verify: the release signature did not verify ($(grep '^signature' "$1" || echo 'no receipt'))" >&2
+		exit 1
+	fi
+}
 repo_url=${HERDR_TG_REPO_URL:-https://github.com/permgps/herdr-telegram-agents}
 tag="v${version}"
 
@@ -38,13 +53,18 @@ verify_linux() {
 		docker run --rm --platform "linux/${arch}" \
 			-e "HERDR_TG_BASE_URL=${HERDR_TG_BASE_URL:-}" \
 			-e "HERDR_TG_ALLOW_INSECURE_BASE=${HERDR_TG_ALLOW_INSECURE_BASE:-}" \
+			-e "ALLOW_UNSIGNED=${allow_unsigned}" \
 			debian:bookworm-slim sh -c "
 				set -eu
 				apt-get update -qq >/dev/null
-				apt-get install -y -qq curl ca-certificates git >/dev/null
+				apt-get install -y -qq curl ca-certificates git openssh-client >/dev/null
 				git clone --depth 1 --branch ${tag} ${repo_url} /plugin >/dev/null 2>&1
 				cd /plugin
 				sh scripts/install.sh
+				if [ -z \"\$ALLOW_UNSIGNED\" ] && ! grep -qx 'signature verified' bin/install-receipt; then
+					echo 'verify: the release signature did not verify' >&2
+					exit 1
+				fi
 			"
 		echo "verify: linux/${arch} ok"
 	done
@@ -66,6 +86,7 @@ verify_macos() {
 		HERDR_TG_ALLOW_INSECURE_BASE="${HERDR_TG_ALLOW_INSECURE_BASE:-}" \
 		sh -c "cd '$dir/plugin' && sh scripts/install.sh"
 	"$dir/plugin/bin/herdr-tg" version
+	check_receipt "$dir/plugin/bin/install-receipt"
 	rm -rf "$dir"
 	trap - EXIT INT TERM
 	echo "verify: macos ok"

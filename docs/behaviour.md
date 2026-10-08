@@ -578,11 +578,30 @@ releases list, including prereleases but excluding drafts, and compares
 semantic versions with the installed manifest and binary. It scans every
 release page within a fixed bound; a network error or incomplete scan is
 shown as a failure rather than as "up to date". No GitHub token is required.
-The check verifies the host binary and its exact entry in `checksums.txt`,
-the release manifest version, and its minimum Herdr version. A stable
+The check verifies the release's signed statement, the host binary and its
+exact entry in `checksums.txt`, the release manifest version, and its minimum
+Herdr version. A stable
 installation is offered stable releases only; an installed prerelease may
 move to a newer prerelease. Asset URLs must be `https` on `github.com`, and
 downloads follow redirects only to GitHub's own and asset storage hosts.
+
+Every release is signed offline by the maintainer. `release.txt` lists the
+tag, the commit the tag points at and the `checksums.txt` lines, and
+`release.txt.sig` is its SSHSIG signature by an `ssh-ed25519` key. The
+updater checks the signature in Go against the keys compiled into the
+running binary. It never trusts a key file from GitHub or from the
+checkout. The signed digest must also match the one in `checksums.txt`.
+The release then shows as `New release: vX.Y.Z · signed`. These blockers
+show the release and a reason without an Update button; none of them is
+reported as "up to date":
+
+- `unsigned`: the release has no signature yet, for example in the minutes
+  between publishing and signing.
+- `bad_signature`: the signature does not verify, or the signed statement
+  is malformed or disagrees with `checksums.txt`. Do not install that
+  release; report it.
+- `commit_mismatch`: a linked checkout's tag no longer points at the
+  signed commit.
 
 If a newer release is eligible, the panel shows a separate **Update** button.
 That button expires after five minutes and is bound to the operator, group,
@@ -598,14 +617,34 @@ action is recognised from `update.json`, so it does not block a later update.
 A local link stays local: its `main` branch must be clean, have the expected
 GitHub origin, and be able to fast-forward to the release commit on the
 remote mainline. The worker saves the old binary, stops a running daemon,
-fast-forwards, and runs the release's checksum-verified install script. The
-install script gets the approved SHA-256 (`HERDR_TG_EXPECTED_SHA256`) and
-refuses a downloaded binary that differs from it before running it; the
-download overrides `HERDR_TG_BASE_URL` and `HERDR_TG_ALLOW_INSECURE_BASE`
-never reach it from the daemon's environment. After the install, of either
-kind, the worker checks the SHA-256 of the new `bin/herdr-tg` against the
-approved one before anything runs it (reading its version included); a
-mismatch rolls back without the new binary ever starting.
+fast-forwards, and runs the release's checksum-verified install script.
+
+The install script is given the approved SHA-256 as
+`HERDR_TG_EXPECTED_SHA256` and refuses a downloaded binary that differs from
+it. On a managed install that variable reaches the script only if Herdr
+passes its environment to the `[[build]]` step, which is not documented.
+The design does not depend on it:
+
+- The script runs `herdr-tg version` only after a verified signature or a
+  matching approved checksum. Otherwise it prints `skipped running an
+  unverified binary`.
+- The script writes `bin/install-receipt` (`sha256`, `approved`,
+  `signature`). The worker logs it, and logs `[FIX] approved checksum did not
+  reach the install script` when the receipt says `approved none`.
+- The download overrides `HERDR_TG_BASE_URL` and
+  `HERDR_TG_ALLOW_INSECURE_BASE` never reach the script from the daemon's
+  environment.
+
+After the install, of either kind, the worker checks the SHA-256 of the new
+`bin/herdr-tg` against the approved one before anything runs it, including
+reading its version. A mismatch rolls back without the new binary ever
+starting.
+
+A managed install must also resolve to the signed commit: Herdr's
+`resolved_commit` after the install must equal the commit in
+`release.txt`. Otherwise the worker rolls back with `commit_mismatch`, for
+example when the tag moved after signing. A managed job without a signed
+commit fails with `commit_unknown` before anything is touched.
 Detached branches, local changes, another repository, and an incompatible
 Herdr version show the release and a reason without an Update button.
 

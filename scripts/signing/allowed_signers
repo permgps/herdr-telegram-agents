@@ -1,0 +1,14 @@
+# Release signing keys (OpenSSH allowed_signers format). install.sh and
+# install.ps1 verify release.txt.sig against this file with
+# `ssh-keygen -Y verify -I herdr-tg-release -n herdr-tg-release`.
+#
+# The Telegram updater does not read this file: it trusts the same keys
+# compiled into the running binary (internal/adapters/github/releasekeys.go),
+# and a test keeps the two identical.
+#
+# Rotation: release N lists the new key next to the old one and is signed with
+# the old key; release N+1 is signed with the new key; a later release drops
+# the old line. See docs/development.md.
+#
+# Key SHA256:E49OgE36B6uolr2X/0Vwjd22wNyPIVnZupWDa/lmJME, added 2026-10-09.
+herdr-tg-release namespaces="herdr-tg-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPCU62HCGZcMB/qDk4T3HZ8T5kLrBXYw7PK3ktv9Z5ik herdr-tg-release
