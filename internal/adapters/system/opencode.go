@@ -20,6 +20,10 @@ const (
 	// export is a few MB in normal use, and truncated JSON cannot be parsed,
 	// so a capped run is a failure rather than a partial result.
 	openCodeExportMaxOutput = 16 << 20
+	// openCodeExportPoll is how often a running export's file size is
+	// checked, so a runaway child is killed near the cap instead of filling
+	// the disk until the timeout.
+	openCodeExportPoll = 50 * time.Millisecond
 	// openCodeWaitDelay bounds how long a run waits for its pipes once the
 	// timeout killed opencode.
 	openCodeWaitDelay = time.Second
@@ -37,12 +41,14 @@ const (
 // opencode cuts its stdout at 64 KiB multiples when stdout is a pipe and
 // still exits 0, so the child writes into a regular file instead: a private
 // temp file (0600) under the state dir, read back under the cap and removed
-// on every path.
+// on every path. The file is watched while the child runs, and the child is
+// killed once the file is over the cap.
 type OpenCodeExporter struct {
 	bin      string
 	tempDir  string
 	timeout  time.Duration
 	maxBytes int
+	poll     time.Duration
 	log      *slog.Logger
 	run      func(*exec.Cmd) error
 }
@@ -55,7 +61,7 @@ func NewOpenCodeExporter(stateDir string, log *slog.Logger) *OpenCodeExporter {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &OpenCodeExporter{bin: "opencode", tempDir: openCodeTempPath(stateDir), timeout: openCodeExportTimeout,
-		maxBytes: openCodeExportMaxOutput, log: log}
+		maxBytes: openCodeExportMaxOutput, poll: openCodeExportPoll, log: log}
 }
 
 // openCodeTempPath is where export files go for stateDir.
@@ -67,11 +73,13 @@ func openCodeTempPath(stateDir string) string {
 }
 
 // exportRun is the outcome of one opencode run: the output read back from
-// the export file, whether it was over the cap (then out is nil), and a
-// short category when the export file itself failed.
+// the export file, whether it was over the cap (then out is nil), whether
+// the size watcher killed the child for it, and a short category when the
+// export file itself failed.
 type exportRun struct {
 	out      []byte
 	capped   bool
+	killed   bool
 	fileStep string
 }
 
@@ -125,7 +133,7 @@ func (e *OpenCodeExporter) Export(ctx context.Context, sessionID string) ([]byte
 		}
 	}
 	e.log.Debug("opencode export", slog.Int64("dur_ms", time.Since(start).Milliseconds()),
-		slog.Int("bytes", len(result.out)), slog.Bool("capped", result.capped),
+		slog.Int("bytes", len(result.out)), slog.Bool("capped", result.capped), slog.Bool("killed_at_cap", result.killed),
 		slog.String("category", category), slog.Int("exit_code", exitCode))
 	switch {
 	case parentCtx.Err() != nil:
@@ -149,6 +157,9 @@ func (e *OpenCodeExporter) Export(ctx context.Context, sessionID string) ([]byte
 // The file is closed and removed before returning whatever happened; its
 // size is checked before it is read, and a Stat, Seek or read failure is
 // reported as fileStep with a nil output. runErr is the child's own result.
+// Without the run seam the child is watched while it writes and killed
+// once the file is over the cap; the checks after the run stay as a
+// backstop.
 func (e *OpenCodeExporter) runExport(ctx context.Context, bin string, args ...string) (exportRun, error) {
 	if err := os.MkdirAll(e.tempDir, 0o700); err != nil {
 		e.log.Debug("opencode export file", slog.String("step", "temp_dir"), slog.String("err", errorKind(err)))
@@ -171,11 +182,10 @@ func (e *OpenCodeExporter) runExport(ctx context.Context, bin string, args ...st
 	cmd := command(ctx, bin, args...)
 	cmd.WaitDelay = openCodeWaitDelay
 	cmd.Stdout, cmd.Stderr = file, io.Discard
-	run := e.run
-	if run == nil {
-		run = (*exec.Cmd).Run
+	killed, runErr := e.runChild(cmd, file)
+	if killed {
+		return exportRun{capped: true, killed: true}, runErr
 	}
-	runErr := run(cmd)
 	info, err := file.Stat()
 	if err != nil {
 		e.log.Debug("opencode export file", slog.String("step", "stat"), slog.String("err", errorKind(err)))
@@ -198,6 +208,48 @@ func (e *OpenCodeExporter) runExport(ctx context.Context, bin string, args ...st
 		return exportRun{capped: true}, runErr
 	}
 	return exportRun{out: out}, runErr
+}
+
+// runChild runs cmd through the run seam when a test set one. Otherwise it
+// starts cmd and waits for it while a watcher polls the size of file, the
+// child's stdout, and kills the child as soon as it is over the cap. The
+// watcher is owned by this call and exits when Wait returns. killed
+// reports whether the watcher killed the child; err is the child's result.
+func (e *OpenCodeExporter) runChild(cmd *exec.Cmd, file *os.File) (killed bool, err error) {
+	if e.run != nil {
+		return false, e.run(cmd)
+	}
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	poll := e.poll
+	if poll <= 0 {
+		poll = openCodeExportPoll
+	}
+	done := make(chan struct{})
+	result := make(chan bool, 1)
+	go func() {
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				result <- false
+				return
+			case <-ticker.C:
+				info, err := file.Stat()
+				if err != nil || info.Size() <= int64(e.maxBytes) {
+					continue
+				}
+				_ = cmd.Process.Kill()
+				result <- true
+				return
+			}
+		}
+	}()
+	err = cmd.Wait()
+	close(done)
+	return <-result, err
 }
 
 // errorKind names an OS error without its path, which holds the temp file

@@ -90,6 +90,11 @@ type museFixture struct {
 	logBuf   bytes.Buffer
 	reader   *MuseReader
 	nowValue time.Time
+	// started is the injected process start time; startKnown false is an
+	// unknown one, as on a platform without the lookup.
+	started    time.Time
+	startKnown bool
+	startedFor []int
 }
 
 func newMuseFixture(t *testing.T) *museFixture {
@@ -100,7 +105,11 @@ func newMuseFixture(t *testing.T) *museFixture {
 	processes := func(context.Context, string) ([]int, error) { return f.pids, f.procErr }
 	homeFn := func() (string, error) { return f.home, nil }
 	now := func() time.Time { return f.nowValue }
-	f.reader = newMuseReader(processes, homeFn, now,
+	started := func(pid int) (time.Time, bool) {
+		f.startedFor = append(f.startedFor, pid)
+		return f.started, f.startKnown
+	}
+	f.reader = newMuseReader(processes, started, homeFn, now,
 		slog.New(slog.NewJSONHandler(&f.logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	return f
 }
@@ -115,6 +124,14 @@ func (f *museFixture) runtime(id string, pid int, label string) string {
 		f.t.Fatal(err)
 	}
 	return f.writeFile(filepath.Join(museRuntimeDir, id+".json"), string(body))
+}
+
+// age sets the mtime of a file written below the data directory.
+func (f *museFixture) age(path string, mtime time.Time) {
+	f.t.Helper()
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 // log writes a session's durable log under the given creation date.
@@ -290,6 +307,59 @@ func TestMuseLastReplyMatchesThePanePID(t *testing.T) {
 		t.Fatalf("reply = %q, %v", r.Text, err)
 	}
 	f.assertLogClean()
+}
+
+// TestMuseLastReplyStalePid: a runtime file written before its pid's
+// process started belongs to an earlier process that had the same pid, and
+// its session's answer is not posted.
+func TestMuseLastReplyStalePid(t *testing.T) {
+	f := newMuseFixture(t)
+	path := f.runtime(museTestOther, museTestPID, museTestLabel)
+	f.log("2026/10/06", museTestOther, museTurn(museTestRun, "the answer of a dead process")...)
+	f.started, f.startKnown = time.Now(), true
+	f.age(path, f.started.Add(-time.Hour))
+
+	_, err := f.read()
+	if !errors.Is(err, domain.ErrNoReply) || errors.Is(err, domain.ErrReplyPending) {
+		t.Fatalf("err = %v, want ErrNoReply", err)
+	}
+	if len(f.startedFor) != 1 || f.startedFor[0] != museTestPID {
+		t.Fatalf("start time asked for %v", f.startedFor)
+	}
+	if !strings.Contains(f.logBuf.String(), `"reason":"stale_pid"`) {
+		t.Fatalf("stale pid not logged: %s", f.logBuf.String())
+	}
+	f.assertLogClean()
+}
+
+// TestMuseLastReplyStartTimeKeepsCurrentFile: a runtime file written after
+// its process started matches, so does one within the clock slack before
+// it, and so does any file when the start time is unknown.
+func TestMuseLastReplyStartTimeKeepsCurrentFile(t *testing.T) {
+	for name, tc := range map[string]struct {
+		known  bool
+		offset time.Duration
+	}{
+		"after start":   {known: true, offset: time.Second},
+		"within slack":  {known: true, offset: -time.Second},
+		"unknown start": {known: false, offset: -time.Hour},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newMuseFixture(t)
+			path := f.runtime(museTestID, museTestPID, museTestLabel)
+			f.log("2026/10/06", museTestID, museTurn(museTestRun, "the answer")...)
+			f.started, f.startKnown = time.Now(), tc.known
+			f.age(path, f.started.Add(tc.offset))
+			r, err := f.read()
+			if err != nil || r.Text != "the answer" {
+				t.Fatalf("reply = %q, %v", r.Text, err)
+			}
+			if strings.Contains(f.logBuf.String(), "stale_pid") {
+				t.Fatalf("current file called stale: %s", f.logBuf.String())
+			}
+			f.assertLogClean()
+		})
+	}
 }
 
 func TestMuseLastReplyNewestLogAfterNew(t *testing.T) {

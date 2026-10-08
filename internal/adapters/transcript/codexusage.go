@@ -179,15 +179,11 @@ func codexUsageDayDirs(now time.Time) []string {
 // account rate limits. A file that changed between listing and opening,
 // or cannot be read, is skipped.
 func (c *CodexUsage) scanFile(root *os.Root, cand codexUsageFile) (domain.Usage, bool) {
-	f, err := root.Open(cand.rel)
+	f, info, err := openRegularSeen(root, cand.rel, cand.info)
 	if err != nil {
 		return domain.Usage{}, false
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || !os.SameFile(cand.info, info) {
-		return domain.Usage{}, false
-	}
 	var found domain.Usage
 	_, err = walkBack(codexReadAt{f}, info.Size(), codexUsageScan, func(line []byte) error {
 		u, ok := codexUsageFromLine(line)

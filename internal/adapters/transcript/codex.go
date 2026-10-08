@@ -405,23 +405,15 @@ var (
 	errCodexIncomplete = errors.New("codex sessions search incomplete")
 )
 
-// openCodexRollout opens the file the search chose and checks it is the one
-// the search saw (seen) and that it is the thread's: a regular file, the same
-// file as at lookup time, and whose first record is the session_meta of
-// thread id. The name alone does not say whose rollout a file is.
+// openCodexRollout opens the file the search chose, without blocking on a
+// FIFO, and checks it is the one the search saw (seen) and that it is the
+// thread's: a regular file, the same file as at lookup time, and whose first
+// record is the session_meta of thread id. The name alone does not say whose
+// rollout a file is.
 func openCodexRollout(root *os.Root, rel string, seen os.FileInfo, id string) (*os.File, os.FileInfo, error) {
-	f, err := root.Open(rel)
+	f, info, err := openRegularSeen(root, rel, seen)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: rollout could not be opened", domain.ErrNoReply)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: rollout could not be read", domain.ErrNoReply)
-	}
-	if !info.Mode().IsRegular() || !os.SameFile(seen, info) {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: rollout changed while it was opened", domain.ErrNoReply)
+		return nil, nil, openFailure("rollout", err)
 	}
 	if err := codexCheckThread(codexReadAt{f}, info.Size(), id); err != nil {
 		f.Close()

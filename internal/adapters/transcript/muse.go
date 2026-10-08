@@ -54,6 +54,11 @@ const (
 	museCandidates = 8
 	// museCacheMax bounds the session-to-log cache.
 	museCacheMax = 64
+	// museStartSlack is how much older than its pid's process a runtime
+	// file may look and still belong to it: process start times and file
+	// mtimes come from different clocks and precisions, and Muse writes the
+	// runtime file after it starts, so only a clearly older file is stale.
+	museStartSlack = 2 * time.Second
 )
 
 // museWalkLimit bounds the dated-directory walk that finds a session log:
@@ -99,9 +104,12 @@ const (
 // agent_session for Muse, so the pane is tied to its session through the
 // pane's process ids: Muse keeps a runtime file per live session whose
 // process_generation_hint names the owning pid, and the session id leads to
-// the durable log. A pane is never matched by its directory name alone
-// (~/a/api and ~/b/api collide, and so do two Muse panes in one directory);
-// the directory name only guards against a reused pid.
+// the durable log. Pids are reused, so the pid is tied to its process start
+// time: a runtime file written clearly before that process started was left
+// by an earlier process with the same pid and is skipped. A pane is never
+// matched by its directory name alone (~/a/api and ~/b/api collide, and so
+// do two Muse panes in one directory); the directory name is a second guard
+// against a reused pid, for when the start time is unknown.
 //
 // Only the final text of the newest finished run is posted: commentary is
 // never posted, a running run answers domain.ErrReplyPending, and a failed
@@ -109,6 +117,7 @@ const (
 // pid value or text reaches a log line or an error.
 type MuseReader struct {
 	processes func(ctx context.Context, paneID string) ([]int, error)
+	started   func(pid int) (time.Time, bool)
 	home      func() (string, error)
 	now       func() time.Time
 	log       *slog.Logger
@@ -118,21 +127,27 @@ type MuseReader struct {
 	logs map[string]string // session id → log path below the data directory
 }
 
-// NewMuseReader wires the reader over Herdr's pane process lookup and the
-// current user's home directory.
-func NewMuseReader(processes func(context.Context, string) ([]int, error), log *slog.Logger) *MuseReader {
-	return newMuseReader(processes, os.UserHomeDir, time.Now, log)
+// NewMuseReader wires the reader over Herdr's pane process lookup, the
+// process start time lookup and the current user's home directory. started
+// reports false when a pid's start time is unknown; a nil started never
+// knows it.
+func NewMuseReader(processes func(context.Context, string) ([]int, error), started func(int) (time.Time, bool),
+	log *slog.Logger) *MuseReader {
+	return newMuseReader(processes, started, os.UserHomeDir, time.Now, log)
 }
 
 // newMuseReader takes the home and clock sources so tests can point the
 // reader at a temporary directory.
-func newMuseReader(processes func(context.Context, string) ([]int, error),
+func newMuseReader(processes func(context.Context, string) ([]int, error), started func(int) (time.Time, bool),
 	home func() (string, error), now func() time.Time, log *slog.Logger) *MuseReader {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &MuseReader{processes: processes, home: home, now: now, log: log, maxScan: defaultMaxScan,
-		logs: make(map[string]string)}
+	if started == nil {
+		started = func(int) (time.Time, bool) { return time.Time{}, false }
+	}
+	return &MuseReader{processes: processes, started: started, home: home, now: now, log: log,
+		maxScan: defaultMaxScan, logs: make(map[string]string)}
 }
 
 // LastReply returns the final answer of the newest finished run of the
@@ -168,7 +183,7 @@ func (r *MuseReader) LastReply(ctx context.Context, agent domain.Agent) (domain.
 		return domain.Reply{}, fmt.Errorf("%w: no muse data directory", domain.ErrNoReply)
 	}
 	defer root.Close()
-	ids, match := museSessionsFor(root, pids, filepath.Base(agent.Cwd))
+	ids, match := r.sessionsFor(root, pids, filepath.Base(agent.Cwd), agent.PaneID)
 	if len(ids) == 0 {
 		r.log.Debug("muse session matched", slog.String("pane", agent.PaneID), slog.Int("runtime_files", match.files),
 			slog.Int("skipped", match.skipped), slog.Int("candidates", 0), slog.Int("pids", len(pids)))
@@ -218,12 +233,12 @@ func (r *MuseReader) newestLog(ctx context.Context, root *os.Root, ids []string,
 
 // readLog opens the chosen log and reads its newest finished run.
 func (r *MuseReader) readLog(ctx context.Context, root *os.Root, rel, pane string) (domain.Reply, error) {
-	f, info, err := museOpenRegular(root, rel, "the muse session log")
+	f, info, err := openRegular(root, rel)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return domain.Reply{}, fmt.Errorf("%w: muse session log not found", domain.ErrNoReply)
 		}
-		return domain.Reply{}, err
+		return domain.Reply{}, openFailure("the muse session log", err)
 	}
 	defer f.Close()
 	text, phase, meta, stats, err := museLastReplyFrom(f, info.Size(), r.maxScan)
@@ -282,10 +297,11 @@ type museRuntime struct {
 	Hint      string `json:"process_generation_hint"`
 }
 
-// museSessionsFor returns the ids of the runtime sessions owned by one of
-// the pane's processes and labelled with the pane's directory name, at most
-// museCandidates of them.
-func museSessionsFor(root *os.Root, pids []int, label string) ([]string, museMatchStats) {
+// sessionsFor returns the ids of the runtime sessions owned by one of the
+// pane's processes and labelled with the pane's directory name, at most
+// museCandidates of them. A runtime file older than its pid's process is
+// skipped.
+func (r *MuseReader) sessionsFor(root *os.Root, pids []int, label, pane string) ([]string, museMatchStats) {
 	var stats museMatchStats
 	dir, err := root.Open(museRuntimeDir)
 	if err != nil {
@@ -301,13 +317,18 @@ func museSessionsFor(root *os.Root, pids []int, label string) ([]string, museMat
 			stats.skipped++
 			continue
 		}
-		rt, ok := museReadRuntime(root, filepath.Join(museRuntimeDir, entry.Name()))
+		rt, written, ok := museReadRuntime(root, filepath.Join(museRuntimeDir, entry.Name()))
 		if !ok || rt.SessionID != id {
 			stats.skipped++
 			continue
 		}
 		pid, ok := museHintPIDOf(rt.Hint)
 		if !ok || !slices.Contains(pids, pid) || rt.Workspace != label {
+			continue
+		}
+		if start, known := r.started(pid); known && written.Before(start.Add(-museStartSlack)) {
+			r.log.Debug("muse runtime file predates its process, skipped", slog.String("pane", pane),
+				slog.String("reason", "stale_pid"))
 			continue
 		}
 		ids = append(ids, id)
@@ -318,25 +339,26 @@ func museSessionsFor(root *os.Root, pids []int, label string) ([]string, museMat
 	return ids, stats
 }
 
-// museReadRuntime reads one runtime file: regular, bounded, valid JSON.
-func museReadRuntime(root *os.Root, rel string) (museRuntime, bool) {
-	f, info, err := museOpenRegular(root, rel, "a muse runtime file")
+// museReadRuntime reads one runtime file: regular, bounded, valid JSON. It
+// also returns the file's mtime.
+func museReadRuntime(root *os.Root, rel string) (museRuntime, time.Time, bool) {
+	f, info, err := openRegular(root, rel)
 	if err != nil {
-		return museRuntime{}, false
+		return museRuntime{}, time.Time{}, false
 	}
 	defer f.Close()
 	if info.Size() > museRuntimeMax {
-		return museRuntime{}, false
+		return museRuntime{}, time.Time{}, false
 	}
 	data, err := io.ReadAll(io.LimitReader(f, museRuntimeMax+1))
 	if err != nil || len(data) > museRuntimeMax {
-		return museRuntime{}, false
+		return museRuntime{}, time.Time{}, false
 	}
 	var rt museRuntime
 	if err := json.Unmarshal(data, &rt); err != nil {
-		return museRuntime{}, false
+		return museRuntime{}, time.Time{}, false
 	}
-	return rt, true
+	return rt, info.ModTime(), true
 }
 
 // museHintPIDOf parses the owning pid from a process_generation_hint.
@@ -448,36 +470,6 @@ func museDateNames(root *os.Root, rel string) ([]string, error) {
 	slices.Sort(names)
 	slices.Reverse(names)
 	return names, nil
-}
-
-// museOpenRegular opens a file below root and checks it is a regular file
-// and the same file Lstat saw, so a link planted in its place is refused
-// rather than followed. A missing file is fs.ErrNotExist.
-func museOpenRegular(root *os.Root, rel, what string) (*os.File, os.FileInfo, error) {
-	seen, err := root.Lstat(rel)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, fs.ErrNotExist
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %s could not be read", domain.ErrNoReply, what)
-	}
-	if !seen.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("%w: %s is not a regular file", domain.ErrNoReply, what)
-	}
-	f, err := root.Open(rel)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %s could not be opened", domain.ErrNoReply, what)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: %s could not be read", domain.ErrNoReply, what)
-	}
-	if !info.Mode().IsRegular() || !os.SameFile(seen, info) {
-		f.Close()
-		return nil, nil, fmt.Errorf("%w: %s changed while it was opened", domain.ErrNoReply, what)
-	}
-	return f, info, nil
 }
 
 // museRecord is the part of one durable log line the reader uses.
