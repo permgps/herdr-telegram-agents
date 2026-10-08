@@ -1,0 +1,1 @@
+herdr-tg signature self-test
