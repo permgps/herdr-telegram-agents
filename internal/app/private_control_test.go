@@ -321,6 +321,43 @@ func TestPrivateAttachmentFollowsInboxOptions(t *testing.T) {
 			t.Fatalf("album over twice the limit: prompts=%v saved=%d", f.h.Prompts(), len(inbox.Saved()))
 		}
 	})
+	// The recipients' share of the inbox can be smaller than Largest file
+	// (Inbox size under four times it): such a file is refused before the
+	// download, not fetched and then refused as "inbox full".
+	t.Run("over_shared_quota", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 5<<20)
+		f.p.InboxSharedMax = func() int64 { return 1 << 20 }
+		f.tg.SetFile("file", make([]byte, 10))
+		f.attach(t, domain.TopicAttachment{FileID: "file", Name: "a.bin", Kind: "document", Size: 2 << 20})
+		if d := f.downloads(); len(d) != 0 || len(inbox.Saved()) != 0 {
+			t.Fatalf("file over the shared quota downloaded: %v", d)
+		}
+		if got := f.lastPrivate(t); got != "⚠️ file too big: 2.0 MB > 1.0 MB" {
+			t.Fatalf("refusal = %q", got)
+		}
+	})
+	// An album over the shared quota would evict its own first files to
+	// save the last ones, and the prompt would name deleted paths.
+	t.Run("album_over_shared_quota", func(t *testing.T) {
+		f := newPrivateFixture(t, domain.ShareControl)
+		inbox := inboxControl(f, true, 1<<20)
+		f.p.InboxSharedMax = func() int64 { return 1 << 20 }
+		f.tg.SetFile("part", make([]byte, 800<<10))
+		for range 2 {
+			f.attach(t, domain.TopicAttachment{FileID: "part", Name: "a.bin", Kind: "document", GroupID: "album"})
+		}
+		f.now = f.now.Add(2 * time.Second)
+		if err := f.p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.lastPrivate(t); got != "Album exceeds 1.0 MB." {
+			t.Fatalf("refusal = %q", got)
+		}
+		if len(f.h.Prompts()) != 0 || len(inbox.Saved()) != 1 {
+			t.Fatalf("album over the shared quota: prompts=%v saved=%d", f.h.Prompts(), len(inbox.Saved()))
+		}
+	})
 	t.Run("shared_inbox_full", func(t *testing.T) {
 		f := newPrivateFixture(t, domain.ShareControl)
 		inbox := inboxControl(f, true, 1<<20)

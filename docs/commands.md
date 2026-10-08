@@ -263,12 +263,13 @@ keyboard, a press answers `That question is no longer open.` and sends
 nothing.
 
 Files from a Control recipient follow the owner's Inbox options: with the
-inbox off they are refused with `⚠️ inbox is off (/options → Inbox)`, a file
-over `Largest file` with `⚠️ file too big: …`, and an album may hold twice
-that limit. Recipients' files together use at most a quarter of `Inbox size`
-and only ever replace other recipients' oldest files, never the owner's; when
-the owner's files leave no room the reply is `Attachment not saved: the
-shared inbox is full.` A picker left open by an owner command holds a Control
+inbox off they are refused with `⚠️ inbox is off (/options → Inbox)`, and an
+album may hold twice `Largest file`. Recipients' files together use at most a
+quarter of `Inbox size` and only ever replace other recipients' oldest files,
+never the owner's. A file over `Largest file` or over that quarter is refused
+before it is downloaded with `⚠️ file too big: …`, and an album over the
+quarter with `Album exceeds …`; when the owner's files leave no room the reply
+is `Attachment not saved: the shared inbox is full.` A picker left open by an owner command holds a Control
 recipient's next plain message or file once, as in the owner's topics, and the
 hold is shared: whoever is refused first clears it, and a recipient's `/keys`,
 `/stop` or `/interrupt` clears it too.

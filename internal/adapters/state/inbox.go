@@ -156,6 +156,12 @@ func (i *Inbox) list() ([]inboxFile, int64, error) {
 	return files, total, nil
 }
 
+// SharedQuota is the room the shared files hold together: a quarter of
+// the total quota.
+func (i *Inbox) SharedQuota() int64 {
+	return i.limit() / inboxSharedShare
+}
+
 // makeRoom deletes the oldest files until need more bytes fit under the
 // total quota. A file larger than the whole quota is refused.
 func (i *Inbox) makeRoom(need int64) error {
@@ -194,7 +200,7 @@ func (i *Inbox) makeRoom(need int64) error {
 // owner's files deleted, is refused.
 func (i *Inbox) makeSharedRoom(need int64) error {
 	limit := i.limit()
-	quota := limit / inboxSharedShare
+	quota := i.SharedQuota()
 	if need > quota {
 		i.log.Warn("[FIX] inbox shared file exceeds the shared quota", slog.Int64("bytes", need), slog.Int64("quota", quota))
 		return fmt.Errorf("inbox: %d bytes exceed the %d byte shared quota: %w", need, quota, domain.ErrFileTooBig)

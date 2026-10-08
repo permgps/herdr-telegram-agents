@@ -40,6 +40,10 @@ type PrivateControl struct {
 	// domain.OptionInboxMaxMB.
 	InboxEnabled  func() bool
 	InboxMaxBytes func() int64
+	// InboxSharedMax is the room all recipients' files share in the inbox
+	// (see state.Inbox.SharedQuota); nil means no limit beyond
+	// InboxMaxBytes.
+	InboxSharedMax func() int64
 	// HoldPicker and ReleasePicker share the owner's picker hold (see
 	// inbound.holdForPicker): a plain message after a kept picker is held
 	// back once, whoever sends it. Nil means no hold.
@@ -92,12 +96,16 @@ func (p *PrivateControl) dropDialogButtons(o domain.ShareOrigin) {
 }
 
 // dropButtons forgets actor's buttons of the given kinds drawn on surface
-// (the button's own surface, or its mirror when it has none): a refreshed
-// keyboard replaces them. It returns how many went.
-func (p *PrivateControl) dropButtons(actor int64, surface domain.TopicAddress, kinds ...string) int {
+// (the button's own surface, or its mirror when it has none), except the
+// ones in keep: a refreshed keyboard replaces them once it is shown. It
+// returns how many went.
+func (p *PrivateControl) dropButtons(actor int64, surface domain.TopicAddress, keep []domain.Button, kinds ...string) int {
 	removed := 0
 	for ref, b := range p.callbacks {
 		if b.origin.ActorID != actor || b.where() != surface || !slices.Contains(kinds, b.kind) {
+			continue
+		}
+		if slices.ContainsFunc(keep, func(k domain.Button) bool { return k.Data == ref }) {
 			continue
 		}
 		delete(p.callbacks, ref)
@@ -114,6 +122,13 @@ func (p *PrivateControl) bindButtons(message int, buttons []domain.Button) {
 			b.message = message
 			p.callbacks[button.Data] = b
 		}
+	}
+}
+
+// forgetButtons drops the refs of buttons that never reached a message.
+func (p *PrivateControl) forgetButtons(buttons []domain.Button) {
+	for _, button := range buttons {
+		delete(p.callbacks, button.Data)
 	}
 }
 
@@ -308,6 +323,19 @@ func (p *PrivateControl) inboxMax() int64 {
 		return 20 << 20
 	}
 	return p.InboxMaxBytes()
+}
+
+// attachmentLimits returns the most one recipient file and one album may
+// hold: the owner's per-file limit and twice that, both within the room
+// the recipients share, so a file is refused before its download and an
+// album never evicts its own first files.
+func (p *PrivateControl) attachmentLimits() (file, album int64) {
+	file, album = p.inboxMax(), 2*p.inboxMax()
+	if p.InboxSharedMax != nil {
+		shared := p.InboxSharedMax()
+		file, album = min(file, shared), min(album, shared)
+	}
+	return file, album
 }
 
 func (p *PrivateControl) resolve(e domain.PrivateMessage) (domain.ShareOrigin, bool) {
@@ -522,8 +550,13 @@ func (p *PrivateControl) attachment(ctx context.Context, o domain.ShareOrigin, a
 		p.log().Info("private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "inbox_off"), slog.Int64("bytes", a.Size))
 		return p.send(ctx, o, inboxOff)
 	}
-	if max := p.inboxMax(); a.Size > max {
-		p.log().Info("private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "too_big"), slog.Int64("bytes", a.Size))
+	if max, _ := p.attachmentLimits(); a.Size > max {
+		reason := "too_big"
+		if a.Size <= p.inboxMax() {
+			reason = "over_shared_quota"
+		}
+		p.log().Info("[FIX] private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", reason), slog.Int64("bytes", a.Size),
+			slog.Int64("limit", max))
 		return p.send(ctx, o, fmt.Sprintf(inboxTooBigFmt, humanBytes(a.Size), humanBytes(max)))
 	}
 	if a.GroupID == "" {
@@ -669,12 +702,11 @@ func (p *PrivateControl) Tick(ctx context.Context) error {
 	return nil
 }
 
-// download fetches files off the bridge goroutine within the owner's
-// per-file limit, an album within twice that, and saves them to the shared
-// part of the inbox. Its completion types the paths unless the owner's
+// download fetches files off the bridge goroutine within attachmentLimits
+// and saves them to the shared part of the inbox. Its completion types the paths unless the owner's
 // picker hold takes them.
 func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAttachment, caption string) bool {
-	max := p.inboxMax()
+	max, albumMax := p.attachmentLimits()
 	return p.Async(func(ctx context.Context) func(context.Context) error {
 		callCtx, done, d := p.Sharing.Begin(ctx, o, domain.ShareAttachment)
 		if !d.Allowed {
@@ -689,9 +721,10 @@ func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAtta
 				return func(ctx context.Context) error { return p.send(ctx, o, "Attachment download failed.") }
 			}
 			total += len(data)
-			if int64(total) > 2*max {
-				p.log().Info("private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "album_too_big"), slog.Int("bytes", total))
-				return func(ctx context.Context) error { return p.send(ctx, o, "Album exceeds "+humanBytes(2*max)+".") }
+			if int64(total) > albumMax {
+				p.log().Info("[FIX] private attachment refused", slog.String("grant", o.GrantID), slog.String("reason", "album_too_big"), slog.Int("bytes", total),
+					slog.Int64("limit", albumMax))
+				return func(ctx context.Context) error { return p.send(ctx, o, "Album exceeds "+humanBytes(albumMax)+".") }
 			}
 			if callCtx.Err() != nil {
 				return nil

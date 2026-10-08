@@ -114,12 +114,6 @@ func (d *PrivateDashboard) Refresh(ctx context.Context, recipient int64, explici
 		return err
 	}
 	message := st.Dashboards[recipient]
-	// The keyboard below replaces the last one: without this every refresh
-	// would leave three live buttons per grant behind until they expire.
-	if removed := c.dropButtons(recipient, address, "status", "screen", "pause"); removed > 0 {
-		c.log().Debug("private buttons pruned", slog.Int64("actor", recipient), slog.String("kinds", "status,screen,pause"),
-			slog.Int("removed", removed), slog.String("reason", "refresh"))
-	}
 	var buttons []domain.Button
 	for _, g := range grants[:min(len(grants), 10)] {
 		o, _ := c.Sharing.Origin(g.ID)
@@ -130,26 +124,23 @@ func (d *PrivateDashboard) Refresh(ctx context.Context, recipient int64, explici
 			buttons = append(buttons, domain.Button{Text: kind + " · " + a.Label(), Data: ref})
 		}
 	}
-	if message.MessageID > 0 {
-		err := c.Telegram.EditTextAt(ctx, message, text, true, buttons, guard)
-		if errors.Is(err, domain.ErrMessageGone) {
-			message.MessageID = 0
-		} else if err != nil {
-			return err
-		}
-	}
-	if message.MessageID == 0 {
-		id, err := c.Telegram.SendAt(ctx, address, domain.Outgoing{Text: text, HTML: true, Buttons: buttons, MaxParts: 1}, guard)
-		if err != nil {
-			return err
-		}
-		message = domain.MessageAddress{ChatID: recipient, MessageID: id}
-		if err := c.Sharing.Dashboard(ctx, recipient, message, c.Now()); err != nil {
-			return err
-		}
-		_ = c.Telegram.PinAt(ctx, message, nil)
+	message, err := d.show(ctx, recipient, address, message, text, buttons, guard)
+	if err != nil {
+		// The phone still shows the last keyboard: it keeps working, and
+		// the buttons minted for the failed one go.
+		c.forgetButtons(buttons)
+		c.log().Info("[FIX] private dashboard not refreshed, last buttons kept", slog.Int64("actor", recipient),
+			slog.Int("forgotten", len(buttons)), slog.String("err", err.Error()))
+		return err
 	}
 	c.bindButtons(message.MessageID, buttons)
+	// The keyboard just shown replaces the last one: without this every
+	// refresh would leave three live buttons per grant behind until they
+	// expire.
+	if removed := c.dropButtons(recipient, address, buttons, "status", "screen", "pause"); removed > 0 {
+		c.log().Debug("private buttons pruned", slog.Int64("actor", recipient), slog.String("kinds", "status,screen,pause"),
+			slog.Int("removed", removed), slog.String("reason", "refresh"))
+	}
 	if d.menus != nil {
 		commands := []string{"start", "help", "agents", "status"}
 		if len(grants) > 0 {
@@ -182,6 +173,33 @@ func (d *PrivateDashboard) Refresh(ctx context.Context, recipient int64, explici
 	d.last[recipient] = text
 	d.refreshed[recipient] = c.Now()
 	return nil
+}
+
+// show edits recipient's dashboard message in place, or sends, records and
+// pins a new one when there is none or it is gone, and returns the message
+// that now carries buttons.
+func (d *PrivateDashboard) show(ctx context.Context, recipient int64, address domain.TopicAddress, message domain.MessageAddress,
+	text string, buttons []domain.Button, guard domain.DispatchGuard) (domain.MessageAddress, error) {
+	c := d.Control
+	if message.MessageID > 0 {
+		err := c.Telegram.EditTextAt(ctx, message, text, true, buttons, guard)
+		if err == nil {
+			return message, nil
+		}
+		if !errors.Is(err, domain.ErrMessageGone) {
+			return message, err
+		}
+	}
+	id, err := c.Telegram.SendAt(ctx, address, domain.Outgoing{Text: text, HTML: true, Buttons: buttons, MaxParts: 1}, guard)
+	if err != nil {
+		return message, err
+	}
+	message = domain.MessageAddress{ChatID: recipient, MessageID: id}
+	if err := c.Sharing.Dashboard(ctx, recipient, message, c.Now()); err != nil {
+		return message, err
+	}
+	_ = c.Telegram.PinAt(ctx, message, nil)
+	return message, nil
 }
 
 func (d *PrivateDashboard) navigate(ctx context.Context, e domain.PrivateMessage, reference string) error {

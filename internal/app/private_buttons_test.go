@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -156,5 +157,27 @@ func TestPrivateButtonsCappedPerActor(t *testing.T) {
 	}
 	if n := f.entries(11); n["status"]+n["screen"]+n["pause"] != 3 {
 		t.Fatalf("recipient 11's buttons evicted: %v", n)
+	}
+}
+
+// TestPrivateDashboardFailedRefreshKeepsButtons: a refresh whose edit fails
+// leaves the old keyboard on the phone, so its buttons must keep working,
+// and the new ones it minted must not pile up.
+func TestPrivateDashboardFailedRefreshKeepsButtons(t *testing.T) {
+	f := newButtonFixture(t, 10)
+	ctx := context.Background()
+	if err := f.d.Refresh(ctx, 10, true); err != nil {
+		t.Fatal(err)
+	}
+	_, _, shown := f.dashboard(10)
+	f.tg.Destination(10).FailNext("edittext", errors.New("network down"))
+	if err := f.d.Refresh(ctx, 10, true); err == nil {
+		t.Fatal("refresh with a failed edit succeeded")
+	}
+	if n := f.entries(10); n["status"]+n["screen"]+n["pause"] != 3 {
+		t.Fatalf("recipient 10 holds %v after a failed refresh", n)
+	}
+	if got := f.press(t, 10, shown[0].Data); got != "" {
+		t.Fatalf("shown button answered %q after a failed refresh", got)
 	}
 }

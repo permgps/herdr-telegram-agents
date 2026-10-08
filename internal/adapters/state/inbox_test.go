@@ -226,3 +226,25 @@ func TestInboxSharedFileOverSubQuota(t *testing.T) {
 		}
 	}
 }
+
+// TestInboxSharedQuotaValue: the share PrivateControl checks before a download
+// is the one SaveShared enforces: a quarter of the total, read live from
+// the option, 125 MiB with the default 500 MiB.
+func TestInboxSharedQuotaValue(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	if got := in.SharedQuota(); got != 125<<20 {
+		t.Fatalf("default SharedQuota = %d, want %d", got, 125<<20)
+	}
+	total := int64(40)
+	in.MaxTotal = func() int64 { return total }
+	if got := in.SharedQuota(); got != 10 {
+		t.Fatalf("SharedQuota = %d, want 10", got)
+	}
+	if _, err := in.SaveShared(context.Background(), "10-a-fits.bin", make([]byte, in.SharedQuota())); err != nil {
+		t.Fatalf("file of exactly SharedQuota refused: %v", err)
+	}
+	total = 200
+	if got := in.SharedQuota(); got != 50 {
+		t.Fatalf("SharedQuota after the option changed = %d, want 50", got)
+	}
+}
