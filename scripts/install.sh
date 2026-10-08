@@ -7,7 +7,17 @@
 # verification against a local snapshot); it must be https:// unless
 # HERDR_TG_ALLOW_INSECURE_BASE=1. HERDR_TG_EXPECTED_SHA256, set by the
 # plugin's own updater, is the checksum the owner approved: the binary must
-# match it as well as checksums.txt before it is ever run.
+# match it as well as checksums.txt.
+#
+# Signed releases also carry release.txt (tag, commit, the checksums lines)
+# and release.txt.sig, an SSHSIG by a key in scripts/signing/allowed_signers.
+# When ssh-keygen can verify SSHSIG (OpenSSH 8.1+, proven by the self-test
+# fixture in scripts/signing/), a bad signature refuses the install; without
+# such an ssh-keygen, or for an unsigned release, the script warns and trusts
+# checksums.txt as before. The binary is run (`herdr-tg version`) only when it
+# is bound to something trusted: a verified signature or the approved
+# checksum. bin/install-receipt records sha256, approved and signature for
+# the plugin's updater.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -63,7 +73,32 @@ echo "install: herdr-tg ${version} for ${os}/${arch}"
 mkdir -p bin
 tmp=$(mktemp bin/herdr-tg.XXXXXX)
 sums=$(mktemp bin/checksums.XXXXXX)
-trap 'rm -f "$tmp" "$sums"' EXIT
+stmt=$(mktemp bin/release.XXXXXX)
+sig=$(mktemp bin/release-sig.XXXXXX)
+receipt=$(mktemp bin/receipt.XXXXXX)
+trap 'rm -f "$tmp" "$sums" "$stmt" "$sig" "$receipt"' EXIT
+
+# fetch_optional URL OUT succeeds when the file was downloaded and fails when
+# the release has no such asset (HTTP 404); any other failure ends the script.
+fetch_optional() {
+	# shellcheck disable=SC2086
+	code=$(curl $secure -sSL --max-time 60 --retry 2 -o "$2" -w '%{http_code}' "$1") || code=failed
+	case "$code" in
+	200) return 0 ;;
+	404) return 1 ;;
+	esac
+	echo "install: downloading $(basename "$1") failed (${code})" >&2
+	exit 1
+}
+
+# can_verify succeeds when this ssh-keygen verifies the bundled self-test
+# signature, so a later failure means a bad signature, not an old tool.
+can_verify() {
+	command -v ssh-keygen >/dev/null 2>&1 || return 1
+	ssh-keygen -Y verify -f scripts/signing/selftest_signers -I herdr-tg-selftest \
+		-n herdr-tg-selftest -s scripts/signing/selftest.txt.sig \
+		<scripts/signing/selftest.txt >/dev/null 2>&1
+}
 
 echo "install: downloading ${asset}"
 # shellcheck disable=SC2086 # $secure is a deliberate word list
@@ -99,10 +134,47 @@ if [ -n "$approved" ] && [ "$approved" != "$actual" ]; then
 fi
 echo "install: checksum ok"
 
+signature=absent
+if fetch_optional "${base}/release.txt" "$stmt" && fetch_optional "${base}/release.txt.sig" "$sig"; then
+	if can_verify; then
+		if ! ssh-keygen -Y verify -f scripts/signing/allowed_signers -I herdr-tg-release \
+			-n herdr-tg-release -s "$sig" <"$stmt" >/dev/null 2>&1; then
+			echo "install: release signature does not verify" >&2
+			exit 1
+		fi
+		if [ "$(head -n 1 "$stmt")" != "tag v${version}" ]; then
+			echo "install: the signed statement is not for v${version}" >&2
+			exit 1
+		fi
+		if [ "$(grep -c " \{1,\}${asset}\$" "$stmt" || true)" != "1" ]; then
+			echo "install: the signed statement does not list ${asset} exactly once" >&2
+			exit 1
+		fi
+		signed=$(grep " \{1,\}${asset}\$" "$stmt" | cut -d' ' -f1)
+		if [ "$signed" != "$expected" ]; then
+			echo "install: the signed checksum for ${asset} differs from checksums.txt" >&2
+			exit 1
+		fi
+		signature=verified
+		echo "install: release signature ok"
+	else
+		signature=unverifiable
+		echo "install: cannot check the release signature (needs OpenSSH 8.1 or newer); trusting checksums.txt" >&2
+	fi
+else
+	echo "install: release v${version} is not signed; trusting checksums.txt" >&2
+fi
+
+printf 'sha256 %s\napproved %s\nsignature %s\n' "$actual" "${approved:-none}" "$signature" >"$receipt"
 mv "$tmp" bin/herdr-tg
 chmod 0755 bin/herdr-tg
-rm -f "$sums"
+mv "$receipt" bin/install-receipt
+rm -f "$sums" "$stmt" "$sig"
 trap - EXIT
 
 echo "install: installed bin/herdr-tg"
-./bin/herdr-tg version
+if [ "$signature" = verified ] || [ -n "$approved" ]; then
+	./bin/herdr-tg version
+else
+	echo "install: skipped running an unverified binary"
+fi
