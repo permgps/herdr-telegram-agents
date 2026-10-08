@@ -26,7 +26,10 @@ and a Telegram supergroup with Topics enabled. The install step needs `sh` and
 herdr plugin install permgps/herdr-telegram-agents
 ```
 
-Herdr downloads a checksum-verified release binary. Published targets are
+Herdr downloads a signed, checksum-verified release binary. The install
+script checks the signature with `ssh-keygen` (OpenSSH 8.1 or newer, present
+on macOS, most Linux distributions and Windows 10+). Without it the script
+warns and trusts the release checksums alone. Published targets are
 macOS and Linux on amd64 and arm64, and Windows on amd64. The plugin needs no
 Go toolchain on the machine where it is installed.
 
@@ -109,9 +112,11 @@ higher version. If the installation is eligible, press **Update** separately
 to authorize installation. The panel shows progress and the final result.
 There are no scheduled checks or unattended installations.
 
-A managed GitHub installation is reinstalled at the exact release tag. A
-clean locally linked checkout on `main` fast-forwards to the release commit
-and runs the checksum-verified installer. An intentionally pinned managed
+Only releases signed by the maintainer's key are offered. An unsigned one
+shows "not signed yet". A managed GitHub installation is reinstalled at the
+exact release tag and must resolve to the signed commit. A clean locally
+linked checkout on `main` fast-forwards to the release commit and runs the
+checksum-verified installer. An intentionally pinned managed
 installation, a dirty or detached local checkout, or a source from another
 repository shows a reason without an Update button. The previous version is
 restored when a replacement fails to start; inspect `update.json` and

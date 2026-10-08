@@ -58,17 +58,61 @@ breaks installs with a 404 until the workflow finishes.
    `main` yet. The release workflow builds the five binaries and
    `checksums.txt` from the tagged commit; GoReleaser writes the release
    notes from the commit list.
-4. Check that the release page lists all six assets, then
-   `sh scripts/verify-install.sh X.Y.Z all` (it clones the tag, so it works
-   before `main` moves).
-5. `git push origin main`.
-6. Nothing else: the repository carries the GitHub topic `herdr-plugin`, so
+4. Check that the release page lists all six assets, then run
+   `make sign-release VERSION=X.Y.Z`:
+   - It fetches the tag and downloads `checksums.txt`.
+   - It writes `release.txt` (tag, the tag's commit, the checksums lines).
+   - It signs it with the offline release key (`ssh-keygen -Y sign`, which
+     asks for the passphrase).
+   - It checks the signature against `scripts/signing/allowed_signers` and
+     uploads `release.txt` and `release.txt.sig`.
+   Until this step the Telegram updater shows the release as `unsigned`.
+5. `sh scripts/verify-install.sh X.Y.Z all`. It clones the tag, so it works
+   before `main` moves, and fails unless the install receipt says
+   `signature verified`. Pass `--allow-unsigned` as the third argument only
+   for releases made before signing started.
+6. `git push origin main`.
+7. Nothing else: the repository carries the GitHub topic `herdr-plugin`, so
    the [marketplace](https://herdr.dev/plugins/) card picks up the new
    version within 30 minutes.
 
 Commits that touch only Go code are safe to push to `main` at any time:
 installers keep getting the binary of the last release until `version`
 moves.
+
+### The release key
+
+The release key is a dedicated `ssh-ed25519` key with a passphrase, kept
+offline by the maintainer (`~/.ssh/herdr-tg-release` by default,
+`HERDR_TG_SIGNING_KEY` overrides it). It is never stored in GitHub, so
+neither a stolen GitHub session nor a changed workflow can produce a release
+the updater accepts. It was created with:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/herdr-tg-release -C herdr-tg-release
+```
+
+Its public half lives in two places that `TestReleaseSignersMatchScripts`
+keeps identical:
+
+- `scripts/signing/allowed_signers`, read by the install scripts;
+- `releaseSigners` in `internal/adapters/github/releasekeys.go`, compiled
+  into the binary and the only keys the updater trusts.
+
+Rotation takes three releases, because a running binary trusts only the
+keys it was built with:
+
+1. Release N lists the new key next to the old one and is signed with the
+   old key.
+2. Release N+1 is signed with the new key.
+3. A later release drops the old line.
+
+If the key is lost but not leaked, follow the same steps; the old key must
+still sign release N. If the old key is gone, installed copies can no longer
+update through Telegram: they show `bad_signature` for every new release.
+Users then reinstall with `herdr plugin install
+permgps/herdr-telegram-agents`. If the key leaked, rotate at once and say so
+in the release notes.
 
 ## The `dev` subcommand
 
@@ -115,7 +159,7 @@ The release verification script still checks published install assets; see
 | `internal/domain/` | Agents, statuses, topics, mapping, commands, config, options, presence, secret redaction, doctor checks, events and the ports (standard library only) |
 | `internal/app/` | Use cases: agent registry, reconciler, debounce, bridge (screens out, commands in), screen capture for `/screen all`, the options panel, presence and quiet mode, the topic sweep, the quota lines, doctor, setup wizard, supervisor, daemon loop |
 | `internal/adapters/herdr/` | Herdr socket adapter: dialers (Unix socket or Win32 named pipe normalized from `HERDR_SOCKET_PATH`), one-shot calls, event stream, `herdr` CLI runner |
-| `internal/adapters/github/` | Published release discovery, asset checksums and tagged manifest reads |
+| `internal/adapters/github/` | Published release discovery, signed release statements (SSHSIG verification against the compiled-in keys in `releasekeys.go`), asset checksums and tagged manifest reads |
 | `internal/adapters/telegram/` | Telegram Bot API adapter: bot, queue, formatting, icons, inbound updates, setup probe |
 | `internal/adapters/state/` | `config.json`, `mapping.json`, `options.json`, `claude-usage.json` (the status line tap), pid and atomic update job stores |
 | `internal/adapters/logging/` | JSON file logger with size-based rotation |
@@ -123,7 +167,8 @@ The release verification script still checks published install assets; see
 | `internal/cli/` | Subcommands behind the single binary, `usage-tap` (Claude Code status line tap) among them |
 | `internal/compose/` | Composition root wiring adapters into the use cases |
 | `internal/testkit/` | Fakes for every port and a fake Herdr socket server |
-| `scripts/` | Import layering gate, cross-compile check, install scripts, version gate, install verification |
+| `scripts/` | Import layering gate, cross-compile check, install scripts, version gate, install verification, `sign-release.sh` |
+| `scripts/signing/` | `allowed_signers` (release keys for the install scripts) and the `ssh-keygen` self-test fixture |
 | `.github/workflows/` | CI (lint, race tests, Windows tests) and the release workflow |
 | `herdr-plugin.toml` | Plugin manifest |
 

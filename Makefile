@@ -2,7 +2,8 @@
 # `make` builds bin/herdr-tg for the host; `make lint` runs gofmt, go vet,
 # staticcheck, the forbidden-import gate and the cross-compile check;
 # `make release-snapshot` builds every release target into dist/ without
-# publishing anything (needs goreleaser).
+# publishing anything (needs goreleaser); `make sign-release VERSION=X.Y.Z`
+# signs a published release with the owner's offline key.
 
 .DEFAULT_GOAL := build
 
@@ -10,7 +11,7 @@ VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 
 STATICCHECK ?= $(HOME)/go/bin/staticcheck
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test lint crosscheck release-snapshot clean
+.PHONY: build test lint crosscheck release-snapshot sign-release clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/herdr-tg ./cmd/herdr-tg
@@ -32,6 +33,12 @@ crosscheck:
 # Builds all five release targets plus checksums.txt into dist/.
 release-snapshot:
 	goreleaser release --snapshot --clean --skip=publish
+
+# Signs a published release and uploads release.txt and release.txt.sig
+# (see scripts/sign-release.sh); VERSION is the release number without "v".
+sign-release:
+	@case "$(origin VERSION)" in command\ line|environment) ;; *) echo "usage: make sign-release VERSION=X.Y.Z"; exit 2 ;; esac
+	sh scripts/sign-release.sh $(VERSION)
 
 clean:
 	rm -rf bin dist

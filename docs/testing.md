@@ -35,7 +35,16 @@ incomplete releases, exact checksums, local and managed eligibility, stale
 and replayed buttons, one worker launch, journal recovery, install and
 rollback phases, health timeouts, and one final edit of the General panel.
 No unit test installs a plugin into the current Herdr session or uses the
-public network.
+public network. Signed releases are covered in two places:
+
+- The SSHSIG verifier is tested against a fixture made by real `ssh-keygen`
+  and against tampered, foreign-key, wrong-namespace and malformed
+  signatures.
+- `TestInstallScriptSignature` runs `scripts/install.sh` against an
+  `httptest` release on Linux and macOS. It covers a signed release, a bad
+  signature, an unsigned release, an approved checksum without a signature,
+  an approved mismatch, a signed digest that disagrees with `checksums.txt`,
+  a statement for another tag and a host without `ssh-keygen`.
 
 Before releasing this feature, run the automated gates and these isolated
 integration cases against a mock GitHub release and disposable Herdr data:
@@ -50,6 +59,9 @@ integration cases against a mock GitHub release and disposable Herdr data:
 - [ ] Interrupted worker and failed replacement start: inspect `update.json`, verify one rollback attempt or a recoverable `stuck` state, and one final General panel result.
 - [ ] Previously stopped daemon: keep it stopped after a successful file update.
 - [ ] Windows fixture: hold the old `.exe` open, verify stop-before-replace and guarded rollback, then confirm the new daemon version and poller readiness.
+- [ ] Signed release, managed source: after the update, `daemon.log` has an `install receipt` line with `signature=verified`. Record whether `approved_present` was true, which shows whether Herdr passes `HERDR_TG_EXPECTED_SHA256` to `[[build]]`, and note the Herdr version.
+- [ ] Unsigned target (tag pushed, `make sign-release` not run yet): the panel shows `This release is not signed yet` without an Update button; after signing, **Check again** offers `· signed` and Update.
+- [ ] Windows install of a signed release: `bin\install-receipt` says `signature verified`; record `ssh-keygen` version (`ssh -V`). On a host without OpenSSH it says `signature unverifiable` and the install still succeeds.
 
 The existing Windows checklist below describes earlier plugin behavior. It
 does not verify the new update worker until the Windows fixture above passes.
@@ -97,7 +109,7 @@ staticcheck, import checks and all five cross-build targets), and `make test`
 
 ## Install from a release
 
-`scripts/verify-install.sh <version> [linux|macos|all]` replays what
+`scripts/verify-install.sh <version> [linux|macos|all] [--allow-unsigned]` replays what
 `herdr plugin install` does on a machine with no toolchain. Linux runs two
 throwaway `debian:bookworm-slim` containers (amd64 and arm64) that clone the
 tag and run `scripts/install.sh`; macOS clones the tag into a temporary
@@ -105,6 +117,10 @@ directory and runs the same script with a `PATH` that has no Go. Nothing
 outside the containers and that temporary directory is touched.
 `HERDR_TG_BASE_URL` must be `https://`; a local snapshot served over http
 also needs `HERDR_TG_ALLOW_INSECURE_BASE=1`, which the script passes through.
+Each run must end with `signature verified` in `bin/install-receipt` unless
+`--allow-unsigned` is given (releases before signing started).
+
+- [ ] First signed release: `sh scripts/verify-install.sh <version> all` passes with `signature verified` on linux/amd64, linux/arm64 and macOS
 
 - [x] `sh scripts/verify-install.sh <version> linux` prints `verify: linux/amd64 ok` and `verify: linux/arm64 ok` (2026-09-03, v0.1.0, v0.1.1, v0.2.0, v0.3.0, v0.4.0 and v0.5.0)
 - [x] `herdr plugin install permgps/herdr-telegram-agents -y` in a `debian:bookworm-slim` container with Herdr installed from `herdr.dev/install.sh` and no Go: the preview lists 7 actions, 2 panes and 2 build commands, `herdr plugin list` shows the plugin enabled, and the managed binary reports its version (2026-09-03, v0.2.0 with Herdr 0.8.2 on linux/arm64)
