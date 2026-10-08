@@ -74,6 +74,11 @@ const (
 	// still holds back the next plain topic message; past it the bridge
 	// assumes the picker was handled at the desk.
 	pickerHold = 10 * time.Minute
+	// privateButtonsPerActor caps the live private buttons one recipient
+	// holds. 10 grants × 3 dashboard buttons, plus dialogs and confirms, fit
+	// many times over; past it that recipient's oldest buttons go first, so
+	// one recipient cannot fill the table for everyone else.
+	privateButtonsPerActor = 512
 	// sweepInterval is how often the daemon looks for stale topics to
 	// delete, on top of the pass at start and the one an option change
 	// requests.

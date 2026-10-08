@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,6 +114,12 @@ func (d *PrivateDashboard) Refresh(ctx context.Context, recipient int64, explici
 		return err
 	}
 	message := st.Dashboards[recipient]
+	// The keyboard below replaces the last one: without this every refresh
+	// would leave three live buttons per grant behind until they expire.
+	if removed := c.dropButtons(recipient, address, "status", "screen", "pause"); removed > 0 {
+		c.log().Debug("private buttons pruned", slog.Int64("actor", recipient), slog.String("kinds", "status,screen,pause"),
+			slog.Int("removed", removed), slog.String("reason", "refresh"))
+	}
 	var buttons []domain.Button
 	for _, g := range grants[:min(len(grants), 10)] {
 		o, _ := c.Sharing.Origin(g.ID)
@@ -142,11 +149,7 @@ func (d *PrivateDashboard) Refresh(ctx context.Context, recipient int64, explici
 		}
 		_ = c.Telegram.PinAt(ctx, message, nil)
 	}
-	for _, button := range buttons {
-		b := c.callbacks[button.Data]
-		b.message = message.MessageID
-		c.callbacks[button.Data] = b
-	}
+	c.bindButtons(message.MessageID, buttons)
 	if d.menus != nil {
 		commands := []string{"start", "help", "agents", "status"}
 		if len(grants) > 0 {

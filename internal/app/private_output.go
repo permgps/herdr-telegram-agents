@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,16 @@ type privateOutputPending struct {
 	agent    domain.Agent
 	due      time.Time
 	grants   map[string]uint64
+	// attempts counts the waits for a reply the source still reports as
+	// pending (domain.ErrReplyPending).
+	attempts int
+}
+
+// privateReplyFresh reports whether reply may stand in for the screen of g's
+// mirror: a reply written before the grant was active belongs to the
+// owner's private history.
+func privateReplyFresh(g domain.ShareGrant, reply domain.Reply) bool {
+	return reply.Text != "" && reply.Written.After(g.ActivatedAt)
 }
 
 func (p *PrivateOutput) Observe(e AgentEvent) {
@@ -126,13 +137,19 @@ func (p *PrivateOutput) deliver(ctx context.Context, job privateOutputPending) e
 		return nil
 	}
 	if !job.captured {
+		if a.Kind == "opencode" && a.SessionDigest != "" && p.ExactReplies != nil && job.agent.Status == domain.StatusDone {
+			var err error
+			job.reply, err = p.ExactReplies.LastReply(ctx, a)
+			if errors.Is(err, domain.ErrReplyPending) {
+				if origins = p.waitForReply(st, a.Key, job, origins); len(origins) == 0 {
+					return nil
+				}
+			}
+		}
 		var err error
 		job.screen, err = c.Herdr.ReadScreen(ctx, a.PaneID, domain.ScreenDetection, domain.MaxScreenLines)
 		if err != nil {
 			return err
-		}
-		if a.Kind == "opencode" && a.SessionDigest != "" && p.ExactReplies != nil && job.agent.Status == domain.StatusDone {
-			job.reply, _ = p.ExactReplies.LastReply(ctx, a)
 		}
 		job.captured = true
 	}
@@ -154,7 +171,7 @@ func (p *PrivateOutput) deliver(ctx context.Context, job privateOutputPending) e
 		formatted := false
 		footer := ""
 		// Reject replies from before activation even with a verified source.
-		if m.Preferences.Display != "screen" && reply.Text != "" && reply.Written.After(g.ActivatedAt) {
+		if m.Preferences.Display != "screen" && privateReplyFresh(g, reply) {
 			text = reply.Text
 			formatted = m.Preferences.Display == "formatted"
 			if m.Preferences.Metadata {
@@ -181,13 +198,47 @@ func (p *PrivateOutput) deliver(ctx context.Context, job privateOutputPending) e
 			keyboard = id
 		}
 		c.Sharing.RecordOutput(o, hash, keyboard)
-		for _, button := range buttons {
-			b := c.callbacks[button.Data]
-			b.message = id
-			c.callbacks[button.Data] = b
-		}
+		c.bindButtons(id, buttons)
 	}
 	return nil
+}
+
+// waitForReply handles a reply source that says the turn is still running
+// (OpenCode reports done at every step of a turn). The mirrors that show
+// replies wait for it: their grants go back to the queue up to
+// replyPendingRetries times, replyPendingDelay apart, and a newer event for
+// the key replaces the wait as on the owner's topics. Screen mirrors never
+// wait. It returns the origins to deliver now; once the attempts are used
+// up, that is all of them and they get the screen.
+func (p *PrivateOutput) waitForReply(st domain.SharingState, key domain.Key, job privateOutputPending, origins []domain.ShareOrigin) []domain.ShareOrigin {
+	var now, wait []domain.ShareOrigin
+	for _, o := range origins {
+		if st.Mirrors[o.GrantID].Preferences.Display == "screen" {
+			now = append(now, o)
+		} else {
+			wait = append(wait, o)
+		}
+	}
+	if len(wait) == 0 {
+		return origins
+	}
+	if job.attempts >= replyPendingRetries {
+		p.Control.log().Info("private reply still pending, screen posted", slog.String("key", key.String()), slog.Int("attempts", job.attempts))
+		return origins
+	}
+	// Screen mirrors past this tick's batch ride along with the retry, which
+	// delivers them like any queued grant.
+	retry := job
+	retry.attempts++
+	retry.due = p.Control.Now().Add(replyPendingDelay)
+	retry.grants = map[string]uint64{}
+	for _, o := range append(wait, now[min(len(now), 4):]...) {
+		retry.grants[o.GrantID] = o.Revision
+	}
+	p.pending[key] = retry
+	p.Control.log().Debug("private reply pending, retry scheduled", slog.String("key", key.String()),
+		slog.Int("attempt", retry.attempts), slog.Int("max", replyPendingRetries))
+	return now[:min(len(now), 4)]
 }
 
 func (p *PrivateOutput) dialogButtons(o domain.ShareOrigin, screen string, agent domain.Agent) []domain.Button {
@@ -227,7 +278,12 @@ func (p *PrivateOutput) Read(ctx context.Context, o domain.ShareOrigin, cmd doma
 			}
 			reply, err := p.ExactReplies.LastReply(callCtx, a)
 			done()
-			if err == nil && reply.Text != "" {
+			g, granted := st.Grants[o.GrantID]
+			fresh := err == nil && granted && privateReplyFresh(g, reply)
+			if !fresh {
+				c.log().Debug("private reply skipped", slog.String("grant", o.GrantID), slog.String("reason", privateSkipReason(err, granted, reply)))
+			}
+			if fresh {
 				footer := ""
 				if m.Preferences.Metadata {
 					footer = reply.Meta.Line()
@@ -255,6 +311,18 @@ func (p *PrivateOutput) Read(ctx context.Context, o domain.ShareOrigin, cmd doma
 		text = "No screen history captured since this grant was activated."
 	}
 	return p.Control.Telegram.DocumentAt(ctx, o.Address, domain.Document{Name: "shared-screen.txt", Data: []byte(text), ReplyTo: o.MessageID}, p.Control.Sharing.Guard(o, domain.ShareHistory))
+}
+
+// privateSkipReason names why /screen fell back from the reply to the
+// screen, for the debug log.
+func privateSkipReason(err error, granted bool, reply domain.Reply) string {
+	switch {
+	case err != nil || !granted:
+		return "error"
+	case reply.Text == "":
+		return "empty"
+	}
+	return "before_grant"
 }
 
 func (p *PrivateOutput) Refresh(key domain.Key) {
