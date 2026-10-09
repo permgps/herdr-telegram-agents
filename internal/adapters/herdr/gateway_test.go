@@ -23,6 +23,12 @@ func ackHandler(id string, params json.RawMessage) (any, *testkit.APIError) {
 	return map[string]any{"type": "ack"}, nil
 }
 
+// notDrivenHandler answers as Herdr does for an agent it does not drive
+// itself, such as Crush.
+func notDrivenHandler(id string, params json.RawMessage) (any, *testkit.APIError) {
+	return nil, &testkit.APIError{Code: codeNotDriven, Message: "agent w1:p1 is not an active named agent"}
+}
+
 func newGateway(t *testing.T, s *testkit.NDJSONServer) *Gateway {
 	t.Helper()
 	s.Handle("ping", pingHandler)
@@ -296,6 +302,98 @@ func TestGatewayPromptAndSendKeys(t *testing.T) {
 	want = map[string]any{"target": "w1:p1", "keys": []any{"y", "enter"}}
 	if got := lastParams(t, s, "agent.send_keys"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("send_keys params = %v, want %v", got, want)
+	}
+}
+
+// Herdr refuses the agent input methods for an agent it does not drive
+// itself, such as Crush. The prompt still has to land in the pane.
+func TestGatewayPromptFallsBackToPaneInput(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("pane.send_text", ackHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	g := newGateway(t, s)
+
+	if err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	want := map[string]any{"pane_id": "w1:p1", "text": "fix the tests"}
+	if got := lastParams(t, s, "pane.send_text"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pane.send_text params = %v, want %v", got, want)
+	}
+	want = map[string]any{"pane_id": "w1:p1", "keys": []any{"enter"}}
+	if got := lastParams(t, s, "pane.send_keys"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pane.send_keys params = %v, want %v", got, want)
+	}
+}
+
+// Raw typing submits nothing by itself, so a line break would send the
+// message in pieces.
+func TestGatewayPromptFallbackFoldsLineBreaks(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("pane.send_text", ackHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	g := newGateway(t, s)
+
+	if err := g.Prompt(ctxT(t), "w1:p1", "first line\nsecond line\r\nthird"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	want := map[string]any{"pane_id": "w1:p1", "text": "first line second line third"}
+	if got := lastParams(t, s, "pane.send_text"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pane.send_text params = %v, want %v", got, want)
+	}
+}
+
+func TestGatewaySendKeysFallsBackToPaneInput(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.send_keys", notDrivenHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	g := newGateway(t, s)
+
+	if err := g.SendKeys(ctxT(t), "w1:p1", []string{"esc"}); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	want := map[string]any{"pane_id": "w1:p1", "keys": []any{"esc"}}
+	if got := lastParams(t, s, "pane.send_keys"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pane.send_keys params = %v, want %v", got, want)
+	}
+}
+
+// An agent-blocked prompt must keep reaching the application, which types
+// into the dialog's own entry; typing here would skip that.
+func TestGatewayPromptKeepsBlocked(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: codeBlocked, Message: "agent w1:p1 is waiting for approval"}
+	})
+	s.Handle("pane.send_text", ackHandler)
+	g := newGateway(t, s)
+
+	err := g.Prompt(ctxT(t), "w1:p1", "yes")
+	if !errors.Is(err, domain.ErrAgentBlocked) {
+		t.Fatalf("Prompt error = %v, want ErrAgentBlocked", err)
+	}
+	if reqs := s.WaitRequests("pane.send_text", 1, 200*time.Millisecond); len(reqs) != 0 {
+		t.Fatalf("pane.send_text should stay unused for a dialog, got %d requests", len(reqs))
+	}
+}
+
+// A target that names an agent rather than a pane has no pane to address,
+// so the refusal has to reach the caller unchanged.
+func TestGatewayPromptKeepsRefusalForAgentName(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("pane.send_text", ackHandler)
+	g := newGateway(t, s)
+
+	err := g.Prompt(ctxT(t), "crusher", "fix the tests")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != codeNotDriven {
+		t.Fatalf("Prompt error = %v, want %s", err, codeNotDriven)
+	}
+	if reqs := s.WaitRequests("pane.send_text", 1, 200*time.Millisecond); len(reqs) != 0 {
+		t.Fatalf("pane.send_text should stay unused for an agent name, got %d requests", len(reqs))
 	}
 }
 
