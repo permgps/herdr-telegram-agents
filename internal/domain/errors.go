@@ -74,6 +74,15 @@ var (
 	// no text after the last prompt. Wrapped with the reason; the caller
 	// falls back to the screen.
 	ErrNoReply = errors.New("no reply available")
+	// ErrUnsupportedAgent means no reader understands the agent kind. It
+	// wraps ErrNoReply so the source chain keeps falling through to the
+	// screen, and it tells the caller this fallback is expected: an agent
+	// nobody can read, not a reader that broke.
+	ErrUnsupportedAgent = fmt.Errorf("agent kind not readable: %w", ErrNoReply)
+	// ErrStaleTranscript means the read found a reply written before the
+	// turn started (another pane in the same directory, a turn with no new
+	// transcript): an expected fallback, not a broken reader.
+	ErrStaleTranscript = errors.New("stale transcript")
 	// ErrReplyPending means the reply source found the agent's session but
 	// its newest turn is still running, so whatever text exists is a
 	// fragment. It wraps ErrNoReply: a caller that only knows ErrNoReply

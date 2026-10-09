@@ -20,6 +20,7 @@ type MultiReplySource []ReplySource
 func (m MultiReplySource) LastReply(ctx context.Context, agent Agent) (Reply, error) {
 	lastErr := error(ErrNoReply)
 	var pending error
+	var lastReal error
 	for _, s := range m {
 		if err := ctx.Err(); err != nil {
 			return Reply{}, err
@@ -37,10 +38,19 @@ func (m MultiReplySource) LastReply(ctx context.Context, agent Agent) (Reply, er
 		if pending == nil && errors.Is(err, ErrReplyPending) {
 			pending = err
 		}
+		// A source that understands the kind but could not read it knows
+		// more than the later sources' "not my kind": keep it so the
+		// caller can tell a broken read from a kind nobody reads.
+		if !errors.Is(err, ErrUnsupportedAgent) {
+			lastReal = err
+		}
 		lastErr = err
 	}
 	if pending != nil {
 		return Reply{}, pending
+	}
+	if lastReal != nil {
+		return Reply{}, lastReal
 	}
 	return Reply{}, lastErr
 }

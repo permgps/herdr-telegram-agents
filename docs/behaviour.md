@@ -478,7 +478,12 @@ told apart, so the reply of the one that wrote last wins (the stale check
 above catches the case where the other pane wrote before this turn began);
 other agents (Gemini, OMP) always get the screen; when no transcript or no
 text is found the daemon posts the screen and logs `reply source
-unavailable` with a safe category. Blocked posts are never affected: the dialog
+unavailable` with a safe category. For an agent kind the daemon can read,
+four unreadable replies in a row post one ⚠️ notice in the topic (no sound,
+held while quiet mode is at the desk); the next readable reply clears the
+streak. Expected fallbacks — a kind no reader understands, a stale
+transcript — never count, so a second pane in one directory cannot trip it.
+Blocked posts are never affected: the dialog
 with its buttons exists only on the screen. For an idle or done OpenCode, Codex, Antigravity, Pi or Muse agent,
 a bare `/screen` tries the current session reply, rendered like `Formatted`,
 whatever `Done post` says. It falls back to the screen when the reply is

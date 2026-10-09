@@ -219,6 +219,10 @@ Telegram group on a phone.
 - [x] **Doctor**: the doctor action opens the overlay with eight ✓ lines (`operator chat` among them, and `pin messages yes` in the group line) and `8 ok, 0 warnings, 0 failures` (2026-09-03, `v0.3.0-1-gfb4d386-dirty`, seven lines then: the pane run directly and the action from Herdr both green against the real group and Herdr 0.7.5); stop the daemon → `daemon` shows `!` not running; start it again; a throwaway copy of `config.json` with a wrong token shows `✗ telegram: token rejected` (restore the file)
 - [x] **Send test message**: the action posts a 🔔 message into General and reports `send-test: delivered to General (message N)` (2026-09-03, `v0.3.0-1-gfb4d386-dirty`, message 980); with the daemon stopped it still works (by design: the action never talks to the daemon)
 
+- [ ] Break one agent's reply reader (e.g. point its store at an unreadable
+  file): after several done posts the topic gets one ⚠️ notice; repair it
+  and the next readable reply clears the streak.
+
 ## Stable topics across Herdr restarts (v0.10.3)
 
 The automated tests cover the session digest, version-1 mapping migration,

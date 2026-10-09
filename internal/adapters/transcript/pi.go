@@ -75,7 +75,7 @@ func (r *PiReader) LastReply(ctx context.Context, agent domain.Agent) (domain.Re
 		return domain.Reply{}, err
 	}
 	if agent.Kind != kindPi {
-		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrNoReply, agent.Kind)
+		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrUnsupportedAgent, agent.Kind)
 	}
 	tuple, err := r.session(ctx, agent.PaneID)
 	if err != nil {

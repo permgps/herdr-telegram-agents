@@ -100,7 +100,7 @@ func (r *AgyReader) LastReply(ctx context.Context, agent domain.Agent) (domain.R
 		return domain.Reply{}, err
 	}
 	if agent.Kind != kindAgy {
-		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrNoReply, agent.Kind)
+		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrUnsupportedAgent, agent.Kind)
 	}
 	tuple, err := r.session(ctx, agent.PaneID)
 	if err != nil {

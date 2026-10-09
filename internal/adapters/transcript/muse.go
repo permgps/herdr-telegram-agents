@@ -159,7 +159,7 @@ func (r *MuseReader) LastReply(ctx context.Context, agent domain.Agent) (domain.
 		return domain.Reply{}, err
 	}
 	if agent.Kind != kindMuse {
-		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrNoReply, agent.Kind)
+		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrUnsupportedAgent, agent.Kind)
 	}
 	if agent.Cwd == "" {
 		return domain.Reply{}, fmt.Errorf("%w: the muse pane has no working directory", domain.ErrNoReply)

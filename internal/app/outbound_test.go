@@ -1227,7 +1227,7 @@ func TestOutboundDoneStaleTranscript(t *testing.T) {
 	if sent := f.tg.Sent(); len(sent) != 1 || sent[0].Text != "recap: all tests pass" || sent[0].Footer != "" || !sent[0].Code || sent[0].Fold != 0 {
 		t.Fatalf("Sent = %+v", sent)
 	}
-	if !strings.Contains(f.logBuf.String(), `"level":"INFO","msg":"reply source unavailable","key":"p1/t1","mode":"reply","err":"no reply available: stale transcript: written 1m0s before the turn started"`) {
+	if !strings.Contains(f.logBuf.String(), `"level":"INFO","msg":"reply source unavailable","key":"p1/t1","mode":"reply","err":"stale transcript: written 1m0s before the turn started"`) {
 		t.Errorf("log = %s", f.logBuf.String())
 	}
 	// Screen mode: the screen without a line, at debug.
