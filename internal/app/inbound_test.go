@@ -1726,22 +1726,25 @@ func TestInboundTypedTextIntoBlockedDialog(t *testing.T) {
 	assertCallsEqual(t, f.tg, "buttons:1000:✅ ✏️ · use the staging db", "react:101:7:👀")
 }
 
-func TestInboundPromptToBlockedAgentIsTyped(t *testing.T) {
+// Plain text is never typed into a dialog: at a permission prompt the
+// final enter would confirm the highlighted option. Herdr's refusal is
+// passed on to the operator and nothing reaches the pane.
+func TestInboundPromptToBlockedAgentIsNotTyped(t *testing.T) {
 	f := newBridgeFixture(t)
 	f.reactionsOn(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
 	f.herdr.FailNext("prompt", domain.ErrAgentBlocked)
 
-	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "keep the old schema\nand rerun the tests")); err != nil {
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "no, fix the test first")); err != nil {
 		t.Fatal(err)
 	}
-	if texts := f.herdr.Texts(); !reflect.DeepEqual(texts, []testkit.TextCall{{Target: "p1", Text: "keep the old schema and rerun the tests"}}) {
-		t.Fatalf("Texts = %+v", texts)
+	if texts := f.herdr.Texts(); len(texts) != 0 {
+		t.Fatalf("plain text typed into a dialog: %+v", texts)
 	}
-	if keys := f.herdr.Keys(); !reflect.DeepEqual(keys, []testkit.KeysCall{{Target: "p1", Keys: []string{domain.KeyEnter}}}) {
-		t.Fatalf("Keys = %+v", keys)
+	if keys := f.herdr.Keys(); len(keys) != 0 {
+		t.Fatalf("keys sent to a dialog: %+v", keys)
 	}
-	assertCallsEqual(t, f.tg, "react:101:5:👀")
+	assertCallsEqual(t, f.tg, "send:101:⚠️ agent is waiting at a dialog: answer it with the buttons, ✏️ for your own text, or /keys; the message was not sent:reply=5")
 }
 
 func TestInboundPromptToIdleAgentNeverTypes(t *testing.T) {
@@ -1755,22 +1758,26 @@ func TestInboundPromptToIdleAgentNeverTypes(t *testing.T) {
 	}
 }
 
-func TestInboundTypingIntoDialogFailureIsReported(t *testing.T) {
+func TestInboundTypedTextIntoDialogFailureIsReported(t *testing.T) {
 	f := newBridgeFixture(t)
-	f.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
+	blockedWithDialog(t, f, dialogScreen)
+	if err := f.out.Press(f.ctx, press(101, 1000, "t:4")); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
 	f.herdr.FailNext("prompt", domain.ErrAgentBlocked)
 	f.herdr.FailNext("text", domain.ErrAgentGone)
 
 	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 5, "go on")); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(f.herdr.Keys()); n != 0 {
-		t.Fatalf("enter after a failed send_text: %d", n)
+	if keys := f.herdr.Keys(); len(keys) != 1 || keys[0].Keys[0] != "4" {
+		t.Fatalf("enter after a failed send_text: %+v", keys)
 	}
 	assertCallsEqual(t, f.tg, "send:101:⚠️ agent is gone:reply=5")
 }
 
-func TestInboundAttachmentIntoBlockedDialogSkipsDelayedSubmit(t *testing.T) {
+func TestInboundAttachmentToBlockedAgentIsNotTyped(t *testing.T) {
 	f := newBridgeFixture(t)
 	f.add(t, "p1", "t1", "reviewer", domain.StatusBlocked)
 	f.tg.SetFile("file1", []byte("jpegbytes"))
@@ -1778,16 +1785,19 @@ func TestInboundAttachmentIntoBlockedDialogSkipsDelayedSubmit(t *testing.T) {
 	if err := f.in.HandleAttachment(f.ctx, attachment(101, 42, domain.AttachmentPhoto, "file1", "", "look", 9)); err != nil {
 		t.Fatal(err)
 	}
-	if texts := f.herdr.Texts(); !reflect.DeepEqual(texts, []testkit.TextCall{{Target: "p1", Text: "look /state/inbox/20260902-120000-42-photo.jpg"}}) {
-		t.Fatalf("Texts = %+v", texts)
+	if texts := f.herdr.Texts(); len(texts) != 0 {
+		t.Fatalf("attachment typed into a dialog: %+v", texts)
 	}
-	// The fallback pressed enter once; no second enter is scheduled.
+	// The refused prompt arms no delayed enter either.
 	if f.clock.Pending() != 0 {
-		t.Fatalf("delayed submit armed after typing into the dialog: %d timers", f.clock.Pending())
+		t.Fatalf("delayed submit armed after a refused prompt: %d timers", f.clock.Pending())
 	}
 	f.clock.Advance(2 * inboxSubmitDelay)
-	if keys := f.herdr.Keys(); !reflect.DeepEqual(keys, []testkit.KeysCall{{Target: "p1", Keys: []string{domain.KeyEnter}}}) {
+	if keys := f.herdr.Keys(); len(keys) != 0 {
 		t.Fatalf("Keys = %+v", keys)
+	}
+	if !strings.Contains(strings.Join(f.tg.Calls(), "\n"), "agent is waiting at a dialog") {
+		t.Fatalf("refusal not reported: %q", f.tg.Calls())
 	}
 }
 
@@ -1804,7 +1814,7 @@ func TestInboundForwardIntoBlockedAgentIsNotTyped(t *testing.T) {
 	if texts := f.herdr.Texts(); len(texts) != 0 {
 		t.Fatalf("forward typed into a dialog: %+v", texts)
 	}
-	assertCallsEqual(t, f.tg, "send:101:⚠️ agent is waiting at a dialog: answer it with the buttons or a number first:reply=30")
+	assertCallsEqual(t, f.tg, "send:101:⚠️ agent is waiting at a dialog: answer it with the buttons, ✏️ for your own text, or /keys; the message was not sent:reply=30")
 }
 
 func opCmd(id int, text string) domain.GeneralCommand {

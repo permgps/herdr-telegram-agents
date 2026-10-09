@@ -443,25 +443,22 @@ func TestPrivateForwardRefusedWhileBusy(t *testing.T) {
 	}
 }
 
-// A Control recipient's answer to a blocked agent is typed into the dialog
-// when Herdr refuses the prompt (agent_blocked, issue #37).
-func TestPrivatePromptToBlockedAgentIsTyped(t *testing.T) {
+// A Control recipient's plain message to a blocked agent is never typed
+// into the dialog: Herdr's refusal comes back as advice, nothing reaches
+// the pane.
+func TestPrivatePromptToBlockedAgentIsNotTyped(t *testing.T) {
 	f := newPrivateFixture(t, domain.ShareControl)
 	f.setAgent(domain.StatusBlocked, 1)
 	f.h.FailNext("prompt", domain.ErrAgentBlocked)
-	if err := f.p.Handle(context.Background(), domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "use the\nstaging db"}); err != nil {
-		t.Fatal(err)
+	_ = f.p.Handle(context.Background(), domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "no, fix the test first"})
+	if texts := f.h.Texts(); len(texts) != 0 {
+		t.Fatalf("plain text typed into a dialog: %+v", texts)
 	}
-	if texts := f.h.Texts(); len(texts) != 1 || texts[0] != (testkit.TextCall{Target: "p", Text: "use the staging db"}) {
-		t.Fatalf("Texts = %+v", texts)
+	if keys := f.h.Keys(); len(keys) != 0 {
+		t.Fatalf("keys sent to a dialog: %+v", keys)
 	}
-	if keys := f.h.Keys(); len(keys) != 1 || keys[0].Target != "p" || len(keys[0].Keys) != 1 || keys[0].Keys[0] != domain.KeyEnter {
-		t.Fatalf("Keys = %+v", keys)
-	}
-	for _, c := range f.tg.Calls() {
-		if strings.Contains(c, "not retried") {
-			t.Fatalf("typed delivery reported as a failure: %q", f.tg.Calls())
-		}
+	if got := f.lastPrivate(t); !strings.HasPrefix(got, "The agent is waiting at a dialog.") {
+		t.Fatalf("refusal not explained: %q", got)
 	}
 }
 

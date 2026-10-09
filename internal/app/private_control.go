@@ -175,6 +175,10 @@ type privateAlbum struct {
 	due         time.Time
 }
 
+// privateBlockedNotice answers a message Herdr refused because the agent
+// waits at a dialog: plain text is never typed into one.
+const privateBlockedNotice = "The agent is waiting at a dialog. Answer it with the buttons, ✏️ for your own text, or /keys. The message was not sent."
+
 const privateHelp = "Shared agent commands: /help, /status, /agents, /screen [N|all]. Control also permits prompts, attachments, /keys, /stop, /interrupt, /clear, /compact, /usage and /model. Repository, close and focus permissions are checked separately. /pause, /resume and /alias affect only this mirror."
 
 func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) error {
@@ -258,6 +262,9 @@ func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) er
 				p.log().Info("private prompt held for picker", slog.String("key", o.Key.String()), slog.String("word", word), slog.Int64("actor", o.ActorID))
 				return p.send(ctx, o, fmt.Sprintf(pickerRefusedFmt, "/"+word))
 			}
+		}
+		if !typed {
+			return p.effect(ctx, o, action, func(ctx context.Context) error { return p.Herdr.Prompt(ctx, o.Key.PaneID, cmd.Text) })
 		}
 		return p.effect(ctx, o, action, func(ctx context.Context) error { return p.deliver(ctx, o, cmd.Text) })
 	case domain.CmdKeys:
@@ -380,7 +387,11 @@ func (p *PrivateControl) effect(ctx context.Context, o domain.ShareOrigin, actio
 	err := run(callCtx)
 	p.Sharing.log.Info("private agent action", "actor_id", o.ActorID, "grant_id", o.GrantID, "action", string(action), "success", err == nil)
 	if err != nil {
-		_ = p.send(ctx, o, "The agent action failed. It was not retried.")
+		notice := "The agent action failed. It was not retried."
+		if errors.Is(err, domain.ErrAgentBlocked) {
+			notice = privateBlockedNotice
+		}
+		_ = p.send(ctx, o, notice)
 		return errors.New("private agent action failed")
 	}
 	return p.Telegram.ReactAt(ctx, domain.MessageAddress{ChatID: o.Address.ChatID, MessageID: o.MessageID}, "👍", p.Sharing.Guard(o, domain.ShareOutput))
@@ -756,15 +767,16 @@ func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAtta
 				}
 			}
 			return p.effect(ctx, o, domain.ShareAttachment, func(ctx context.Context) error {
-				return p.deliver(ctx, o, domain.AttachmentPrompt(caption, paths))
+				return p.Herdr.Prompt(ctx, o.Key.PaneID, domain.AttachmentPrompt(caption, paths))
 			})
 		}
 	})
 }
 
-// deliver sends a recipient's text as a prompt, typed into the dialog when
-// Herdr refuses the prompt for a blocked agent (see deliverText). Forwarded
-// commands never come here: they are not typed into a dialog.
+// deliver sends the free text of a recipient's ✏️ answer, typed into the
+// dialog when Herdr refuses the prompt for a blocked agent (see
+// deliverText). Plain messages, attachments and forwarded commands never
+// come here: they are not typed into a dialog.
 func (p *PrivateControl) deliver(ctx context.Context, o domain.ShareOrigin, text string) error {
 	intoDialog, err := deliverText(ctx, p.Herdr, p.log(), o.Key.PaneID, text)
 	if intoDialog {

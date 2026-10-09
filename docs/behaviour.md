@@ -215,14 +215,18 @@ at DEBUG without screen text; a final failed read produces one WARN.
   screen is read after the press: the text box the agent shows is not a
   question.
 - Herdr 0.9.3 and later refuse `agent.prompt` for an agent waiting at a
-  dialog (`agent_blocked`), before any input reaches the pane. The text
-  after ✏️, plain text and attachment paths sent to a blocked agent are
-  then typed into the dialog through `pane.send_text` and submitted with
-  `enter`, as at the desk. That input has no bracketed paste, so line
-  breaks are joined with spaces: a break would submit half the answer. A
-  forwarded Claude command (`/clear`, `/model` …) is never typed into a
-  dialog; it answers `⚠️ agent is waiting at a dialog`. Herdr 0.7.5 never
-  refuses, so nothing changes there.
+  dialog (`agent_blocked`), before any input reaches the pane. Only the
+  text after ✏️ is then typed into the dialog's text box through
+  `pane.send_text` and submitted with `enter`: the press chose the
+  free-text entry, so a box is open. That input has no bracketed paste, so
+  line breaks are joined with spaces: a break would submit half the
+  answer. Plain text, attachment paths and forwarded Claude commands
+  (`/clear`, `/model` …) are never typed into a dialog: a select menu
+  ignores most of the text, a digit picks an option, and the final
+  `enter` confirms the highlighted one, usually the approval. They answer
+  `⚠️ agent is waiting at a dialog: answer it with the buttons, ✏️ for your
+  own text, or /keys; the message was not sent` (a private recipient gets
+  the same advice). Herdr 0.7.5 never refuses, so nothing changes there.
 - A multi-select dialog (every option starts with a checkbox: `[ ]`,
   `[x]`, the `[✔]` Claude Code draws once an option is toggled, or `☐` /
   `☑`) keeps its buttons as toggles: a press sends the digit, answers

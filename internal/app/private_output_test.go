@@ -183,6 +183,49 @@ func TestPrivateOldTextEntryButtonDoesNotAnswerANewDialog(t *testing.T) {
 	}
 }
 
+// The recipient's ✏️ answer is the one text typed into a dialog: the press
+// chose the free-text entry, so Herdr's refusal is followed by
+// pane.send_text and enter.
+func TestPrivateTextEntryAnswerIsTypedIntoDialog(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	ctx := context.Background()
+	output := &app.PrivateOutput{Control: f.p}
+	f.p.Output = output
+	f.h.SetScreen("p", "Which colour?\n\n❯ 1. Red\n  2. Green\n  3. Type something.\n\nEnter to select · ↑/↓ to navigate · Esc to cancel")
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusBlocked, 1)})
+	f.now = f.now.Add(3 * time.Second)
+	if err := output.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.tg.Destination(10).Sent()
+	post := sent[len(sent)-1]
+	var text domain.Button
+	for _, b := range post.Buttons {
+		if strings.Contains(b.Text, "Type something") {
+			text = b
+		}
+	}
+	if text.Data == "" {
+		t.Fatalf("no text-entry button in %+v", post.Buttons)
+	}
+	press := domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address,
+		MessageID: 1000 + len(sent) - 1, CallbackID: "cb", CallbackData: text.Data}
+	if err := f.p.Handle(ctx, press); err != nil {
+		t.Fatal(err)
+	}
+	f.h.FailNext("prompt", domain.ErrAgentBlocked)
+	if err := f.p.Handle(ctx, domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 2000, Text: "teal,\nplease"}); err != nil {
+		t.Fatal(err)
+	}
+	if texts := f.h.Texts(); len(texts) != 1 || texts[0] != (testkit.TextCall{Target: "p", Text: "teal, please"}) {
+		t.Fatalf("Texts = %+v", texts)
+	}
+	keys := f.h.Keys()
+	if len(keys) != 2 || keys[0].Keys[0] != "3" || keys[1].Keys[0] != domain.KeyEnter {
+		t.Fatalf("Keys = %+v", keys)
+	}
+}
+
 // openCodeMirror turns the fixture's agent into an OpenCode agent whose
 // exact replies come from the returned fake, wired as the mirror's output
 // and /screen reader.
