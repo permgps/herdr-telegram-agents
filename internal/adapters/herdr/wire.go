@@ -182,6 +182,13 @@ type sendTextParams struct {
 	Text   string `json:"text"`
 }
 
+// paneSendKeysParams is pane.send_keys: the key names addressed by pane,
+// which is how input reaches an agent Herdr does not drive itself.
+type paneSendKeysParams struct {
+	PaneID string   `json:"pane_id"`
+	Keys   []string `json:"keys"`
+}
+
 type focusParams struct {
 	Target string `json:"target"`
 }

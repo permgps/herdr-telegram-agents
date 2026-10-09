@@ -221,6 +221,22 @@ at DEBUG without screen text; a final failed read produces one WARN.
   free-text entry, so a box is open. That input has no bracketed paste, so
   line breaks are joined with spaces: a break would submit half the
   answer.
+- The same Herdr refuses its agent input methods for an agent it does not
+  drive itself (`agent_not_ready`, "agent w1:p1 is not an active named
+  agent" on 0.9.3): an agent that reports its own state instead of going
+  through an official Herdr integration, Crush among them. Reads and waits
+  work there — the status in the topic icon, the screens and the done posts
+  are unchanged — so the pane is alive and does take input. A prompt is
+  then typed into it with `pane.send_text` and submitted with `enter`
+  through `pane.send_keys`, and every key the plugin sends (`/keys`,
+  `/stop`, `/interrupt`, the buttons) goes to the pane the same way.
+  Nothing has reached the pane when the refusal arrives, so the text is
+  sent once. Line breaks are joined with spaces here too: typed input
+  submits nothing by itself, so an `enter` inside the text would send the
+  message in pieces. One INFO line per fallback with the pane and the
+  lengths, never the text. Only `agent_not_ready` takes this path;
+  `agent_blocked` still reaches the dialog rules above, and an agent gone
+  from Herdr still answers as before.
 - Plain text and attachment paths refused that way are never typed into a
   dialog blind: at a permission prompt the text is ignored and the `enter`
   confirms the highlighted option, usually the approval (read live on

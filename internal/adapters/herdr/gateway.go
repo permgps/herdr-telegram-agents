@@ -234,17 +234,61 @@ func (g *Gateway) ReadScreen(ctx context.Context, target string, source domain.S
 }
 
 // Prompt types text into the agent and submits it without waiting.
+//
+// Herdr refuses agent.prompt for an agent it does not drive itself — one
+// that only reports its own state, such as Crush — with agent_not_ready
+// ("agent w1:p1 is not an active named agent", 0.9.3). The refusal comes
+// before any input reaches the pane, so the text still goes in: literally
+// through pane.send_text, then Enter through pane.send_keys, which is what
+// the agent would have received. The line breaks go with it, since raw
+// typing has no submission of its own and an Enter inside the text would
+// send the message in pieces.
+//
+// Every other refusal keeps its meaning: agent_blocked still reaches the
+// caller, which types into the dialog's own entry instead.
 func (g *Gateway) Prompt(ctx context.Context, target, text string) error {
-	return g.call(ctx, "agent.prompt", target, promptParams{Target: target, Text: text}, nil)
+	err := g.call(ctx, "agent.prompt", target, promptParams{Target: target, Text: text}, nil)
+	if !isNotDriven(err, target) {
+		return err
+	}
+	g.log.Info("herdr does not drive this agent, typing into the pane",
+		slog.String("target", target), slog.Int("text_len", len(text)))
+	flat := lineBreak.Replace(text)
+	if err := g.call(ctx, "pane.send_text", target, sendTextParams{PaneID: target, Text: flat}, nil); err != nil {
+		return err
+	}
+	return g.call(ctx, "pane.send_keys", target, paneSendKeysParams{PaneID: target, Keys: []string{"enter"}}, nil)
 }
 
-// SendKeys sends raw key names to the agent's terminal.
+// SendKeys sends raw key names to the agent's terminal, falling back to the
+// pane the way Prompt does.
 func (g *Gateway) SendKeys(ctx context.Context, target string, keys []string) error {
 	if keys == nil {
 		keys = []string{}
 	}
-	return g.call(ctx, "agent.send_keys", target, sendKeysParams{Target: target, Keys: keys}, nil)
+	err := g.call(ctx, "agent.send_keys", target, sendKeysParams{Target: target, Keys: keys}, nil)
+	if !isNotDriven(err, target) {
+		return err
+	}
+	g.log.Info("herdr does not drive this agent, sending keys to the pane",
+		slog.String("target", target), slog.Int("keys", len(keys)))
+	return g.call(ctx, "pane.send_keys", target, paneSendKeysParams{PaneID: target, Keys: keys}, nil)
 }
+
+// isNotDriven reports whether err is Herdr's agent_not_ready and target
+// names the pane the fallback needs. A target that names an agent rather
+// than a pane has no pane to address, so the refusal stays as it is.
+func isNotDriven(err error, target string) bool {
+	if !strings.Contains(target, ":") {
+		return false
+	}
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == codeNotDriven
+}
+
+// lineBreak folds a message onto one line, for input that is typed rather
+// than submitted.
+var lineBreak = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
 
 // SendText types literal text into the pane through pane.send_text; it
 // presses no enter. The text itself is never logged, only its length.
