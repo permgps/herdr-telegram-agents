@@ -215,18 +215,35 @@ at DEBUG without screen text; a final failed read produces one WARN.
   screen is read after the press: the text box the agent shows is not a
   question.
 - Herdr 0.9.3 and later refuse `agent.prompt` for an agent waiting at a
-  dialog (`agent_blocked`), before any input reaches the pane. Only the
-  text after ✏️ is then typed into the dialog's text box through
+  dialog (`agent_blocked`), before any input reaches the pane. The text
+  after ✏️ is then typed into the dialog's text box through
   `pane.send_text` and submitted with `enter`: the press chose the
   free-text entry, so a box is open. That input has no bracketed paste, so
   line breaks are joined with spaces: a break would submit half the
-  answer. Plain text, attachment paths and forwarded Claude commands
-  (`/clear`, `/model` …) are never typed into a dialog: a select menu
-  ignores most of the text, a digit picks an option, and the final
-  `enter` confirms the highlighted one, usually the approval. They answer
-  `⚠️ agent is waiting at a dialog: answer it with the buttons, ✏️ for your
-  own text, or /keys; the message was not sent` (a private recipient gets
-  the same advice). Herdr 0.7.5 never refuses, so nothing changes there.
+  answer.
+- Plain text and attachment paths refused that way are never typed into a
+  dialog blind: at a permission prompt the text is ignored and the `enter`
+  confirms the highlighted option, usually the approval (read live on
+  2026-10-09: a typed "no, fix the test first" plus `enter` ran the
+  command). They go in only through a question's `Type something` entry,
+  the way ✏️ does it by hand, and only for Claude Code, whose typing state
+  was read on a real screen: the dialog behind the latest buttons must
+  have that entry and not be multi-select, a fresh screen must still show
+  that very dialog (same options and labels), the entry's digit is
+  pressed (skipped when the entry already has the focus, where a digit
+  would be typed as text), and the screen is read again every 150 ms, up
+  to 1.2 s, until the entry has the focus: the `❯` cursor on the entry and
+  Claude Code's `ctrl+g to edit` hint in the dialog's footer. Only then is
+  the text typed and submitted; the buttons become `✅ ✏️ · <start of the
+  text>` and the message gets 👀. Any failed check (no such entry, a
+  permission prompt, a changed dialog, an entry that never took the focus,
+  another agent kind) types nothing and answers `⚠️ agent is waiting at a
+  dialog: answer it with the buttons, ✏️ for your own text, or /keys; the
+  message was not sent`. A private recipient follows the same rule
+  against the question their own buttons showed, with the check on the
+  private tick (three tries, a second apart), and gets the same advice.
+  Forwarded Claude commands (`/clear`, `/model` …) are never typed into a
+  dialog. Herdr 0.7.5 never refuses a prompt, so nothing changes there.
 - A multi-select dialog (every option starts with a checkbox: `[ ]`,
   `[x]`, the `[✔]` Claude Code draws once an option is toggled, or `☐` /
   `☑`) keeps its buttons as toggles: a press sends the digit, answers

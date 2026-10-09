@@ -3,6 +3,9 @@ package app_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -223,6 +226,105 @@ func TestPrivateTextEntryAnswerIsTypedIntoDialog(t *testing.T) {
 	keys := f.h.Keys()
 	if len(keys) != 2 || keys[0].Keys[0] != "3" || keys[1].Keys[0] != domain.KeyEnter {
 		t.Fatalf("Keys = %+v", keys)
+	}
+}
+
+// privateLiveScreen reads a Claude Code screen captured live on 2026-10-09
+// (see internal/domain/testdata/claude).
+func privateLiveScreen(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "domain", "testdata", "claude", name+".txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// postPrivateDialog mirrors a blocked Claude Code screen to the recipient
+// with its dialog buttons.
+func postPrivateDialog(t *testing.T, f *privateFixture, screen string) {
+	t.Helper()
+	output := &app.PrivateOutput{Control: f.p}
+	f.p.Output = output
+	f.h.SetScreen("p", screen)
+	output.Observe(app.AgentEvent{Kind: app.AgentChanged, Agent: f.setAgent(domain.StatusBlocked, 1)})
+	f.now = f.now.Add(3 * time.Second)
+	if err := output.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func privateText(f *privateFixture, text string) domain.PrivateMessage {
+	return domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 2000, Text: text}
+}
+
+// A recipient's plain message answers the question they were shown through
+// its free-text entry, typed only once a later screen shows the entry
+// focused.
+func TestPrivatePlainAnswerGoesThroughVerifiedEntry(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	ctx := context.Background()
+	postPrivateDialog(t, f, privateLiveScreen(t, "question"))
+	f.h.SetScreenAfterKeys("p", "4", privateLiveScreen(t, "question-entry-open"))
+	f.h.FailNext("prompt", domain.ErrAgentBlocked)
+	if err := f.p.Handle(ctx, privateText(f, "teal 2\nplease")); err != nil {
+		t.Fatal(err)
+	}
+	if keys := f.h.Keys(); len(keys) != 1 || !reflect.DeepEqual(keys[0].Keys, []string{"4"}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	if texts := f.h.Texts(); len(texts) != 0 {
+		t.Fatalf("typed before the entry was verified: %+v", texts)
+	}
+	if err := f.p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if texts := f.h.Texts(); len(texts) != 1 || texts[0] != (testkit.TextCall{Target: "p", Text: "teal 2 please"}) {
+		t.Fatalf("Texts = %+v", texts)
+	}
+	if keys := f.h.Keys(); len(keys) != 2 || !reflect.DeepEqual(keys[1].Keys, []string{domain.KeyEnter}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	if got := f.lastPrivate(t); strings.Contains(got, "waiting at a dialog") || strings.Contains(got, "failed") {
+		t.Fatalf("delivered answer reported as refused: %q", got)
+	}
+}
+
+func TestPrivatePlainAnswerRefusedAtPermissionDialog(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	postPrivateDialog(t, f, privateLiveScreen(t, "permission"))
+	f.h.FailNext("prompt", domain.ErrAgentBlocked)
+	_ = f.p.Handle(context.Background(), privateText(f, "no, fix the test first"))
+	if keys, texts := f.h.Keys(), f.h.Texts(); len(keys) != 0 || len(texts) != 0 {
+		t.Fatalf("Keys = %+v, Texts = %+v", keys, texts)
+	}
+	if got := f.lastPrivate(t); !strings.HasPrefix(got, "The agent is waiting at a dialog.") {
+		t.Fatalf("refusal not explained: %q", got)
+	}
+}
+
+func TestPrivatePlainAnswerGivesUpWhenEntryNeverOpens(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	ctx := context.Background()
+	postPrivateDialog(t, f, privateLiveScreen(t, "question"))
+	f.h.SetScreenAfterKeys("p", "4", privateLiveScreen(t, "permission"))
+	f.h.FailNext("prompt", domain.ErrAgentBlocked)
+	if err := f.p.Handle(ctx, privateText(f, "teal")); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := f.p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if texts := f.h.Texts(); len(texts) != 0 {
+		t.Fatalf("typed into another dialog: %+v", texts)
+	}
+	if keys := f.h.Keys(); len(keys) != 1 {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	if got := f.lastPrivate(t); !strings.HasPrefix(got, "The agent is waiting at a dialog.") {
+		t.Fatalf("give-up not explained: %q", got)
 	}
 }
 

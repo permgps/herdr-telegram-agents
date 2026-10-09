@@ -1,0 +1,16 @@
+ ▝▝   ▝▝   /tmp/demo
+❯ Use the AskUserQuestion tool right now to ask me which colour I prefer, with exactly three options: Red, Green, Blue.
+  Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Colour
+Which colour do you prefer?
+❯ 1. Red
+     Red
+  2. Green
+     Green
+  3. Blue
+     Blue
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel

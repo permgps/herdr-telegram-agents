@@ -161,6 +161,9 @@ type inbound struct {
 	// albums collects the parts of a media group until albumSettle passes
 	// after the last one; the debouncer key is albumKey(groupID).
 	albums map[string]*album
+	// answers are plain messages waiting for their dialog's free-text
+	// entry to open, one per pane; the debouncer key is answerKey(pane).
+	answers map[string]entryAnswer
 }
 
 // followUp is a forwarded command waiting for its settle timer: which
@@ -201,6 +204,7 @@ func newInbound(herdr domain.HerdrGateway, tg domain.TelegramGateway, topics *to
 		pickers: map[domain.Key]heldPicker{},
 		closing: map[domain.Key]int{},
 		albums:  map[string]*album{},
+		answers: map[string]entryAnswer{},
 	}
 	in.async = func(run func(context.Context) any) {
 		_ = in.asyncDone(context.Background(), run(context.Background()))
@@ -280,11 +284,14 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 				slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID), slog.Int("len", len(msg.Text)))
 			return i.reply(ctx, msg.ThreadID, msg.MessageID, fmt.Sprintf(pickerRefusedFmt, "/"+word))
 		}
-		// Plain text is never typed into a dialog: a select menu ignores
-		// most of it and the final enter confirms the highlighted option.
-		// Herdr refuses the prompt for a blocked agent and the operator gets
-		// the reason; only the text after ✏️ goes in by typing.
+		// Herdr refuses the prompt for an agent waiting at a dialog. The
+		// text is then never typed blind (a select menu ignores it and the
+		// enter confirms the highlighted option): it goes in only through a
+		// free-text entry verified on the screen, see answerBlocked.
 		if err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text); err != nil {
+			if errors.Is(err, domain.ErrAgentBlocked) {
+				return i.answerBlocked(ctx, msg, key, agent, cmd.Text)
+			}
 			return i.failed(ctx, msg, key, "prompt", err)
 		}
 		i.log.Debug("herdr call ok", slog.String("method", "prompt"), slog.String("key", key.String()), slog.Int("message_id", msg.MessageID))
@@ -575,6 +582,9 @@ func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
 	}
 	if pane, ok := strings.CutPrefix(key.PaneID, submitPrefix); ok {
 		return i.fireSubmit(ctx, pane)
+	}
+	if pane, ok := strings.CutPrefix(key.PaneID, answerPrefix); ok {
+		return i.fireAnswer(ctx, pane)
 	}
 	f, ok := i.pending[key]
 	if !ok {
@@ -1030,6 +1040,9 @@ const (
 	// submitPrefix marks the debouncer key of the enter that follows an
 	// attachment prompt.
 	submitPrefix = "submit:"
+	// answerPrefix marks the debouncer key of the screen poll that waits
+	// for a dialog's free-text entry (see answerBlocked).
+	answerPrefix = "answer:"
 )
 
 // album is a media group being collected.
@@ -1205,8 +1218,13 @@ func (i *inbound) InboxFinished(ctx context.Context, r inboxResult) error {
 			slog.Int("thread_id", r.threadID), slog.Int("message_id", r.messageID), slog.Int("saved", len(r.paths)))
 		return i.reply(ctx, r.threadID, r.messageID, fmt.Sprintf(pickerRefusedFmt, "/"+word))
 	}
-	// Like plain text, the attachment prompt is never typed into a dialog.
+	// Like plain text, the attachment prompt goes into a dialog only
+	// through its verified free-text entry, which submits it at once: no
+	// delayed enter follows.
 	if err := i.herdr.Prompt(ctx, r.key.PaneID, domain.AttachmentPrompt(r.caption, r.paths)); err != nil {
+		if errors.Is(err, domain.ErrAgentBlocked) {
+			return i.answerBlocked(ctx, msg, r.key, agent, domain.AttachmentPrompt(r.caption, r.paths))
+		}
 		return i.failed(ctx, msg, r.key, "prompt", err)
 	}
 	i.log.Info("inbox delivered", slog.String("key", r.key.String()), slog.Int("message_id", r.messageID), slog.Int("saved", len(r.paths)),

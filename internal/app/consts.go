@@ -138,6 +138,12 @@ const (
 	typingTimeout = 10 * time.Minute
 	// typingHeadRunes is how much of the typed text the ✅ ✏️ button shows.
 	typingHeadRunes = 30
+	// entryPollDelay and entryPolls bound the wait for a dialog's free-text
+	// entry to take the focus after its digit was pressed for a plain
+	// message (see answerBlocked). Claude Code drew the focused entry within
+	// 150 ms on 2026-10-09; eight polls allow 1.2 s.
+	entryPollDelay = 150 * time.Millisecond
+	entryPolls     = 8
 	// unreadableNoticeAfter is how many consecutive done posts of an agent
 	// with a reader may fail to read a reply before one notice lands in its
 	// topic, so a reader that stopped working never degrades to screens

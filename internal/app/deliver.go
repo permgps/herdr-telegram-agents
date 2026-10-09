@@ -24,13 +24,27 @@ func deliverText(ctx context.Context, h domain.HerdrGateway, log *slog.Logger, p
 	if !errors.Is(err, domain.ErrAgentBlocked) {
 		return false, err
 	}
-	line, lines := domain.DialogText(text)
-	if line == "" {
+	if line, _ := domain.DialogText(text); line == "" {
 		log.Info("prompt refused at dialog, nothing to type", slog.String("pane", paneID), slog.Int("text_len", len(text)))
 		return false, err
 	}
-	log.Info("prompt refused at dialog, typing into pane", slog.String("pane", paneID),
-		slog.Int("text_len", len(line)), slog.Int("lines", lines))
+	log.Info("prompt refused at dialog, typing into pane", slog.String("pane", paneID), slog.Int("text_len", len(text)))
+	return typeIntoEntry(ctx, h, log, paneID, text)
+}
+
+// typeIntoEntry types text into a dialog's open free-text entry as one line
+// (domain.DialogText: pane.send_text has no bracketed paste, so a line
+// break would submit half the answer) and submits it with enter. typed
+// reports that the text went in; it is also true when the enter failed.
+// The caller must know the entry is open (the ✏️ press, or
+// domain.TextEntryOpen on a fresh screen): anywhere else the enter could
+// confirm a highlighted option.
+func typeIntoEntry(ctx context.Context, h domain.HerdrGateway, log *slog.Logger, paneID, text string) (typed bool, err error) {
+	line, lines := domain.DialogText(text)
+	if line == "" {
+		return false, errors.New("type into dialog: nothing to type")
+	}
+	log.Debug("typing into dialog entry", slog.String("pane", paneID), slog.Int("text_len", len(line)), slog.Int("lines", lines))
 	if err := h.SendText(ctx, paneID, line); err != nil {
 		log.Warn("dialog typing failed", slog.String("pane", paneID), slog.String("step", "send_text"), slog.String("err", err.Error()))
 		return false, fmt.Errorf("type into dialog: %w", err)

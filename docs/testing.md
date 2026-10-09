@@ -226,6 +226,13 @@ Telegram group on a phone.
   through the store read, not the 12-line screen.
 - [ ] Without `sqlite3`, a normal session (export below the cap) still posts
   the whole answer through the export fallback.
+- [ ] Plain text to a blocked Claude Code agent: at a question with `Type
+  something` the text arrives as the answer (log `blocked text waits for
+  the dialog entry`, then `blocked text typed into the dialog entry`; the
+  buttons become `✅ ✏️ · …`); at a permission prompt nothing reaches the
+  pane and the reply says the message was not sent. Repeat once from a
+  private recipient. The screens were read in tmux on 2026-10-09 (Claude
+  Code 2.1.295), not yet through Herdr and Telegram.
 
 ## Stable topics across Herdr restarts (v0.10.3)
 

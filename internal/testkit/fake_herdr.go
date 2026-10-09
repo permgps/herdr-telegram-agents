@@ -69,6 +69,7 @@ type FakeHerdr struct {
 	listErr    error
 	listN      int
 	watches    [][]string
+	afterKeys  map[string]string
 	notifies   []Notification
 	prompts    []string
 	screens    map[string]string
@@ -119,6 +120,19 @@ func (f *FakeHerdr) SetScreen(target, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.screens[target] = text
+}
+
+// SetScreenAfterKeys makes the next SendKeys call carrying key switch the
+// target's screen to text, as the agent redraws once it got the key (a
+// dialog's free-text entry taking the focus, or another dialog replacing
+// it).
+func (f *FakeHerdr) SetScreenAfterKeys(target, key, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.afterKeys == nil {
+		f.afterKeys = map[string]string{}
+	}
+	f.afterKeys[target+"\x00"+key] = text
 }
 
 // SetScreenAt scripts the screen text and the revision ReadScreen reports
@@ -346,7 +360,16 @@ func (f *FakeHerdr) SendKeys(_ context.Context, target string, keys []string) er
 	defer f.mu.Unlock()
 	f.keys = append(f.keys, KeysCall{Target: target, Keys: append([]string(nil), keys...)})
 	f.log.Debug("fake herdr send_keys", slog.String("target", target), slog.Any("keys", keys))
-	return f.fail("keys")
+	if err := f.fail("keys"); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if text, ok := f.afterKeys[target+"\x00"+k]; ok {
+			f.screens[target] = text
+			delete(f.afterKeys, target+"\x00"+k)
+		}
+	}
+	return nil
 }
 
 func (f *FakeHerdr) SendText(_ context.Context, paneID, text string) error {

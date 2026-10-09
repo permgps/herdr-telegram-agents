@@ -50,10 +50,13 @@ type PrivateControl struct {
 	HoldPicker    func(domain.Key, domain.Agent) (string, bool)
 	ReleasePicker func(domain.Key, string)
 	// Log receives the control path's diagnostics; nil discards them.
-	Log           *slog.Logger
-	callbacks     map[string]privateButton
-	mints         uint64
-	typing        map[domain.Key]domain.ShareOrigin
+	Log       *slog.Logger
+	callbacks map[string]privateButton
+	mints     uint64
+	typing    map[domain.Key]domain.ShareOrigin
+	// answers are plain messages waiting for a dialog's free-text entry,
+	// one per agent (see prompt). Bridge goroutine only.
+	answers       map[domain.Key]privateAnswer
 	albums        map[string]*privateAlbum
 	denialNotices map[string]uint64
 }
@@ -70,6 +73,9 @@ type privateButton struct {
 	seq int64
 	// minted orders buttons that expire together, oldest first.
 	minted uint64
+	// dialog is the dialog a "text" button was drawn for (see
+	// startPrivateAnswer).
+	dialog domain.Dialog
 }
 
 // log returns the configured logger or a discarding one.
@@ -264,7 +270,7 @@ func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) er
 			}
 		}
 		if !typed {
-			return p.effect(ctx, o, action, func(ctx context.Context) error { return p.Herdr.Prompt(ctx, o.Key.PaneID, cmd.Text) })
+			return p.prompt(ctx, o, action, cmd.Text)
 		}
 		return p.effect(ctx, o, action, func(ctx context.Context) error { return p.deliver(ctx, o, cmd.Text) })
 	case domain.CmdKeys:
@@ -386,6 +392,9 @@ func (p *PrivateControl) effect(ctx context.Context, o domain.ShareOrigin, actio
 	defer done()
 	err := run(callCtx)
 	p.Sharing.log.Info("private agent action", "actor_id", o.ActorID, "grant_id", o.GrantID, "action", string(action), "success", err == nil)
+	if errors.Is(err, errAnswerPending) {
+		return nil // the entry poll reports the outcome
+	}
 	if err != nil {
 		notice := "The agent action failed. It was not retried."
 		if errors.Is(err, domain.ErrAgentBlocked) {
@@ -507,6 +516,7 @@ func (p *PrivateControl) press(ctx context.Context, e domain.PrivateMessage) err
 // Invalidate removes every mirror's callbacks before a controller acts.
 func (p *PrivateControl) InvalidatePrivate(ctx context.Context, key domain.Key) error {
 	delete(p.typing, key)
+	delete(p.answers, key)
 	messages := map[domain.MessageAddress]domain.ShareOrigin{}
 	for ref, b := range p.callbacks {
 		if b.origin.Key == key {
@@ -606,6 +616,7 @@ type privateFollowup struct {
 }
 
 func (p *PrivateControl) Tick(ctx context.Context) error {
+	p.pollPrivateAnswers(ctx)
 	if p.Dashboard != nil && p.Dashboard.Reconciler != nil {
 		_ = p.Dashboard.Reconciler.Flush(ctx)
 	}
@@ -766,9 +777,7 @@ func (p *PrivateControl) download(o domain.ShareOrigin, files []domain.TopicAtta
 					}
 				}
 			}
-			return p.effect(ctx, o, domain.ShareAttachment, func(ctx context.Context) error {
-				return p.Herdr.Prompt(ctx, o.Key.PaneID, domain.AttachmentPrompt(caption, paths))
-			})
+			return p.prompt(ctx, o, domain.ShareAttachment, domain.AttachmentPrompt(caption, paths))
 		}
 	})
 }

@@ -260,7 +260,11 @@ func (p *PrivateOutput) dialogButtons(o domain.ShareOrigin, screen string, agent
 		add("Submit", "dialog", d.SubmitKeys())
 	}
 	if d.TextEntry > 0 {
-		add(d.TextLabel, "text", []string{strconv.Itoa(d.TextEntry)})
+		// The dialog rides along so a plain message can answer it through
+		// the same entry once the screen proves it is still this dialog.
+		ref := p.Control.button(privateButton{origin: o, kind: "text", keys: []string{strconv.Itoa(d.TextEntry)},
+			expires: p.Control.Now().Add(10 * time.Minute), seq: agent.StateChangeSeq, dialog: d})
+		buttons = append(buttons, domain.Button{Text: d.TextLabel, Data: ref})
 	}
 	return buttons
 }

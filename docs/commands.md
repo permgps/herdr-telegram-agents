@@ -56,7 +56,7 @@ Anything you write in a topic reaches the agent:
 
 | You write | The agent gets |
 |-----------|----------------|
-| plain text | typed as a prompt and submitted (`agent.prompt`). Herdr 0.9.3 and later refuse a prompt for an agent waiting at a dialog (`agent_blocked`); the text is not typed into the dialog and the reply says so: answer with the buttons, ✏️ for your own text, or `/keys`. Only the text after ✏️ is typed into the dialog's text box (`pane.send_text`, line breaks joined with spaces) and submitted with `enter` |
+| plain text | typed as a prompt and submitted (`agent.prompt`). Herdr 0.9.3 and later refuse a prompt for an agent waiting at a dialog (`agent_blocked`); for a Claude Code question with a `Type something` entry the daemon then does what ✏️ does: it checks the screen still shows that question, picks the entry, waits until the entry has the focus, and types the text (`pane.send_text`, line breaks joined with spaces) with `enter`. Any other dialog, a permission prompt above all, gets nothing and the reply says so: answer with the buttons, ✏️ for your own text, or `/keys`. See [Questions and buttons](behaviour.md#questions-and-buttons) |
 | `y`, `n`, `yes`, `no`, `1`..`9`, `enter`, `ok`, `esc` while the agent is blocked | the matching key (`agent.send_keys`); in any other status these are prompts. Pressing a button under the question sends its number the same way |
 | `/keys esc enter` | raw key names |
 | `/screen` | for idle or done OpenCode, Codex, Antigravity (`agy`), Pi and Muse, the current session's last reply rendered with bold, lists, links, and code blocks, up to five messages (for Codex, Antigravity, Pi and Muse the final answer of the last turn, not cut at the screen height); if unavailable, the visible screen. Claude Code and other agents always show the visible screen. Working and blocked agents show their progress or dialog from the screen |
@@ -173,9 +173,11 @@ album (several photos sent together) is collected for a second after its
 last part and becomes one prompt with one path per line; the first caption
 wins. The message gets the same 👀 / 👌 reactions as a typed prompt when
 `React to prompts` is on. While
-the agent waits at a dialog the prompt is refused like any plain text: the
-file stays saved, nothing is typed into the dialog, and the reply says to
-answer the dialog first.
+the agent waits at a dialog the prompt follows the plain-text rule: it
+answers a Claude Code question through its verified `Type something`
+entry (caption and paths on one line, one `enter`); any other dialog gets
+nothing, the file stays saved and the reply says to answer the dialog
+first.
 
 Refusals are quoted replies: `⚠️ inbox is off (/options → Inbox)`, `⚠️ file
 too big: 25 MB > 20 MB` (the `Largest file` option; Telegram lets bots
