@@ -33,10 +33,12 @@ type Capture struct {
 	source map[domain.Key]domain.ScreenSource // last successful read source per key
 	status map[domain.Key]domain.Status
 	left   map[domain.Key]time.Time // when the agent last left working
-	// busy holds keys whose recent read Herdr refused with agent_not_idle
-	// during the current working stretch: an alternate-screen agent's
-	// history is readable only while idle, so retrying every tick only
-	// fills Herdr's log with errors. Cleared when the agent leaves working.
+	// busy holds keys whose recent read Herdr ever refused with
+	// agent_not_idle, which marks a full-screen (alternate-screen) agent.
+	// Herdr refuses such reads while the agent works and serves them while
+	// it is idle by scrolling the agent's transcript with the mouse wheel,
+	// so the user sees the pane run from top to bottom. A busy key reads
+	// visible for the rest of its life; only AgentGone clears it.
 	busy map[domain.Key]bool
 
 	// Interval is the tick between reads; Grace keeps reading after an
@@ -127,10 +129,6 @@ func (c *Capture) Observe(ev AgentEvent) {
 			slog.Int64("away_ms", away.Milliseconds()), slog.Int("committed", h.Len()))
 	case known && prev == domain.StatusWorking && cur != domain.StatusWorking:
 		c.left[key] = c.clock.Now()
-		if c.busy[key] {
-			delete(c.busy, key)
-			c.log.Debug("[FIX] recent screen reads resumed", slog.String("key", key.String()), slog.String("to", string(cur)))
-		}
 		c.log.Debug("capture grace started", slog.String("key", key.String()), slog.String("to", string(cur)))
 	}
 }
@@ -196,15 +194,18 @@ func (c *Capture) capture(ctx context.Context, key domain.Key, working bool) {
 }
 
 // read prefers the recent source, which carries scrollback, and falls back
-// to visible when Herdr refuses it as busy. While working, a key already
-// refused goes straight to visible.
+// to visible when Herdr refuses it as busy. A key already refused goes
+// straight to visible, working or not.
 func (c *Capture) read(ctx context.Context, key domain.Key, working bool) (domain.Screen, domain.ScreenSource, error) {
 	rctx, cancel := context.WithTimeout(ctx, c.ReadTimeout)
 	defer cancel()
 	c.mu.Lock()
-	skipRecent := working && c.busy[key]
+	skipRecent := c.busy[key]
 	c.mu.Unlock()
 	if skipRecent {
+		if !working {
+			c.log.Debug("[FIX] recent read skipped for a full-screen agent", slog.String("key", key.String()))
+		}
 		visible, err := c.herdr.ReadScreen(rctx, key.PaneID, domain.ScreenVisible, captureLines)
 		if err != nil {
 			return domain.Screen{}, "", err
@@ -218,13 +219,11 @@ func (c *Capture) read(ctx context.Context, key domain.Key, working bool) (domai
 	if !errors.Is(err, domain.ErrAgentBusy) || rctx.Err() != nil {
 		return domain.Screen{}, "", err
 	}
-	if working {
-		c.mu.Lock()
-		c.busy[key] = true
-		c.mu.Unlock()
-		c.log.Info("[FIX] recent screen busy, reading visible until the agent leaves working",
-			slog.String("key", key.String()), slog.String("err", err.Error()))
-	}
+	c.mu.Lock()
+	c.busy[key] = true
+	c.mu.Unlock()
+	c.log.Info("[FIX] recent screen busy, reading visible for the agent's lifetime",
+		slog.String("key", key.String()), slog.Bool("working", working), slog.String("err", err.Error()))
 
 	visible, visibleErr := c.herdr.ReadScreen(rctx, key.PaneID, domain.ScreenVisible, captureLines)
 	if visibleErr != nil {

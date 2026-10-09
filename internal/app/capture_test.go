@@ -145,45 +145,23 @@ func TestCaptureTickReadsWorkingAgentsOnly(t *testing.T) {
 	}
 }
 
+// A recent screen merged after a visible one carries an older prefix the
+// visible snapshot lacked; the history must stay continuous.
 func TestCaptureVisibleThenRecentWithOlderPrefixKeepsHistoryContinuous(t *testing.T) {
 	f := newCaptureFixture(t)
 	a := f.agent("p1", domain.StatusWorking)
-	h := f.scriptReads(
-		scriptedRead{source: domain.ScreenRecent, screen: domain.Screen{Text: text(1, 20)}},
-		scriptedRead{source: domain.ScreenRecent, err: domain.ErrAgentBusy},
-		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(4, 24)}},
-		scriptedRead{source: domain.ScreenRecent, screen: domain.Screen{Text: text(1, 28)}},
-	)
-
-	f.capture.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
-	f.capture.tick(f.ctx)
-	f.capture.tick(f.ctx)
-	// Herdr refuses recent reads until the agent leaves working.
-	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusIdle)})
-	f.capture.tick(f.ctx)
-	wantCalls := []testkit.ReadCall{
-		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
-		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
-		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
-		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
-	}
-	if got := h.Reads(); !reflect.DeepEqual(got, wantCalls) {
-		t.Fatalf("Reads = %+v\nwant %+v", got, wantCalls)
-	}
+	f.capture.merge(a.Key, domain.Screen{Text: text(1, 20)}, domain.ScreenRecent)
+	f.capture.merge(a.Key, domain.Screen{Text: text(4, 24)}, domain.ScreenVisible)
+	f.capture.merge(a.Key, domain.Screen{Text: text(1, 28)}, domain.ScreenRecent)
 	if got, want := f.capture.hist[a.Key].Lines(), screenLines(text(1, 28)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("history after visible → recent = %v\nwant %v", got, want)
-	}
-	if got := f.logs.count(slog.LevelDebug, "capture used visible screen fallback"); got != 1 {
-		t.Fatalf("visible fallback DEBUG records = %d, want 1", got)
-	}
-	if got := f.logs.count(slog.LevelWarn, "capture read failed"); got != 0 {
-		t.Fatalf("capture read WARN records after fallback success = %d, want 0", got)
 	}
 }
 
 // Herdr answers every recent read of a working alternate-screen agent with
-// agent_not_idle, so once it did the capture reads visible directly until
-// the agent leaves working; otherwise Herdr logs one error per second.
+// agent_not_idle, so once it did the capture reads visible directly, also
+// after the agent leaves working; otherwise Herdr logs one error per second
+// while it works and scrolls its transcript once it is idle.
 func TestCaptureReadsVisibleWhileRecentIsBusy(t *testing.T) {
 	f := newCaptureFixture(t)
 	a := f.agent("p1", domain.StatusWorking)
@@ -193,7 +171,7 @@ func TestCaptureReadsVisibleWhileRecentIsBusy(t *testing.T) {
 		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(1, 20)}},
 		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(2, 21)}},
 		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(3, 22)}},
-		scriptedRead{source: domain.ScreenRecent, screen: domain.Screen{Text: text(1, 24)}},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(5, 24)}},
 	)
 	for range 3 {
 		f.capture.tick(f.ctx)
@@ -207,13 +185,98 @@ func TestCaptureReadsVisibleWhileRecentIsBusy(t *testing.T) {
 		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
 		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
 		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
-		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
 	}
 	if got := h.Reads(); !reflect.DeepEqual(got, wantCalls) {
 		t.Fatalf("Reads = %+v\nwant %+v", got, wantCalls)
 	}
 	if got, want := f.capture.hist[a.Key].Lines(), screenLines(text(1, 24)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("history = %v\nwant %v", got, want)
+	}
+}
+
+// Herdr serves a recent read of an idle alternate-screen agent by scrolling
+// its transcript with the mouse wheel, which the user sees as the pane
+// running from top to bottom. Once a key was refused as busy it is such an
+// agent, so neither the grace reads nor Since may ask for recent again.
+func TestCaptureNeverReadsRecentAfterBusyRefusal(t *testing.T) {
+	f := newCaptureFixture(t)
+	a := f.agent("p1", domain.StatusWorking)
+	f.capture.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
+	h := f.scriptReads(
+		scriptedRead{source: domain.ScreenRecent, err: domain.ErrAgentBusy},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(1, 20)}},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(2, 21)}},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(2, 21)}},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(2, 21)}},
+	)
+	f.capture.tick(f.ctx)
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusIdle)})
+	f.capture.tick(f.ctx)
+	f.clock.Advance(f.capture.Interval)
+	f.capture.tick(f.ctx)
+	if _, _, err := f.capture.Since(f.ctx, a.Key); err != nil {
+		t.Fatalf("Since = %v", err)
+	}
+
+	wantCalls := []testkit.ReadCall{
+		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
+	}
+	if got := h.Reads(); !reflect.DeepEqual(got, wantCalls) {
+		t.Fatalf("Reads = %+v\nwant %+v", got, wantCalls)
+	}
+	if got, want := f.capture.hist[a.Key].Lines(), screenLines(text(1, 21)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("history = %v\nwant %v", got, want)
+	}
+}
+
+// A refusal met outside working, for example by /screen all on a blocked
+// agent, identifies a full-screen agent just as well.
+func TestCaptureBusyRefusalOutsideWorkingSticks(t *testing.T) {
+	f := newCaptureFixture(t)
+	a := f.agent("p1", domain.StatusBlocked)
+	f.capture.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
+	h := f.scriptReads(
+		scriptedRead{source: domain.ScreenRecent, err: domain.ErrAgentBusy},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(1, 20)}},
+		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(1, 20)}},
+	)
+	for range 2 {
+		if _, _, err := f.capture.Since(f.ctx, a.Key); err != nil {
+			t.Fatalf("Since = %v", err)
+		}
+	}
+	wantCalls := []testkit.ReadCall{
+		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
+		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
+	}
+	if got := h.Reads(); !reflect.DeepEqual(got, wantCalls) {
+		t.Fatalf("Reads = %+v\nwant %+v", got, wantCalls)
+	}
+}
+
+// An agent Herdr never refuses (Codex with alternate_screen = "never") has
+// real scrollback, so the grace reads and Since keep asking for recent.
+func TestCaptureKeepsRecentForAgentNeverRefused(t *testing.T) {
+	f := newCaptureFixture(t)
+	a := domain.Agent{Key: domain.Key{PaneID: "p1", TerminalID: "t"}, Kind: "codex", Status: domain.StatusWorking}
+	f.agents[a.Key] = a
+	f.herdr.SetScreen("p1", text(1, 20))
+	f.capture.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
+	f.capture.tick(f.ctx)
+	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusIdle)})
+	f.capture.tick(f.ctx)
+	if _, _, err := f.capture.Since(f.ctx, a.Key); err != nil {
+		t.Fatalf("Since = %v", err)
+	}
+	recent := testkit.ReadCall{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines}
+	if got, want := f.herdr.Reads(), []testkit.ReadCall{recent, recent, recent}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reads = %+v\nwant %+v", got, want)
 	}
 }
 
@@ -294,29 +357,14 @@ func TestCaptureSinceUsesVisibleFallback(t *testing.T) {
 func TestCaptureUpdatesSourceWhenRecentScreenIsUnchanged(t *testing.T) {
 	f := newCaptureFixture(t)
 	a := f.agent("p1", domain.StatusWorking)
-	h := f.scriptReads(
-		scriptedRead{source: domain.ScreenRecent, err: domain.ErrAgentBusy},
-		scriptedRead{source: domain.ScreenVisible, screen: domain.Screen{Text: text(1, 20)}},
-		scriptedRead{source: domain.ScreenRecent, screen: domain.Screen{Text: text(1, 20)}},
-	)
-	f.capture.Observe(AgentEvent{Kind: AgentAppeared, Agent: a})
-	f.capture.tick(f.ctx)
-	f.capture.Observe(AgentEvent{Kind: AgentChanged, Agent: f.status(a, domain.StatusIdle)})
-	f.capture.tick(f.ctx)
+	f.capture.merge(a.Key, domain.Screen{Text: text(1, 20)}, domain.ScreenVisible)
+	f.capture.merge(a.Key, domain.Screen{Text: text(1, 20)}, domain.ScreenRecent)
 
 	if got := f.capture.source[a.Key]; got != domain.ScreenRecent {
 		t.Fatalf("last source = %q, want %q after unchanged recent read", got, domain.ScreenRecent)
 	}
 	if got, want := f.capture.hist[a.Key].Lines(), screenLines(text(1, 20)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("history after unchanged recent read = %v\nwant %v", got, want)
-	}
-	wantCalls := []testkit.ReadCall{
-		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
-		{Target: "p1", Source: domain.ScreenVisible, Lines: captureLines},
-		{Target: "p1", Source: domain.ScreenRecent, Lines: captureLines},
-	}
-	if got := h.Reads(); !reflect.DeepEqual(got, wantCalls) {
-		t.Fatalf("Reads = %+v\nwant %+v", got, wantCalls)
 	}
 }
 
@@ -344,6 +392,9 @@ func TestCaptureVisibleFallbackFailureWarnsOnceAndReturnsBothErrors(t *testing.T
 		t.Fatal("failed reads must not create or mutate history")
 	}
 
+	// A fresh capture: the refusal above made p1 read visible for good.
+	f = newCaptureFixture(t)
+	a = f.agent("p1", domain.StatusWorking)
 	h = f.scriptReads(
 		scriptedRead{source: domain.ScreenRecent, err: recentErr},
 		scriptedRead{source: domain.ScreenVisible, err: visibleErr},

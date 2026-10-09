@@ -174,7 +174,15 @@ The daemon reads up to 400 recent lines from each working pane once a second
 and merges the snapshots into in-memory history. This keeps output available
 for `/screen all` and posts after it scrolls off the terminal. If Herdr refuses
 a recent read with `agent_not_idle`, the daemon retries once with the visible
-screen under the same read deadline. Other errors are not retried. A successful
+screen under the same read deadline. Other errors are not retried. That refusal
+marks a full-screen agent (Claude Code with `"tui": "fullscreen"`, OpenCode):
+Herdr serves a recent read of such an agent once it is idle by scrolling its
+transcript with the mouse wheel, which shows up as the pane running from top
+to bottom. So from the first refusal until the agent goes away, the daemon
+reads only its visible screen, including in the seconds after a turn ends and
+for `/screen all`. Such an agent's history is built from the snapshots taken
+once a second while it works, so output that scrolls past a whole screen
+within one second can leave a gap. A successful
 visible read is merged into the same history; when a later recent read includes
 older text, the daemon removes the overlap only when it can confirm the text is
 already in history. If continuity cannot be confirmed, the history keeps a gap

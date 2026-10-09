@@ -58,7 +58,9 @@ const (
 	// captureReadTimeout bounds one agent.read made by the capture.
 	captureReadTimeout = 5 * time.Second
 	// captureLines is how many lines of recent output one capture read
-	// asks for; Claude Code panes return only the visible screen anyway.
+	// asks for. Full-screen agents (Claude Code with tui fullscreen,
+	// OpenCode) never get a recent read: Herdr would scroll their
+	// transcript to collect the lines, see Capture.busy.
 	captureLines = 400
 	// screenAllInlineRunes is the longest /screen all text still posted as
 	// messages (about three chunks); longer output goes out as a file.
