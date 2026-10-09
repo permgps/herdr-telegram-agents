@@ -222,6 +222,10 @@ Telegram group on a phone.
 - [ ] Break one agent's reply reader (e.g. point its store at an unreadable
   file): after several done posts the topic gets one ⚠️ notice; repair it
   and the next readable reply clears the streak.
+- [ ] A long OpenCode session (export over 16 MiB) posts the whole answer
+  through the store read, not the 12-line screen.
+- [ ] Without `sqlite3`, a normal session (export below the cap) still posts
+  the whole answer through the export fallback.
 
 ## Stable topics across Herdr restarts (v0.10.3)
 

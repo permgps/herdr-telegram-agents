@@ -51,6 +51,10 @@ type OpenCodeExporter struct {
 	poll     time.Duration
 	log      *slog.Logger
 	run      func(*exec.Cmd) error
+	// sqlite and dbPath read the session's last turn from opencode's own
+	// store; nil disables the database shortcut.
+	sqlite func(ctx context.Context, dbPath, query string) ([]byte, error)
+	dbPath func() (string, error)
 }
 
 // NewOpenCodeExporter returns an exporter for "opencode" on PATH whose
@@ -61,7 +65,7 @@ func NewOpenCodeExporter(stateDir string, log *slog.Logger) *OpenCodeExporter {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &OpenCodeExporter{bin: "opencode", tempDir: openCodeTempPath(stateDir), timeout: openCodeExportTimeout,
-		maxBytes: openCodeExportMaxOutput, poll: openCodeExportPoll, log: log}
+		maxBytes: openCodeExportMaxOutput, poll: openCodeExportPoll, log: log, sqlite: runOpenCodeSQLite, dbPath: defaultOpenCodeDBPath}
 }
 
 // openCodeTempPath is where export files go for stateDir.
@@ -92,6 +96,15 @@ func (e *OpenCodeExporter) Export(ctx context.Context, sessionID string) ([]byte
 	}
 	if sessionID == "" || strings.HasPrefix(sessionID, "-") {
 		return nil, fmt.Errorf("opencode export: invalid session id")
+	}
+	dbFallback := ""
+	if out, err := e.exportFromDB(ctx, sessionID); err == nil {
+		return out, nil
+	} else if parentErr := ctx.Err(); parentErr != nil {
+		return nil, fmt.Errorf("opencode export: %w", parentErr)
+	} else {
+		// Folded into the export event below: one debug line per read.
+		dbFallback = err.Error()
 	}
 	bin, err := exec.LookPath(e.bin)
 	if err != nil {
@@ -132,9 +145,13 @@ func (e *OpenCodeExporter) Export(ctx context.Context, sessionID string) ([]byte
 			category = "exit_nonzero"
 		}
 	}
-	e.log.Debug("opencode export", slog.Int64("dur_ms", time.Since(start).Milliseconds()),
+	attrs := []slog.Attr{slog.String("source", "export"), slog.Int64("dur_ms", time.Since(start).Milliseconds()),
 		slog.Int("bytes", len(result.out)), slog.Bool("capped", result.capped), slog.Bool("killed_at_cap", result.killed),
-		slog.String("category", category), slog.Int("exit_code", exitCode))
+		slog.String("category", category), slog.Int("exit_code", exitCode)}
+	if dbFallback != "" {
+		attrs = append(attrs, slog.String("db_fallback", dbFallback))
+	}
+	e.log.LogAttrs(ctx, slog.LevelDebug, "opencode export", attrs...)
 	switch {
 	case parentCtx.Err() != nil:
 		return nil, fmt.Errorf("opencode export: %w", parentCtx.Err())
