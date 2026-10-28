@@ -1392,8 +1392,9 @@ func (o *outbound) absorbEdit(key domain.Key, err error) error {
 // flag and the duplicate check because the operator asked for it. Errors
 // are returned so the caller can tell the operator.
 //
-// A bare /screen (lines == 0) on an OpenCode, Codex, agy, pi or Muse agent
-// at its prompt tries the reply source first and posts the reply rendered from Markdown:
+// A bare /screen (lines == 0) on an OpenCode, Codex, agy, pi, Muse or
+// command-code agent at its prompt tries the reply source first and posts the
+// reply rendered from Markdown:
 // OpenCode draws a multi-column TUI that comes out as scrambled text when the
 // screen is scraped row by row, and a Codex answer can be taller than the
 // screen. /screen N stays a literal screen read on purpose: an
