@@ -79,6 +79,44 @@ func TestTypedPromptUnreadableIsSilent(t *testing.T) {
 	assertCallsEqual(t, f.tg)
 }
 
+// A second prompt to the same pane replaces the pending check: only the
+// newer line is looked for, and the reply quotes the newer message.
+func TestTypedPromptNewerReplacesPending(t *testing.T) {
+	f := typedFixture(t, typedStuckScreen)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "run the linter")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 8, "fix the tests")); err != nil {
+		t.Fatal(err)
+	}
+	f.tg.Reset()
+	f.fireInboundAfter(t, typedVerifyDelay, 1)
+	assertCallsEqual(t, f.tg, "send:101:⚠️ "+failureReason(domain.ErrPromptNotSubmitted)+":reply=8")
+	if n := visibleReads(f.herdr); n != 1 {
+		t.Fatalf("screen read %d times, want 1", n)
+	}
+	if len(f.in.typedChecks) != 0 {
+		t.Fatalf("checks left pending: %+v", f.in.typedChecks)
+	}
+}
+
+// An agent gone before the check is due has no screen to read.
+func TestTypedPromptAgentGoneDropsCheck(t *testing.T) {
+	f := typedFixture(t, typedStuckScreen)
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "fix the tests")); err != nil {
+		t.Fatal(err)
+	}
+	for k := range f.agents {
+		delete(f.agents, k)
+	}
+	f.tg.Reset()
+	f.fireInboundAfter(t, typedVerifyDelay, 1)
+	if n := visibleReads(f.herdr); n != 0 {
+		t.Fatalf("screen of a gone agent read %d times", n)
+	}
+	assertCallsEqual(t, f.tg)
+}
+
 // A prompt Herdr took through agent.prompt is never read back.
 func TestDrivenPromptIsNotChecked(t *testing.T) {
 	f := newBridgeFixture(t)

@@ -477,6 +477,35 @@ func TestPrivateTypedPromptLeftInBox(t *testing.T) {
 	}
 }
 
+// A grant revoked before the check is due drops it: the pane is not read
+// for a recipient who lost access, and no notice reaches them.
+func TestPrivateTypedPromptRevokedDropsCheck(t *testing.T) {
+	f := newPrivateFixture(t, domain.ShareControl)
+	f.h.SetTyped("p")
+	f.h.SetScreen("p", "● done\n────\n❯ fix the tests\n────")
+	ctx := context.Background()
+	if err := f.p.Handle(ctx, domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "fix the tests"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.ChangeState(ctx, f.g.ID, f.g.Revision, domain.GrantRevoked, f.now); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(2 * time.Second)
+	for range 2 {
+		if err := f.p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := f.h.Reads(); len(r) != 0 {
+		t.Fatalf("screen read after the grant was revoked: %+v", r)
+	}
+	for _, m := range f.tg.Destination(10).Sent() {
+		if strings.Contains(m.Text, "did not take the enter") {
+			t.Fatalf("notice sent after the grant was revoked: %q", m.Text)
+		}
+	}
+}
+
 // A Control recipient's plain message to a blocked agent is never typed
 // into the dialog: Herdr's refusal comes back as advice, nothing reaches
 // the pane.
