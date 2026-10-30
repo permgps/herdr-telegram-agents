@@ -172,22 +172,37 @@ func (g *Gateway) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 // transient: a reply source uses its value for one lookup and never stores
 // it (see domain.SessionTuple).
 func (g *Gateway) AgentSession(ctx context.Context, paneID string) (domain.SessionTuple, error) {
-	var res agentListResult
-	if err := g.call(ctx, "agent.list", "", nil, &res); err != nil {
+	sessions, err := g.AgentSessions(ctx)
+	if err != nil {
 		return domain.SessionTuple{}, err
 	}
+	return sessions[paneID], nil
+}
+
+// AgentSessions returns the agent_session tuple Herdr reports for every
+// pane that has one, by pane id, from one agent.list call. Like
+// AgentSession the tuples are transient.
+func (g *Gateway) AgentSessions(ctx context.Context) (map[string]domain.SessionTuple, error) {
+	var res agentListResult
+	if err := g.call(ctx, "agent.list", "", nil, &res); err != nil {
+		return nil, err
+	}
+	sessions := make(map[string]domain.SessionTuple, len(res.Agents))
 	for _, a := range res.Agents {
-		if a.PaneID != paneID || a.AgentSession == nil {
+		if a.AgentSession == nil {
 			continue
 		}
-		return domain.SessionTuple{
+		if _, seen := sessions[a.PaneID]; seen {
+			continue // the first entry for a pane wins
+		}
+		sessions[a.PaneID] = domain.SessionTuple{
 			Source: a.AgentSession.Source,
 			Agent:  a.AgentSession.Agent,
 			Kind:   a.AgentSession.Kind,
 			Value:  a.AgentSession.Value,
-		}, nil
+		}
 	}
-	return domain.SessionTuple{}, nil
+	return sessions, nil
 }
 
 // PaneProcesses returns the pids of the processes in the foreground of

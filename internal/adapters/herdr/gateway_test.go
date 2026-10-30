@@ -187,6 +187,45 @@ func TestGatewayAgentSession(t *testing.T) {
 	}
 }
 
+func TestGatewayAgentSessions(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return json.RawMessage(`{"type":"agent_list","agents":[
+			{"agent":"claude","agent_status":"idle","pane_id":"p1","terminal_id":"term-1"},
+			{"agent":"claude","agent_status":"done","pane_id":"p2","terminal_id":"term-2","agent_session":{"source":"herdr:claude","agent":"claude","kind":"id","value":"first"}},
+			{"agent":"claude","agent_status":"done","pane_id":"p2","terminal_id":"term-2","agent_session":{"source":"herdr:claude","agent":"claude","kind":"id","value":"second"}},
+			{"agent":"opencode","agent_status":"idle","pane_id":"p3","terminal_id":"term-3","agent_session":{"source":"herdr:opencode","agent":"opencode","kind":"id","value":"ses_abc"}}]}`), nil
+	})
+	g := newGateway(t, s)
+
+	got, err := g.AgentSessions(ctxT(t))
+	if err != nil {
+		t.Fatalf("AgentSessions: %v", err)
+	}
+	want := map[string]domain.SessionTuple{
+		"p2": {Source: "herdr:claude", Agent: "claude", Kind: "id", Value: "first"},
+		"p3": {Source: "herdr:opencode", Agent: "opencode", Kind: "id", Value: "ses_abc"},
+	}
+	if len(got) != len(want) || got["p2"] != want["p2"] || got["p3"] != want["p3"] {
+		t.Fatalf("AgentSessions = %+v, want %+v", got, want)
+	}
+	if one, err := g.AgentSession(ctxT(t), "p2"); err != nil || one != want["p2"] {
+		t.Fatalf("AgentSession(p2) = %+v, %v; want the first entry", one, err)
+	}
+}
+
+func TestGatewayAgentSessionsError(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "internal", Message: "boom"}
+	})
+	g := newGateway(t, s)
+
+	if got, err := g.AgentSessions(ctxT(t)); err == nil || got != nil {
+		t.Fatalf("AgentSessions = %+v, %v; want an error", got, err)
+	}
+}
+
 func TestGatewayPaneProcesses(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("pane.process_info", func(id string, params json.RawMessage) (any, *testkit.APIError) {

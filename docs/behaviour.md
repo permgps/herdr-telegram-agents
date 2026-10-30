@@ -525,10 +525,21 @@ reply as the agent wrote it, before rendering and before the phone wraps
 them: a list of 25 short items folds, three long paragraphs do not. `Off`
 never folds. `Screen` posts are never folded, whatever the option says.
 
-Limits worth knowing: two Claude Code panes in the same directory cannot be
-told apart, so the reply of the one that wrote last wins (the stale check
-above catches the case where the other pane wrote before this turn began);
-other agents (Gemini, OMP) always get the screen; when no transcript or no
+Two Claude Code panes in the same directory are told apart by the session
+id Herdr reports for each pane (`agent_session`, which Herdr's Claude
+integration fills in; some panes have none): a pane with one reads that
+session's transcript and no other, and falls back to the screen when the
+file is not in the pane's project directory. A pane without one takes the
+newest transcript in the directory, unless that file is the session Herdr
+reports for another pane; it then gets the screen and the fallback counts
+as a stale transcript. This happens, for example, with Claude Code inside
+WSL next to a Windows Claude Code in the same project: the WSL session
+writes its transcript inside WSL, where the daemon does not look.
+
+Limits worth knowing: two Claude Code panes in the same directory that
+both lack a Herdr session cannot be told apart, so the reply of the one
+that wrote last wins (the stale check above catches the case where the
+other pane wrote before this turn began); other agents (Gemini, OMP) always get the screen; when no transcript or no
 text is found the daemon posts the screen and logs `reply source
 unavailable` with a safe category. For an agent kind the daemon can read,
 four unreadable replies in a row post one ⚠️ notice in the topic (no sound,

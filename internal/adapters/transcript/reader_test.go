@@ -280,7 +280,7 @@ func TestLastReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := mod.Add(3 * time.Second)
-	r := newReader(func() (string, error) { return home, nil }, func() time.Time { return now }, slog.New(slog.DiscardHandler))
+	r := newReader(nil, func() (string, error) { return home, nil }, func() time.Time { return now }, slog.New(slog.DiscardHandler))
 	agent := domain.Agent{Key: domain.Key{PaneID: "p1", TerminalID: "t1"}, Kind: "claude", Cwd: cwd}
 
 	reply, err := r.LastReply(context.Background(), agent)
@@ -305,7 +305,7 @@ func TestLastReply(t *testing.T) {
 			t.Errorf("%s: err = %v", reason, err)
 		}
 	}
-	broken := newReader(func() (string, error) { return "", errors.New("no home") }, time.Now, nil)
+	broken := newReader(nil, func() (string, error) { return "", errors.New("no home") }, time.Now, nil)
 	if _, err := broken.LastReply(context.Background(), agent); !errors.Is(err, domain.ErrNoReply) {
 		t.Errorf("home failure err = %v", err)
 	}
@@ -314,4 +314,112 @@ func TestLastReply(t *testing.T) {
 	if _, err := r.LastReply(ctx, agent); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled ctx err = %v", err)
 	}
+}
+
+// TestLastReplyBySession covers two Claude panes in one directory: a pane
+// whose session Herdr reports reads that session's file, and a pane
+// without one never takes the newest file when it is another pane's.
+func TestLastReplyBySession(t *testing.T) {
+	const (
+		mine   = "11111111-1111-4111-8111-111111111111"
+		theirs = "22222222-2222-4222-8222-222222222222"
+		loose  = "33333333-3333-4333-8333-333333333333"
+	)
+	home := t.TempDir()
+	cwd := "/Users/op/Projects/demo"
+	dir := filepath.Join(home, ".claude", "projects", projectSlug(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(filepath.Join("testdata", "meta.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 10, 29, 19, 0, 0, 0, time.UTC)
+	file := func(id string) string { return filepath.Join(dir, id+transcriptSuffix) }
+	write := func(id string, mod time.Time) {
+		t.Helper()
+		if err := os.WriteFile(file(id), src, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(file(id), mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(loose, base)
+	write(mine, base.Add(time.Minute))
+	write(theirs, base.Add(2*time.Minute)) // the other pane wrote last
+
+	claude := func(id string) domain.SessionTuple {
+		return domain.SessionTuple{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: id}
+	}
+	both := map[string]domain.SessionTuple{"p1": claude(mine), "p2": claude(theirs)}
+	reader := func(tuples map[string]domain.SessionTuple, err error) *Reader {
+		lookup := func(context.Context) (map[string]domain.SessionTuple, error) { return tuples, err }
+		return newReader(lookup, func() (string, error) { return home, nil }, func() time.Time { return base.Add(time.Hour) }, nil)
+	}
+	pane := func(id, digest string) domain.Agent {
+		return domain.Agent{Key: domain.Key{PaneID: id, TerminalID: "t-" + id, SessionDigest: digest}, Kind: "claude", Cwd: cwd}
+	}
+
+	for name, tc := range map[string]struct {
+		tuples map[string]domain.SessionTuple
+		agent  domain.Agent
+		want   string
+	}{
+		"own session over a newer file":     {both, pane("p1", claude(mine).Digest()), file(mine)},
+		"own session, key without a digest": {both, pane("p1", ""), file(mine)},
+		"no session, newest is unclaimed":   {map[string]domain.SessionTuple{"p1": claude(mine)}, pane("p3", ""), file(theirs)},
+		"other kinds and odd ids are no claim": {map[string]domain.SessionTuple{
+			"p2": {Source: "herdr:codex", Agent: "codex", Kind: "id", Value: theirs},
+			"p4": claude("../" + theirs),
+			"p5": {Source: "herdr:claude", Agent: "claude", Kind: "path", Value: theirs},
+		}, pane("p3", ""), file(theirs)},
+		"no sessions at all": {nil, pane("p3", ""), file(theirs)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reply, err := reader(tc.tuples, nil).LastReply(context.Background(), tc.agent)
+			if err != nil || reply.Source != tc.want {
+				t.Fatalf("LastReply = %q, %v; want %q", reply.Source, err, tc.want)
+			}
+		})
+	}
+
+	t.Run("no session, newest is another pane's", func(t *testing.T) {
+		_, err := reader(both, nil).LastReply(context.Background(), pane("p3", ""))
+		if !errors.Is(err, domain.ErrStaleTranscript) || !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), "another pane's session") {
+			t.Fatalf("err = %v, want a stale transcript that is no reply", err)
+		}
+	})
+	t.Run("own session without its file", func(t *testing.T) {
+		missing := "44444444-4444-4444-8444-444444444444"
+		tuples := map[string]domain.SessionTuple{"p1": claude(missing)}
+		_, err := reader(tuples, nil).LastReply(context.Background(), pane("p1", ""))
+		if !errors.Is(err, domain.ErrNoReply) || errors.Is(err, domain.ErrStaleTranscript) || !strings.Contains(err.Error(), "no transcript for the pane's session") {
+			t.Fatalf("err = %v, want no reply for the pane's session", err)
+		}
+	})
+	t.Run("pane now runs another session", func(t *testing.T) {
+		_, err := reader(both, nil).LastReply(context.Background(), pane("p1", claude(loose).Digest()))
+		if !errors.Is(err, domain.ErrNoReply) || !strings.Contains(err.Error(), "now runs another session") {
+			t.Fatalf("err = %v, want another session", err)
+		}
+	})
+	t.Run("failed lookup reads by directory", func(t *testing.T) {
+		reply, err := reader(nil, errors.New("herdr unreachable")).LastReply(context.Background(), pane("p1", ""))
+		if err != nil || reply.Source != file(theirs) {
+			t.Fatalf("LastReply = %q, %v; want the newest file", reply.Source, err)
+		}
+	})
+	t.Run("cancelled lookup", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		lookup := func(context.Context) (map[string]domain.SessionTuple, error) {
+			cancel()
+			return nil, context.Canceled
+		}
+		r := newReader(lookup, func() (string, error) { return home, nil }, time.Now, nil)
+		if _, err := r.LastReply(ctx, pane("p1", "")); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	})
 }
