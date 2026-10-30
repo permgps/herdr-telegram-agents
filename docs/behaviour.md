@@ -202,6 +202,17 @@ at DEBUG without screen text; a final failed read produces one WARN.
   default) the status line and the mode hint Claude Code draws under the
   dialog are cut from the post; the dialog's own lines never are, so the
   buttons are found as before.
+- When the screen does not end in such a dialog, the inside of the
+  bottom-most box drawn with corner characters (`┌ … └`, `╭ … ╰`) is read
+  the same way, side borders cut. This is how pi extensions draw a question
+  (read live on 2026-10-26 with pi-questionnaire 2.1.8 under pi 1.3.0): the
+  highlighted option may carry `👉`, `→` or `›` instead of `❯`, and the
+  box's key hints and status lines may follow the last option, since the
+  frame already marks the block as a dialog; pi's own footer under the box
+  is ignored. Inside a box, pi-questionnaire's `Other` entry counts as the
+  free-text entry and gets the `✏️ Other` button instead of an option
+  button: once its digit is pressed, digits are typed into its editor
+  rather than choosing an option.
 - Pressing ✏️ sends that entry's number, turns the keyboard into `✏️ waiting
   for your text`, answers `now send the text` and posts a quoted `✏️ Type
   something: send the text as your next message` with Telegram's
@@ -265,7 +276,9 @@ at DEBUG without screen text; a final failed read produces one WARN.
   2026-10-09: a typed "no, fix the test first" plus `enter` ran the
   command). They go in only through a question's `Type something` entry,
   the way ✏️ does it by hand, and only for Claude Code, whose typing state
-  was read on a real screen: the dialog behind the latest buttons must
+  was read on a real screen, or for a pi agent whose boxed dialog offers
+  pi-questionnaire's `Other` entry (open once its `Other:` editor line
+  shows inside the box): the dialog behind the latest buttons must
   have that entry and not be multi-select, a fresh screen must still show
   that very dialog (same options and labels), the entry's digit is
   pressed (skipped when the entry already has the focus, where a digit

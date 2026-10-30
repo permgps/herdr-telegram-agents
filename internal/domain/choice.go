@@ -96,12 +96,18 @@ func (d Dialog) SubmitKeys() []string {
 const (
 	ServiceTypeSomething = "Type something"
 	ServiceChatAboutThis = "Chat about this"
+	// ServiceOther is the free-text entry pi-questionnaire appends to every
+	// choice question; it counts only inside a dialog frame.
+	ServiceOther = "Other"
 )
 
 // choiceServiceLabels lists the service entries in the order of preference
 // for Dialog.TextEntry. Labels are compared after stripCheckbox and without
 // a trailing period: a multi-select dialog draws "4. [ ] Type something".
 var choiceServiceLabels = []string{ServiceTypeSomething, ServiceChatAboutThis}
+
+// framedServiceLabels are the service entries of a framed dialog.
+var framedServiceLabels = []string{ServiceTypeSomething, ServiceChatAboutThis, ServiceOther}
 
 // checkboxGlyph matches the marker a multi-select option starts with:
 // square brackets around one or two runes ("[ ]" empty, "[x]", and the
@@ -134,9 +140,28 @@ func ParseChoices(screen string) []Choice {
 // the agent shows; the free-text entry's number is kept as TextEntry.
 func ParseDialog(screen string) Dialog {
 	lines := strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n")
+	if d := parseDialogLines(lines, false); len(d.Choices) > 0 {
+		return d
+	}
+	if inner, ok := lastFrame(lines); ok {
+		return parseDialogLines(inner, true)
+	}
+	return Dialog{}
+}
+
+// parseDialogLines is ParseDialog over screen lines. With framed set, lines
+// are the inside of a box-drawn dialog (pi extensions such as
+// pi-questionnaire draw one, followed by pi's own footer): an item may carry
+// another cursor glyph, and the box's key hints and status lines may follow
+// the last item, since the frame already marks the block as a dialog.
+func parseDialogLines(lines []string, framed bool) Dialog {
+	parse := parseChoiceLine
+	if framed {
+		parse = parseFramedChoiceLine
+	}
 	start := -1
 	for i := len(lines) - 1; i >= 0; i-- {
-		if n, _, ok := parseChoiceLine(lines[i]); ok && n == 1 {
+		if n, _, ok := parse(lines[i]); ok && n == 1 {
 			start = i
 			break
 		}
@@ -146,14 +171,15 @@ func ParseDialog(screen string) Dialog {
 	}
 	var items []Choice
 	rows, cursor, submitRow := 0, 0, 0
+	tail := false
 	for _, line := range lines[start:] {
-		if n, label, ok := parseChoiceLine(line); ok {
-			if n != len(items)+1 {
+		if n, label, ok := parse(line); ok {
+			if tail || n != len(items)+1 {
 				return Dialog{}
 			}
 			items = append(items, Choice{Number: n, Label: label})
 			rows++
-			if hasCursor(line) {
+			if hasCursor(line) || framed && hasFramedCursor(line) {
 				cursor = rows
 			}
 			continue
@@ -167,14 +193,21 @@ func ParseDialog(screen string) Dialog {
 			continue
 		}
 		if !isChoiceFiller(line) {
-			return Dialog{}
+			if !framed {
+				return Dialog{}
+			}
+			tail = true
 		}
 	}
 	d := Dialog{Choices: items[:0:0], Cursor: cursor, SubmitRow: submitRow}
-	bestRank := len(choiceServiceLabels)
+	labels := choiceServiceLabels
+	if framed {
+		labels = framedServiceLabels
+	}
+	bestRank := len(labels)
 	for _, c := range items {
 		plain := strings.TrimSuffix(stripCheckbox(c.Label), ".")
-		if rank := serviceRank(plain); rank >= 0 {
+		if rank := serviceRank(labels, plain); rank >= 0 {
 			if rank < bestRank {
 				bestRank = rank
 				d.TextEntry = c.Number
@@ -193,8 +226,8 @@ func ParseDialog(screen string) Dialog {
 
 // serviceRank is the index of label in choiceServiceLabels, -1 for a real
 // option.
-func serviceRank(label string) int {
-	for i, s := range choiceServiceLabels {
+func serviceRank(labels []string, label string) int {
+	for i, s := range labels {
 		if s == label {
 			return i
 		}
@@ -285,4 +318,78 @@ func isChoiceRule(trimmed string) bool {
 		}
 	}
 	return true
+}
+
+// framedChoiceItem matches an item inside a dialog frame: "1. Label" with an
+// optional cursor glyph in front (pi-questionnaire draws 👉, other pi
+// extensions → or ›).
+var framedChoiceItem = regexp.MustCompile(`^\s*(?:[❯›>→▶►➜👉]\s*)?([1-9])\.\s+(\S.*)$`)
+
+// framedCursors are the cursor glyphs framedChoiceItem accepts.
+const framedCursors = "❯›>→▶►➜👉"
+
+// parseFramedChoiceLine is parseChoiceLine for a line inside a frame. A
+// split-pane dialog draws a column border after the label; the label ends
+// there.
+func parseFramedChoiceLine(line string) (int, string, bool) {
+	m := framedChoiceItem.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+	if m == nil {
+		return 0, "", false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, "", false
+	}
+	label := m[2]
+	if i := strings.Index(label, "│"); i >= 0 {
+		label = label[:i]
+	}
+	return n, strings.TrimSpace(label), true
+}
+
+// hasFramedCursor reports whether a line inside a frame starts with one of
+// framedCursors.
+func hasFramedCursor(line string) bool {
+	t := strings.TrimLeft(line, " \t")
+	r, _ := utf8.DecodeRuneInString(t)
+	return r != utf8.RuneError && strings.ContainsRune(framedCursors, r)
+}
+
+// lastFrame returns the inside of the bottom-most box drawn with corner
+// characters (┌ … └ or ╭ … ╰), side borders cut, or false when the screen
+// has no closed box.
+func lastFrame(lines []string) ([]string, bool) {
+	bottom := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, "└") || strings.HasPrefix(t, "╰") {
+			bottom = i
+			break
+		}
+	}
+	if bottom < 0 {
+		return nil, false
+	}
+	for i := bottom - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(t, "┌") || strings.HasPrefix(t, "╭") {
+			inner := make([]string, 0, bottom-i-1)
+			for _, l := range lines[i+1 : bottom] {
+				inner = append(inner, stripFrameSides(l))
+			}
+			return inner, true
+		}
+	}
+	return nil, false
+}
+
+// stripFrameSides cuts a frame's left and right border from a line, keeping
+// the indentation inside the frame.
+func stripFrameSides(line string) string {
+	s := strings.TrimLeft(strings.TrimRight(line, " \t\r"), " \t")
+	for _, b := range []string{"│", "┃"} {
+		s = strings.TrimPrefix(s, b)
+		s = strings.TrimSuffix(s, b)
+	}
+	return strings.TrimRight(s, " \t")
 }

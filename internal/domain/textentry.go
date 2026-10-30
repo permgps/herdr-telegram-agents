@@ -34,7 +34,7 @@ func (d Dialog) Same(o Dialog) bool {
 // textEntryEditHint). A permission dialog has no such entry; a
 // multi-select one toggles on a digit.
 func (d Dialog) TypedAnswerable() bool {
-	return d.TextEntry > 0 && !d.Multi && d.TextLabel == ServiceTypeSomething
+	return d.TextEntry > 0 && !d.Multi && (d.TextLabel == ServiceTypeSomething || d.TextLabel == ServiceOther)
 }
 
 // TextEntryOpen reports whether screen shows the dialog want with its
@@ -50,7 +50,34 @@ func TextEntryOpen(screen string, want Dialog) bool {
 		return false
 	}
 	d := ParseDialog(screen)
-	return d.Same(want) && d.Cursor == want.TextEntry && strings.Contains(lastLine(screen), textEntryEditHint)
+	if !d.Same(want) || d.Cursor != want.TextEntry {
+		return false
+	}
+	if want.TextLabel == ServiceOther {
+		return otherEditorOpen(screen)
+	}
+	return strings.Contains(lastLine(screen), textEntryEditHint)
+}
+
+// otherEditorPrefix starts the inline editor line pi-questionnaire draws
+// under its "Other" entry once that entry's digit is pressed ("Other:
+// (type a custom answer)" while empty); typed text then goes into it and
+// enter submits it. Read live on 2026-10-26 (pi-questionnaire 2.1.8).
+const otherEditorPrefix = "Other:"
+
+// otherEditorOpen reports whether the bottom-most dialog frame of screen
+// shows pi-questionnaire's open "Other" editor.
+func otherEditorOpen(screen string) bool {
+	inner, ok := lastFrame(strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n"))
+	if !ok {
+		return false
+	}
+	for _, line := range inner {
+		if strings.HasPrefix(strings.TrimSpace(line), otherEditorPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // lastLine returns the last non-blank line of text.

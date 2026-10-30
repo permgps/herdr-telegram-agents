@@ -75,6 +75,9 @@ const (
 // ClaudeKind is the agent kind Herdr reports for Claude Code panes.
 const ClaudeKind = "claude"
 
+// PiKind is the agent kind Herdr reports for pi panes.
+const PiKind = "pi"
+
 // OpenCodeKind is the Herdr agent kind of OpenCode panes.
 const OpenCodeKind = "opencode"
 

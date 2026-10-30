@@ -57,7 +57,7 @@ func (i *inbound) answerBlocked(ctx context.Context, msg domain.TopicMessage, ke
 			slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID), slog.Int("len", len(text)))
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, blockedHint())
 	}
-	if agent.Kind != domain.ClaudeKind {
+	if agent.Kind != domain.ClaudeKind && agent.Kind != domain.PiKind {
 		return refuse("agent_kind")
 	}
 	if _, busy := i.answers[key.PaneID]; busy {
@@ -66,6 +66,10 @@ func (i *inbound) answerBlocked(ctx context.Context, msg domain.TopicMessage, ke
 	want, keyboard, ok := i.out.TextEntryDialog(key)
 	if !ok {
 		return refuse("no_text_entry")
+	}
+	// On pi only pi-questionnaire's framed "Other" entry was read live.
+	if agent.Kind == domain.PiKind && want.TextLabel != domain.ServiceOther {
+		return refuse("agent_kind")
 	}
 	screen, err := i.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, blockedLines)
 	if err != nil {
