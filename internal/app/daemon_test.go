@@ -1275,7 +1275,7 @@ func TestDaemonPagerProbeAndFallback(t *testing.T) {
 	f.herdr.SetAgents([]domain.Agent{agent("p1", "t1", "reviewer", domain.StatusWorking)})
 	f.herdr.SetScreen("p1", "Allow Bash?\n1. Yes\n2. No")
 	f.start(t)
-	f.waitCalls(t, 4)
+	f.waitCalls(t, 5)
 	assertCalls(t, f.tg, "rights", "probe:1", "send:0:⚠️ questions will ring in the topics: the bot cannot write to your private chat (open the bot and press Start)", "create:reviewer:working", started1)
 	if st := f.daemon.Stats(); st.Pager != "unreachable" || !strings.HasSuffix(app.StatsLine(st, f.clock.Now()), "pager=unreachable") {
 		t.Fatalf("Stats = %+v", st)
