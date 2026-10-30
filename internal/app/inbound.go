@@ -1402,6 +1402,8 @@ func failureReason(err error) string {
 		return "agent is gone"
 	case errors.Is(err, domain.ErrAgentBlocked):
 		return "agent is waiting at a dialog: answer it with the buttons, ✏️ for your own text, or /keys; the message was not sent"
+	case errors.Is(err, domain.ErrPromptNotSubmitted):
+		return "the text was typed into the pane but the agent did not take the enter; it waits in the input box: press enter there, or send /keys enter"
 	case errors.Is(err, domain.ErrDisconnected):
 		return "herdr is unreachable"
 	case errors.Is(err, domain.ErrNotRepository):

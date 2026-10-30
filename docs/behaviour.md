@@ -246,6 +246,19 @@ at DEBUG without screen text; a final failed read produces one WARN.
   text. Only `agent_not_ready` takes this path; `agent_blocked` still
   reaches the dialog rules above and below, and an agent gone from Herdr
   still answers as before.
+- Typed input is checked back. An agent can take the text and drop the
+  `enter` (seen with Claude Code in a WSL pane: the prompt stayed in its
+  input box, twice after two sends, while Herdr reported every call as
+  ok). 1.2 s after the `enter` the daemon reads the visible screen: when
+  the text after the last `❯` input marker still starts with the typed
+  line (its first 40 characters, white space folded), the reply says the text waits in the input box and to press enter
+  in the pane or send `/keys enter`, and the message is not counted as
+  sent. A submitted prompt is echoed above an empty box, so it does not
+  match; a suggestion the agent shows in the empty box only matches when
+  it repeats the typed line. A failed read, or an input box the check
+  cannot recognise (only Claude Code's `❯` is known), keeps the silent
+  success: a wrong alarm would make the operator press enter twice. One
+  WARN line per detection with the pane and the length, never the text.
 - Plain text and attachment paths refused that way are never typed into a
   dialog blind: at a permission prompt the text is ignored and the `enter`
   confirms the highlighted option, usually the approval (read live on

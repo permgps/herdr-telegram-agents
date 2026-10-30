@@ -43,6 +43,7 @@ func newGateway(t *testing.T, s *testkit.NDJSONServer) *Gateway {
 	t.Helper()
 	s.Handle("ping", pingHandler)
 	g := NewGateway(s.Path(), testLogger(t), fastBackoff)
+	g.verifyDelay = 0 // the typed-prompt check reads back at once
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := g.Start(ctx); err != nil {
@@ -393,6 +394,95 @@ func TestGatewayPromptFallbackFoldsLineBreaks(t *testing.T) {
 	want := map[string]any{"pane_id": "w1:p1", "text": "first line second line third"}
 	if got := lastParams(t, s, "pane.send_text"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("pane.send_text params = %v, want %v", got, want)
+	}
+}
+
+// screenAfter answers agent.read with the given visible screen.
+func screenAfter(text string) testkit.HandlerFunc {
+	return func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "pane_read", "read": map[string]any{
+			"pane_id": "w1:p1", "source": "visible", "format": "text", "text": text, "revision": 7,
+		}}, nil
+	}
+}
+
+// An agent can take the typed text and drop the enter; the sender must
+// hear that the message waits in the input box instead of a silent ok.
+func TestGatewayPromptFallbackReportsTextLeftInBox(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("agent.list", listedAs("idle"))
+	s.Handle("pane.send_text", ackHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	s.Handle("agent.read", screenAfter("● done\n────\n❯ fix the tests in\n  the api package\n────\n  ⏵⏵ auto mode"))
+	g := newGateway(t, s)
+
+	err := g.Prompt(ctxT(t), "w1:p1", "fix the tests in\nthe api package")
+	if !errors.Is(err, domain.ErrPromptNotSubmitted) {
+		t.Fatalf("Prompt error = %v, want ErrPromptNotSubmitted", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != codeNotDriven {
+		t.Fatalf("Prompt error %v should keep Herdr's refusal", err)
+	}
+	got := lastParams(t, s, "agent.read")
+	if got["target"] != "w1:p1" || got["source"] != "visible" {
+		t.Fatalf("agent.read params = %v", got)
+	}
+}
+
+func TestGatewayPromptFallbackTakenIsSilent(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("agent.list", listedAs("idle"))
+	s.Handle("pane.send_text", ackHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	s.Handle("agent.read", screenAfter("❯ fix the tests\n● on it\n────\n❯\n────\n  ⏵⏵ auto mode"))
+	g := newGateway(t, s)
+
+	if err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if reqs := s.WaitRequests("agent.read", 1, time.Second); len(reqs) != 1 {
+		t.Fatalf("agent.read requests = %d, want 1", len(reqs))
+	}
+}
+
+// A read that fails cannot tell, and a wrong alarm would make the operator
+// press enter twice: the typed text stays a success.
+func TestGatewayPromptFallbackUnreadableIsSilent(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("agent.list", listedAs("idle"))
+	s.Handle("pane.send_text", ackHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	s.Handle("agent.read", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "agent_not_found", Message: "agent target w1:p1 not found"}
+	})
+	g := newGateway(t, s)
+
+	if err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+}
+
+// A driven agent submits through agent.prompt itself: nothing is read back.
+func TestGatewayPromptDrivenNotVerified(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", ackHandler)
+	g := newGateway(t, s)
+
+	if err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if reqs := s.WaitRequests("agent.read", 1, 200*time.Millisecond); len(reqs) != 0 {
+		t.Fatalf("agent.read should stay unused, got %d requests", len(reqs))
+	}
+}
+
+func TestGatewayPromptVerifyDelayDefault(t *testing.T) {
+	if g := NewGateway("x", nil, Backoff{}); g.verifyDelay != promptVerifyDelay {
+		t.Fatalf("verifyDelay = %v, want %v", g.verifyDelay, promptVerifyDelay)
 	}
 }
 
