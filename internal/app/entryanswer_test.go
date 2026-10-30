@@ -142,6 +142,58 @@ func TestEntryAnswerGivesUpWhenEntryNeverOpens(t *testing.T) {
 	}
 }
 
+// piOtherScreen is a pi-questionnaire question in its box (shape read live
+// on 2026-10-26, see internal/domain/choice_framed_test.go); open shows its
+// "Other" editor after the entry's digit.
+func piOtherScreen(open bool) string {
+	red, other, editor := "│👉 1. Red     │", "│   3. Other   │", ""
+	if open {
+		red, other, editor = "│   1. Red     │", "│👉 3. Other   │", "│     Other:   │\n"
+	}
+	return "┌─ Question ───┐\n│Pick a colour │\n" + red + "\n│   2. Green   │\n" + other + "\n" + editor +
+		"│Enter select  │\n└──────────────┘\n~/projects"
+}
+
+func TestEntryAnswerTypesThroughPiOtherEntry(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	a.Kind = domain.PiKind
+	f.agents[a.Key] = a
+	f.herdr.SetScreen("p1", piOtherScreen(false))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	f.tg.Reset()
+	f.herdr.SetScreenAfterKeys("p1", "3", piOtherScreen(true))
+	f.herdr.FailNext("prompt", domain.ErrAgentBlocked)
+
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "teal")); err != nil {
+		t.Fatal(err)
+	}
+	if keys := f.herdr.Keys(); !reflect.DeepEqual(keys, []testkit.KeysCall{{Target: "p1", Keys: []string{"3"}}}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	f.fireInboundAfter(t, entryPollDelay, 1)
+	if texts := f.herdr.Texts(); !reflect.DeepEqual(texts, []testkit.TextCall{{Target: "p1", Text: "teal"}}) {
+		t.Fatalf("Texts = %+v", texts)
+	}
+}
+
+// For Claude Code a framed "Other" is a plain option: its digit would answer
+// the question, so a plain message presses nothing.
+func TestEntryAnswerRefusesFramedOtherForClaude(t *testing.T) {
+	f := newBridgeFixture(t)
+	claudeBlocked(t, f, piOtherScreen(false))
+	f.herdr.FailNext("prompt", domain.ErrAgentBlocked)
+
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "teal")); err != nil {
+		t.Fatal(err)
+	}
+	if keys, texts := f.herdr.Keys(), f.herdr.Texts(); len(keys) != 0 || len(texts) != 0 {
+		t.Fatalf("Keys = %+v, Texts = %+v", keys, texts)
+	}
+	assertCallsEqual(t, f.tg, "send:101:"+entryHint+":reply=7")
+}
+
 func TestEntryAnswerRefusesOtherAgentKinds(t *testing.T) {
 	f := newBridgeFixture(t)
 	a := claudeBlocked(t, f, liveClaudeScreen(t, "question"))

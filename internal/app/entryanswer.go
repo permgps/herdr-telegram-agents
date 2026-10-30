@@ -15,9 +15,10 @@ import (
 // in only through a free-text entry the daemon can verify on the screen,
 // the same way the ✏️ button does it by hand:
 //
-//  1. the dialog behind the latest buttons has a "Type something" entry
-//     (domain.Dialog.TypedAnswerable) and the agent is Claude Code, the one
-//     renderer whose typing state was read on a real screen;
+//  1. the dialog behind the latest buttons has the free-text entry whose
+//     typing state was read on a real screen for the agent's kind
+//     (domain.Dialog.TypedAnswerableBy): "Type something" for Claude Code,
+//     pi-questionnaire's framed "Other" for pi;
 //  2. a fresh screen still shows that very dialog (same options, labels and
 //     entry); the entry's digit is pressed, unless the entry is already
 //     focused, where a digit would be typed as text;
@@ -57,7 +58,7 @@ func (i *inbound) answerBlocked(ctx context.Context, msg domain.TopicMessage, ke
 			slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID), slog.Int("len", len(text)))
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, blockedHint())
 	}
-	if agent.Kind != domain.ClaudeKind && agent.Kind != domain.PiKind {
+	if domain.TypedEntryLabel(agent.Kind) == "" {
 		return refuse("agent_kind")
 	}
 	if _, busy := i.answers[key.PaneID]; busy {
@@ -67,9 +68,8 @@ func (i *inbound) answerBlocked(ctx context.Context, msg domain.TopicMessage, ke
 	if !ok {
 		return refuse("no_text_entry")
 	}
-	// On pi only pi-questionnaire's framed "Other" entry was read live.
-	if agent.Kind == domain.PiKind && want.TextLabel != domain.ServiceOther {
-		return refuse("agent_kind")
+	if !want.TypedAnswerableBy(agent.Kind) {
+		return refuse("entry_kind")
 	}
 	screen, err := i.herdr.ReadScreen(ctx, key.PaneID, domain.ScreenDetection, blockedLines)
 	if err != nil {

@@ -29,12 +29,35 @@ func (d Dialog) Same(o Dialog) bool {
 }
 
 // TypedAnswerable reports whether a plain message may answer d through its
-// free-text entry: a single-select dialog with a "Type something" entry,
-// the one shape whose typing state was verified on a real screen (see
-// textEntryEditHint). A permission dialog has no such entry; a
-// multi-select one toggles on a digit.
+// free-text entry: a single-select dialog with a "Type something" entry or
+// a framed "Other" entry, the shapes whose typing state was verified on a
+// real screen (see textEntryEditHint and otherEditorPrefix). A permission
+// dialog has no such entry; a multi-select one toggles on a digit. Which
+// entry counts depends on the agent: see TypedAnswerableBy.
 func (d Dialog) TypedAnswerable() bool {
 	return d.TextEntry > 0 && !d.Multi && (d.TextLabel == ServiceTypeSomething || d.TextLabel == ServiceOther)
+}
+
+// TypedEntryLabel is the free-text entry whose typing state was read live
+// for an agent kind: Claude Code's "Type something" and pi-questionnaire's
+// framed "Other". Any other kind has none and gets "".
+func TypedEntryLabel(kind string) string {
+	switch kind {
+	case ClaudeKind:
+		return ServiceTypeSomething
+	case PiKind:
+		return ServiceOther
+	}
+	return ""
+}
+
+// TypedAnswerableBy reports whether a plain message to an agent of kind may
+// answer d through its free-text entry: d is TypedAnswerable and its entry
+// is the one read live for that kind. A Claude Code screen drawn in a box
+// can carry a plain "Other" option, whose digit answers the question
+// instead of opening an editor.
+func (d Dialog) TypedAnswerableBy(kind string) bool {
+	return d.TypedAnswerable() && d.TextLabel == TypedEntryLabel(kind)
 }
 
 // TextEntryOpen reports whether screen shows the dialog want with its

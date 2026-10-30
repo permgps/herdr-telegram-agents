@@ -94,6 +94,46 @@ func TestParseDialogFramedRejectsItemsAfterTail(t *testing.T) {
 	}
 }
 
+// A markdown table Claude Code draws with a numbered first column is not a
+// dialog, even when it is the last box on the screen.
+func TestParseDialogFramedRejectsTable(t *testing.T) {
+	screen := "┌──────────┬────────┐\n" +
+		"│ Step     │ Status │\n" +
+		"├──────────┼────────┤\n" +
+		"│ 1. Build │ done   │\n" +
+		"│ 2. Test  │ done   │\n" +
+		"│ 3. Other │ todo   │\n" +
+		"└──────────┴────────┘\n" +
+		"❯ "
+	if got := domain.ParseDialog(screen).Choices; len(got) != 0 {
+		t.Fatalf("choices = %#v, want none", got)
+	}
+}
+
+// Only the free-text entry read live for an agent kind may take a typed
+// answer: "Other" in a box is pi-questionnaire's editor, but a plain option
+// for Claude Code.
+func TestTypedAnswerableBy(t *testing.T) {
+	pi := domain.ParseDialog(piQuestionnaireDialog)
+	claude := domain.Dialog{Choices: []domain.Choice{{Number: 1, Label: "Red"}}, TextEntry: 2, TextLabel: domain.ServiceTypeSomething}
+	for _, tc := range []struct {
+		name string
+		d    domain.Dialog
+		kind string
+		want bool
+	}{
+		{"pi Other", pi, domain.PiKind, true},
+		{"Claude with a framed Other", pi, domain.ClaudeKind, false},
+		{"Claude Type something", claude, domain.ClaudeKind, true},
+		{"pi Type something", claude, domain.PiKind, false},
+		{"other kind", claude, "codex", false},
+	} {
+		if got := tc.d.TypedAnswerableBy(tc.kind); got != tc.want {
+			t.Errorf("%s: TypedAnswerableBy = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A box without a numbered list yields no dialog.
 func TestParseDialogFramedWithoutList(t *testing.T) {
 	screen := "┌──────────────┐\n│just a note   │\n└──────────────┘\n~/projects"

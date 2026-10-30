@@ -143,10 +143,23 @@ func ParseDialog(screen string) Dialog {
 	if d := parseDialogLines(lines, false); len(d.Choices) > 0 {
 		return d
 	}
-	if inner, ok := lastFrame(lines); ok {
+	if inner, ok := lastFrame(lines); ok && !isTableFrame(inner) {
 		return parseDialogLines(inner, true)
 	}
 	return Dialog{}
+}
+
+// isTableFrame reports a box that is a table, not a dialog: a row rule
+// crosses a column border (┼), as in the markdown tables Claude Code draws.
+// A table whose first column is numbered would otherwise read as a list of
+// options.
+func isTableFrame(inner []string) bool {
+	for _, l := range inner {
+		if strings.Contains(l, "┼") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseDialogLines is ParseDialog over screen lines. With framed set, lines

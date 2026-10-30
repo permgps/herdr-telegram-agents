@@ -212,7 +212,9 @@ at DEBUG without screen text; a final failed read produces one WARN.
   is ignored. Inside a box, pi-questionnaire's `Other` entry counts as the
   free-text entry and gets the `✏️ Other` button instead of an option
   button: once its digit is pressed, digits are typed into its editor
-  rather than choosing an option.
+  rather than choosing an option. A box with a `┼` inside is a table (the
+  way Claude Code draws a markdown table), not a dialog, even when its
+  first column is numbered.
 - Pressing ✏️ sends that entry's number, turns the keyboard into `✏️ waiting
   for your text`, answers `now send the text` and posts a quoted `✏️ Type
   something: send the text as your next message` with Telegram's
@@ -262,9 +264,9 @@ at DEBUG without screen text; a final failed read produces one WARN.
   input box, twice after two sends, while Herdr reported every call as
   ok). 1.2 s after the `enter` the daemon reads the visible screen: when
   the text after the last `❯` input marker still starts with the typed
-  line (its first 40 characters, white space folded), the reply says the text waits in the input box and to press enter
-  in the pane or send `/keys enter`, and the message is not counted as
-  sent. A submitted prompt is echoed above an empty box, so it does not
+  line (its first 40 characters, white space folded), the reply says the
+  text waits in the input box and to press enter in the pane or send
+  `/keys enter`, and the message is not counted as sent. A submitted prompt is echoed above an empty box, so it does not
   match; a suggestion the agent shows in the empty box only matches when
   it repeats the typed line. A failed read, or an input box the check
   cannot recognise (only Claude Code's `❯` is known), keeps the silent
@@ -278,7 +280,10 @@ at DEBUG without screen text; a final failed read produces one WARN.
   the way ✏️ does it by hand, and only for Claude Code, whose typing state
   was read on a real screen, or for a pi agent whose boxed dialog offers
   pi-questionnaire's `Other` entry (open once its `Other:` editor line
-  shows inside the box): the dialog behind the latest buttons must
+  shows inside the box). Each kind gets only its own entry: for Claude
+  Code an `Other` in a box is a plain option, whose digit would answer the
+  question, so a plain message is refused there, in the topic and in a
+  private chat alike. The dialog behind the latest buttons must
   have that entry and not be multi-select, a fresh screen must still show
   that very dialog (same options and labels), the entry's digit is
   pressed (skipped when the entry already has the focus, where a digit

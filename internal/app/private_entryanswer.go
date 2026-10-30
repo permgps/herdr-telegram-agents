@@ -60,7 +60,7 @@ func (p *PrivateControl) shownTextEntry(o domain.ShareOrigin) (domain.Dialog, bo
 	now := p.Now()
 	for _, b := range p.callbacks {
 		if b.kind == "text" && b.origin.Key == o.Key && b.origin.ActorID == o.ActorID && b.origin.GrantID == o.GrantID &&
-			b.seq == a.StateChangeSeq && now.Before(b.expires) && b.dialog.TypedAnswerable() {
+			b.seq == a.StateChangeSeq && now.Before(b.expires) && b.dialog.TypedAnswerableBy(a.Kind) {
 			return b.dialog, true
 		}
 	}
