@@ -222,7 +222,7 @@ func TestFakeHerdrRecordsCallsAndFails(t *testing.T) {
 	}
 
 	h.FailNext("prompt", domain.ErrDisconnected)
-	if err := h.Prompt(ctx, "p1", "hi"); !errors.Is(err, domain.ErrDisconnected) {
+	if _, err := h.Prompt(ctx, "p1", "hi"); !errors.Is(err, domain.ErrDisconnected) {
 		t.Fatalf("Prompt = %v", err)
 	}
 	if err := h.SendKeys(ctx, "p1", []string{"esc"}); err != nil {

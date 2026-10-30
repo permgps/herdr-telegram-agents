@@ -212,7 +212,9 @@ at DEBUG without screen text; a final failed read produces one WARN.
   is ignored. Inside a box, pi-questionnaire's `Other` entry counts as the
   free-text entry and gets the `✏️ Other` button instead of an option
   button: once its digit is pressed, digits are typed into its editor
-  rather than choosing an option. A box with a `┼` inside is a table (the
+  rather than choosing an option. For any other agent kind a framed
+  `Other` stays a plain option button: its digit answers the question. A
+  box with a `┼` inside is a table (the
   way Claude Code draws a markdown table), not a dialog, even when its
   first column is numbered.
 - Pressing ✏️ sends that entry's number, turns the keyboard into `✏️ waiting
@@ -262,16 +264,20 @@ at DEBUG without screen text; a final failed read produces one WARN.
 - Typed input is checked back. An agent can take the text and drop the
   `enter` (seen with Claude Code in a WSL pane: the prompt stayed in its
   input box, twice after two sends, while Herdr reported every call as
-  ok). 1.2 s after the `enter` the daemon reads the visible screen: when
+  ok). The message is handled at once, and 1.2 s after the `enter` the
+  daemon reads the visible screen without holding up other posts: when
   the text after the last `❯` input marker still starts with the typed
-  line (its first 40 characters, white space folded), the reply says the
-  text waits in the input box and to press enter in the pane or send
-  `/keys enter`, and the message is not counted as sent. A submitted prompt is echoed above an empty box, so it does not
-  match; a suggestion the agent shows in the empty box only matches when
-  it repeats the typed line. A failed read, or an input box the check
-  cannot recognise (only Claude Code's `❯` is known), keeps the silent
-  success: a wrong alarm would make the operator press enter twice. One
-  WARN line per detection with the pane and the length, never the text.
+  line (its first 40 characters, white space folded), a reply to the
+  message says the text waits in the input box and to press enter in the
+  pane or send `/keys enter`. A private recipient gets the same notice on
+  the next private tick. A submitted prompt is echoed above an empty box,
+  so it does not match; a suggestion the agent shows in the empty box
+  only matches when it repeats the typed line. A failed read, or an input
+  box the check cannot recognise (only Claude Code's `❯` is known), stays
+  silent: a wrong alarm would make the operator press enter twice.
+  Attachments skip the check: their delayed `enter` covers a dropped one.
+  One WARN line per detection with the pane and the length, never the
+  text.
 - Plain text and attachment paths refused that way are never typed into a
   dialog blind: at a permission prompt the text is ignored and the `enter`
   confirms the highlighted option, usually the approval (read live on

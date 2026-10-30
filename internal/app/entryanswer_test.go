@@ -194,6 +194,43 @@ func TestEntryAnswerRefusesFramedOtherForClaude(t *testing.T) {
 	assertCallsEqual(t, f.tg, "send:101:"+entryHint+":reply=7")
 }
 
+// blockedPost posts a blocked agent of kind with screen and returns the
+// buttons of that post.
+func blockedPost(t *testing.T, kind, screen string) []domain.Button {
+	t.Helper()
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	a.Kind = kind
+	f.agents[a.Key] = a
+	f.herdr.SetScreen("p1", screen)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d posts, want 1", len(sent))
+	}
+	return sent[0].Buttons
+}
+
+// pi-questionnaire's framed "Other" opens an editor: it gets the ✏️ row.
+func TestOutboundFramedOtherIsEntryForPi(t *testing.T) {
+	want := []domain.Button{{Text: keycap(1) + " Red", Data: "1"}, {Text: keycap(2) + " Green", Data: "2"},
+		{Text: "✏️ Other", Data: textEntryPrefix + "3"}}
+	if got := blockedPost(t, domain.PiKind, piOtherScreen(false)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Buttons = %+v, want %+v", got, want)
+	}
+}
+
+// For Claude Code a framed "Other" is a plain option: its digit answers the
+// question, so it gets an option button and no ✏️ row promising an editor.
+func TestOutboundFramedOtherIsOptionForClaude(t *testing.T) {
+	want := []domain.Button{{Text: keycap(1) + " Red", Data: "1"}, {Text: keycap(2) + " Green", Data: "2"},
+		{Text: keycap(3) + " Other", Data: "3"}}
+	if got := blockedPost(t, domain.ClaudeKind, piOtherScreen(false)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Buttons = %+v, want %+v", got, want)
+	}
+}
+
 func TestEntryAnswerRefusesOtherAgentKinds(t *testing.T) {
 	f := newBridgeFixture(t)
 	a := claudeBlocked(t, f, liveClaudeScreen(t, "question"))

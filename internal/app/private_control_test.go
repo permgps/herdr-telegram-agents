@@ -443,6 +443,40 @@ func TestPrivateForwardRefusedWhileBusy(t *testing.T) {
 	}
 }
 
+// A recipient's prompt typed into a pane Herdr does not drive is checked on
+// a later tick, not while the message is handled: text left in the input
+// box gets a notice, a taken prompt none.
+func TestPrivateTypedPromptLeftInBox(t *testing.T) {
+	for name, tc := range map[string]struct {
+		screen string
+		notice bool
+	}{
+		"left in the box": {"● done\n────\n❯ fix the tests\n────", true},
+		"taken":           {"❯ fix the tests\n● on it\n────\n❯\n────", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newPrivateFixture(t, domain.ShareControl)
+			f.h.SetTyped("p")
+			f.h.SetScreen("p", tc.screen)
+			ctx := context.Background()
+			if err := f.p.Handle(ctx, domain.PrivateMessage{Contact: domain.PrivateContact{ActorID: 10}, Address: f.origin.Address, MessageID: 900, Text: "fix the tests"}); err != nil {
+				t.Fatal(err)
+			}
+			if r := f.h.Reads(); len(r) != 0 {
+				t.Fatalf("screen read while handling the message: %+v", r)
+			}
+			f.now = f.now.Add(2 * time.Second)
+			if err := f.p.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got := f.lastPrivate(t)
+			if stuck := strings.Contains(got, "did not take the enter"); stuck != tc.notice {
+				t.Fatalf("last private message = %q, want notice %v", got, tc.notice)
+			}
+		})
+	}
+}
+
 // A Control recipient's plain message to a blocked agent is never typed
 // into the dialog: Herdr's refusal comes back as advice, nothing reaches
 // the pane.

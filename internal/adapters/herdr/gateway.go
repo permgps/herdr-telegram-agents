@@ -16,15 +16,6 @@ import (
 // goroutine blocks; the application drains this channel continuously.
 const eventBuffer = 64
 
-// promptVerifyDelay is how long Prompt waits after typing into the pane of
-// an agent Herdr does not drive before reading the screen back: long enough
-// for the agent to clear its input box on a taken enter, short enough to
-// keep the Telegram reply prompt.
-const promptVerifyDelay = 1200 * time.Millisecond
-
-// promptVerifyLines is how much of the visible screen that read covers.
-const promptVerifyLines = 60
-
 // Gateway implements domain.HerdrGateway over short-lived request
 // connections and one long-lived subscription stream to the Herdr socket.
 //
@@ -41,10 +32,6 @@ type Gateway struct {
 
 	stream *Stream
 	events chan domain.Event
-
-	// verifyDelay is the pause before the screen read that checks a prompt
-	// typed into an undriven pane; tests shorten it.
-	verifyDelay time.Duration
 
 	runMu  sync.Mutex
 	cancel context.CancelFunc
@@ -72,8 +59,6 @@ func NewGateway(path string, log *slog.Logger, backoff Backoff) *Gateway {
 		backoff: backoff,
 		stream:  NewStream(dial, path, log, backoff),
 		events:  make(chan domain.Event, eventBuffer),
-
-		verifyDelay: promptVerifyDelay,
 	}
 }
 
@@ -282,81 +267,55 @@ func (g *Gateway) ReadScreen(ctx context.Context, target string, source domain.S
 // Any doubt (unknown status, pane not listed, failed lookup, nothing to
 // type) keeps the original refusal.
 //
-// Typed text is the one case that waits: verifyDelay after the Enter the
-// screen is read back, and a line still in the input box returns
-// ErrPromptNotSubmitted (see verifyTyped).
-func (g *Gateway) Prompt(ctx context.Context, target, text string) error {
-	err := g.call(ctx, "agent.prompt", target, promptParams{Target: target, Text: text}, nil)
+// typed reports that the text went in this way, Enter included. Prompt
+// never waits to see the agent take it: an agent can drop that Enter (seen
+// with Claude Code in a WSL pane), and the caller checks the screen later
+// (domain.PromptStuck) rather than holding up its goroutine.
+func (g *Gateway) Prompt(ctx context.Context, target, text string) (typed bool, err error) {
+	err = g.call(ctx, "agent.prompt", target, promptParams{Target: target, Text: text}, nil)
 	if !isNotDriven(err, target) {
-		return err
+		return false, err
 	}
 	g.log.Debug("herdr does not drive this agent, checking its status", slog.String("target", target))
 	status, listed, lookupErr := g.paneStatus(ctx, target)
 	if lookupErr != nil {
 		g.log.Warn("herdr agent status lookup failed, not typing",
 			slog.String("target", target), slog.String("err", lookupErr.Error()))
-		return err
+		return false, err
 	}
 	if !listed {
 		g.log.Info("herdr does not drive this agent, not typing",
 			slog.String("target", target), slog.String("reason", "not_listed"))
-		return err
+		return false, err
 	}
 	switch status {
 	case domain.StatusBlocked:
 		g.log.Info("herdr does not drive this agent and it is blocked, not typing", slog.String("target", target))
 		var apiErr *APIError
 		errors.As(err, &apiErr)
-		return fmt.Errorf("herdr agent.prompt: %w: %w", domain.ErrAgentBlocked, apiErr)
+		return false, fmt.Errorf("herdr agent.prompt: %w: %w", domain.ErrAgentBlocked, apiErr)
 	case domain.StatusIdle, domain.StatusWorking, domain.StatusDone:
 	default:
 		g.log.Info("herdr does not drive this agent, not typing",
 			slog.String("target", target), slog.String("reason", "unknown_status"), slog.String("status", string(status)))
-		return err
+		return false, err
 	}
 	line, lines := domain.DialogText(text)
 	if line == "" {
 		g.log.Info("herdr does not drive this agent, not typing",
 			slog.String("target", target), slog.String("reason", "empty_text"))
-		return err
+		return false, err
 	}
 	g.log.Info("herdr does not drive this agent, typing into the pane",
 		slog.String("target", target), slog.String("status", string(status)),
 		slog.Int("text_len", len(line)), slog.Int("lines", lines))
 	if err := g.call(ctx, "pane.send_text", target, sendTextParams{PaneID: target, Text: line}, nil); err != nil {
-		return err
+		return false, err
 	}
 	if err := g.call(ctx, "pane.send_keys", target, paneSendKeysParams{PaneID: target, Keys: []string{domain.KeyEnter}}, nil); err != nil {
-		return err
+		return false, err
 	}
-	return g.verifyTyped(ctx, target, line, err)
-}
-
-// verifyTyped reads the pane back after a prompt was typed into it and
-// reports ErrPromptNotSubmitted when the line still sits in the input box:
-// an agent can take the text and drop the enter (seen with Claude Code in
-// a WSL pane), and the sender would otherwise believe the message arrived.
-// A read that fails or a box the check cannot see keeps the silent
-// success: the text was typed, and a wrong alarm would make the operator
-// press enter twice. The refusal that started the fallback is kept in the
-// chain for the logs.
-func (g *Gateway) verifyTyped(ctx context.Context, target, line string, refusal error) error {
-	if !sleep(ctx, g.verifyDelay) {
-		return nil
-	}
-	screen, err := g.ReadScreen(ctx, target, domain.ScreenVisible, promptVerifyLines)
-	if err != nil {
-		g.log.Warn("typed prompt not verified", slog.String("target", target), slog.String("err", err.Error()))
-		return nil
-	}
-	if !domain.PromptStuck(screen.Text, line) {
-		g.log.Debug("typed prompt taken", slog.String("target", target))
-		return nil
-	}
-	g.log.Warn("typed prompt not submitted", slog.String("target", target), slog.Int("text_len", len(line)))
-	var apiErr *APIError
-	errors.As(refusal, &apiErr)
-	return fmt.Errorf("herdr agent.prompt: %w: %w", domain.ErrPromptNotSubmitted, apiErr)
+	return true, nil
 }
 
 // paneStatus returns the status the agent in paneID reports through

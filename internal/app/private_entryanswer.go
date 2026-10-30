@@ -38,7 +38,10 @@ func (p *PrivateControl) prompt(ctx context.Context, o domain.ShareOrigin, actio
 	// it drops the agent's buttons before acting.
 	want, shown := p.shownTextEntry(o)
 	return p.effect(ctx, o, action, func(ctx context.Context) error {
-		err := p.Herdr.Prompt(ctx, o.Key.PaneID, text)
+		typed, err := p.Herdr.Prompt(ctx, o.Key.PaneID, text)
+		if err == nil && typed {
+			p.checkTyped(o, action, text)
+		}
 		if !errors.Is(err, domain.ErrAgentBlocked) {
 			return err
 		}

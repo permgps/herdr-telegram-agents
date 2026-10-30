@@ -134,6 +134,28 @@ func TestTypedAnswerableBy(t *testing.T) {
 	}
 }
 
+// For any kind but pi a framed "Other" goes back among the options in its
+// place; pi keeps it as the free-text entry.
+func TestDialogForKind(t *testing.T) {
+	d := domain.Dialog{Choices: []domain.Choice{{Number: 1, Label: "Red"}, {Number: 3, Label: "Blue"}},
+		TextEntry: 2, TextLabel: domain.ServiceOther, Cursor: 1}
+	if got := d.ForKind(domain.PiKind); !reflect.DeepEqual(got, d) {
+		t.Fatalf("pi: %+v, want unchanged", got)
+	}
+	got := d.ForKind(domain.ClaudeKind)
+	want := []domain.Choice{{Number: 1, Label: "Red"}, {Number: 2, Label: "Other"}, {Number: 3, Label: "Blue"}}
+	if !reflect.DeepEqual(got.Choices, want) || got.TextEntry != 0 || got.TextLabel != "" || got.Cursor != 1 {
+		t.Fatalf("claude: %+v, want %v without an entry", got, want)
+	}
+	if len(d.Choices) != 2 {
+		t.Fatalf("ForKind changed the original: %+v", d.Choices)
+	}
+	plain := domain.Dialog{Choices: want[:1], TextEntry: 2, TextLabel: domain.ServiceTypeSomething}
+	if got := plain.ForKind(domain.ClaudeKind); !reflect.DeepEqual(got, plain) {
+		t.Fatalf("Type something: %+v, want unchanged", got)
+	}
+}
+
 // A box without a numbered list yields no dialog.
 func TestParseDialogFramedWithoutList(t *testing.T) {
 	screen := "┌──────────────┐\n│just a note   │\n└──────────────┘\n~/projects"

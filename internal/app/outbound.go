@@ -755,7 +755,7 @@ func (o *outbound) fire(ctx context.Context, key domain.Key, force, idleCompleti
 	}
 	var dialog domain.Dialog
 	if status == domain.StatusBlocked {
-		dialog = domain.ParseDialog(text)
+		dialog = domain.ParseDialog(text).ForKind(agent.Kind)
 		out.Buttons = choiceButtons(dialog)
 		o.logChoices(key, dialog)
 	}
@@ -1010,7 +1010,7 @@ func (o *outbound) refreshKeyboard(ctx context.Context, key domain.Key, msgID, l
 		return true, nil
 	}
 	text := o.clean(key, screen.Text)
-	d := domain.ParseDialog(text)
+	d := o.parseDialog(key, text)
 	if !d.Multi {
 		o.log.Debug("keyboard refresh dropped", slog.String("key", key.String()), slog.Int("message_id", msgID), slog.String("reason", "not_multi"))
 		return false, nil
@@ -1022,6 +1022,14 @@ func (o *outbound) refreshKeyboard(ctx context.Context, key domain.Key, msgID, l
 	o.log.Debug("keyboard refreshed", slog.String("key", key.String()), slog.Int("message_id", msgID),
 		slog.Int("choices", len(d.Choices)), slog.Int("bytes", len(text)))
 	return true, o.absorbEdit(key, o.tg.EditText(ctx, msgID, preHTML(text), true, choiceButtons(d)))
+}
+
+// parseDialog reads the dialog on a cleaned screen of the agent under key
+// as its kind draws it (domain.Dialog.ForKind), so it compares with the
+// keyboard posted for it.
+func (o *outbound) parseDialog(key domain.Key, text string) domain.Dialog {
+	agent, _ := o.agents(key)
+	return domain.ParseDialog(text).ForKind(agent.Kind)
 }
 
 // submitKeys returns the keys that submit the multi-select dialog under
@@ -1055,7 +1063,7 @@ func (o *outbound) dialogStillOpen(ctx context.Context, key domain.Key, kb keybo
 		o.log.Warn("screen read failed", slog.String("key", key.String()), slog.String("err", err.Error()))
 		return false
 	}
-	d := domain.ParseDialog(o.clean(key, screen.Text))
+	d := o.parseDialog(key, o.clean(key, screen.Text))
 	open := len(d.Choices) > 0 && len(d.Choices) == len(kb.choices) && d.Multi == kb.multi && d.TextEntry == kb.textEntry
 	o.log.Debug("dialog checked while working", slog.String("key", key.String()), slog.Bool("open", open),
 		slog.Int("choices", len(d.Choices)), slog.Bool("multi", d.Multi))

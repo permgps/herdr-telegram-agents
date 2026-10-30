@@ -72,6 +72,7 @@ type FakeHerdr struct {
 	afterKeys  map[string]string
 	notifies   []Notification
 	prompts    []string
+	typed      map[string]bool
 	screens    map[string]string
 	revisions  map[string]int64
 	reads      []ReadCall
@@ -120,6 +121,17 @@ func (f *FakeHerdr) SetScreen(target, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.screens[target] = text
+}
+
+// SetTyped makes Prompt report target as an agent Herdr does not drive:
+// the prompt is typed into its pane and Prompt returns typed.
+func (f *FakeHerdr) SetTyped(target string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.typed == nil {
+		f.typed = map[string]bool{}
+	}
+	f.typed[target] = true
 }
 
 // SetScreenAfterKeys makes the next SendKeys call carrying key switch the
@@ -347,12 +359,15 @@ func (f *FakeHerdr) ReadScreen(_ context.Context, target string, source domain.S
 	return domain.Screen{Text: text, Revision: f.revisions[target]}, nil
 }
 
-func (f *FakeHerdr) Prompt(_ context.Context, target, text string) error {
+func (f *FakeHerdr) Prompt(_ context.Context, target, text string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.prompts = append(f.prompts, target+": "+text)
 	f.log.Debug("fake herdr prompt", slog.String("target", target), slog.Int("len", len(text)))
-	return f.fail("prompt")
+	if err := f.fail("prompt"); err != nil {
+		return false, err
+	}
+	return f.typed[target], nil
 }
 
 func (f *FakeHerdr) SendKeys(_ context.Context, target string, keys []string) error {

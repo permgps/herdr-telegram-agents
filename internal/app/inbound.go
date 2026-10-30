@@ -165,6 +165,10 @@ type inbound struct {
 	// answers are plain messages waiting for their dialog's free-text
 	// entry to open, one per pane; the debouncer key is answerKey(pane).
 	answers map[string]entryAnswer
+	// typed are prompts typed into a pane, waiting for the screen check
+	// that they left the input box, one per pane; the debouncer key is
+	// typedKey(pane).
+	typedChecks map[string]typedCheck
 }
 
 // followUp is a forwarded command waiting for its settle timer: which
@@ -289,11 +293,15 @@ func (i *inbound) HandleTopic(ctx context.Context, msg domain.TopicMessage) erro
 		// text is then never typed blind (a select menu ignores it and the
 		// enter confirms the highlighted option): it goes in only through a
 		// free-text entry verified on the screen, see answerBlocked.
-		if err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text); err != nil {
+		typed, err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text)
+		if err != nil {
 			if errors.Is(err, domain.ErrAgentBlocked) {
 				return i.answerBlocked(ctx, msg, key, agent, cmd.Text)
 			}
 			return i.failed(ctx, msg, key, "prompt", err)
+		}
+		if typed {
+			i.checkTyped(key, msg.ThreadID, msg.MessageID, cmd.Text)
 		}
 		i.log.Debug("herdr call ok", slog.String("method", "prompt"), slog.String("key", key.String()), slog.Int("message_id", msg.MessageID))
 		return i.out.PromptSent(ctx, key, msg.ThreadID, msg.MessageID)
@@ -488,8 +496,12 @@ func (i *inbound) forward(ctx context.Context, msg domain.TopicMessage, key doma
 			slog.String("kind", agent.Kind), slog.Int("message_id", msg.MessageID))
 		return i.reply(ctx, msg.ThreadID, msg.MessageID, fmt.Sprintf(forwardWrongKindFmt, word))
 	}
-	if err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text); err != nil {
+	typed, err := i.herdr.Prompt(ctx, key.PaneID, cmd.Text)
+	if err != nil {
 		return i.failed(ctx, msg, key, "prompt", err)
+	}
+	if typed {
+		i.checkTyped(key, msg.ThreadID, msg.MessageID, cmd.Text)
 	}
 	i.log.Info("command forwarded", slog.String("key", key.String()), slog.String("word", word),
 		slog.Int("thread_id", msg.ThreadID), slog.Int("message_id", msg.MessageID),
@@ -586,6 +598,9 @@ func (i *inbound) Fire(ctx context.Context, key domain.Key) error {
 	}
 	if pane, ok := strings.CutPrefix(key.PaneID, answerPrefix); ok {
 		return i.fireAnswer(ctx, pane)
+	}
+	if pane, ok := strings.CutPrefix(key.PaneID, typedPrefix); ok {
+		return i.fireTyped(ctx, pane)
 	}
 	f, ok := i.pending[key]
 	if !ok {
@@ -1222,8 +1237,9 @@ func (i *inbound) InboxFinished(ctx context.Context, r inboxResult) error {
 	}
 	// Like plain text, the attachment prompt goes into a dialog only
 	// through its verified free-text entry, which submits it at once: no
-	// delayed enter follows.
-	if err := i.herdr.Prompt(ctx, r.key.PaneID, domain.AttachmentPrompt(r.caption, r.paths)); err != nil {
+	// delayed enter follows. A typed prompt needs no screen check of its
+	// own: the delayed enter below is there for an agent that drops one.
+	if _, err := i.herdr.Prompt(ctx, r.key.PaneID, domain.AttachmentPrompt(r.caption, r.paths)); err != nil {
 		if errors.Is(err, domain.ErrAgentBlocked) {
 			return i.answerBlocked(ctx, msg, r.key, agent, domain.AttachmentPrompt(r.caption, r.paths))
 		}

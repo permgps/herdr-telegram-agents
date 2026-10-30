@@ -60,6 +60,30 @@ func (d Dialog) TypedAnswerableBy(kind string) bool {
 	return d.TypedAnswerable() && d.TextLabel == TypedEntryLabel(kind)
 }
 
+// ForKind returns d as an agent of kind draws it. A framed "Other" is
+// pi-questionnaire's editor only on pi; for any other kind it is a plain
+// option whose digit answers the question, so it goes back among the
+// choices in its place and d keeps no free-text entry.
+func (d Dialog) ForKind(kind string) Dialog {
+	if d.TextLabel != ServiceOther || kind == PiKind {
+		return d
+	}
+	other := Choice{Number: d.TextEntry, Label: ServiceOther}
+	choices := make([]Choice, 0, len(d.Choices)+1)
+	for _, c := range d.Choices {
+		if other.Number > 0 && c.Number > other.Number {
+			choices = append(choices, other)
+			other.Number = 0
+		}
+		choices = append(choices, c)
+	}
+	if other.Number > 0 {
+		choices = append(choices, other)
+	}
+	d.Choices, d.TextEntry, d.TextLabel = choices, 0, ""
+	return d
+}
+
 // TextEntryOpen reports whether screen shows the dialog want with its
 // free-text entry focused, so typed text goes into that entry and not into
 // an option list: the same dialog, the ❯ cursor on the entry row and

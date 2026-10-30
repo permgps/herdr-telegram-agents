@@ -56,7 +56,11 @@ type PrivateControl struct {
 	typing    map[domain.Key]domain.ShareOrigin
 	// answers are plain messages waiting for a dialog's free-text entry,
 	// one per agent (see prompt). Bridge goroutine only.
-	answers       map[domain.Key]privateAnswer
+	answers map[domain.Key]privateAnswer
+	// typedChecks are prompts typed into the pane of an agent Herdr does
+	// not drive, waiting for the screen check (see checkTyped). Bridge
+	// goroutine only.
+	typedChecks   []privateTyped
 	albums        map[string]*privateAlbum
 	denialNotices map[string]uint64
 }
@@ -294,7 +298,13 @@ func (p *PrivateControl) Handle(ctx context.Context, e domain.PrivateMessage) er
 				slog.String("word", forwardWord(cmd.Text)), slog.String("status", string(a.Status)))
 			return p.send(ctx, o, "Not sent: "+hint+".")
 		}
-		err := p.effect(ctx, o, domain.ShareForward, func(ctx context.Context) error { return p.Herdr.Prompt(ctx, o.Key.PaneID, cmd.Text) })
+		err := p.effect(ctx, o, domain.ShareForward, func(ctx context.Context) error {
+			typed, err := p.Herdr.Prompt(ctx, o.Key.PaneID, cmd.Text)
+			if err == nil && typed {
+				p.checkTyped(o, domain.ShareForward, cmd.Text)
+			}
+			return err
+		})
 		if err == nil && cmd.Forward.Post != domain.ForwardPostNone {
 			p.followups = append(p.followups, privateFollowup{origin: o, due: p.Now().Add(2 * time.Second), dismiss: cmd.Forward.Dismiss})
 		}
@@ -617,6 +627,7 @@ type privateFollowup struct {
 
 func (p *PrivateControl) Tick(ctx context.Context) error {
 	p.pollPrivateAnswers(ctx)
+	p.pollTypedChecks(ctx)
 	if p.Dashboard != nil && p.Dashboard.Reconciler != nil {
 		_ = p.Dashboard.Reconciler.Flush(ctx)
 	}

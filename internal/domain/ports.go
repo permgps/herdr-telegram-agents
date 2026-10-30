@@ -39,8 +39,11 @@ type HerdrGateway interface {
 	ListAgents(ctx context.Context) ([]Agent, error)
 	// ReadScreen returns up to lines of terminal text for the agent.
 	ReadScreen(ctx context.Context, target string, source ScreenSource, lines int) (Screen, error)
-	// Prompt types text into the agent and submits it.
-	Prompt(ctx context.Context, target, text string) error
+	// Prompt types text into the agent and submits it. typed reports that
+	// Herdr does not drive the agent and the text was typed into its pane
+	// with an Enter the agent may have dropped: the caller checks the
+	// screen later (PromptStuck).
+	Prompt(ctx context.Context, target, text string) (typed bool, err error)
 	// SendKeys sends raw key names such as "enter" or "escape".
 	SendKeys(ctx context.Context, target string, keys []string) error
 	// SendText types literal text into the pane without pressing enter. It
