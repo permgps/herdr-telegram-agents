@@ -187,6 +187,45 @@ func TestGatewayAgentSession(t *testing.T) {
 	}
 }
 
+func TestGatewayAgentSessions(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return json.RawMessage(`{"type":"agent_list","agents":[
+			{"agent":"claude","agent_status":"idle","pane_id":"p1","terminal_id":"term-1"},
+			{"agent":"claude","agent_status":"done","pane_id":"p2","terminal_id":"term-2","agent_session":{"source":"herdr:claude","agent":"claude","kind":"id","value":"first"}},
+			{"agent":"claude","agent_status":"done","pane_id":"p2","terminal_id":"term-2","agent_session":{"source":"herdr:claude","agent":"claude","kind":"id","value":"second"}},
+			{"agent":"opencode","agent_status":"idle","pane_id":"p3","terminal_id":"term-3","agent_session":{"source":"herdr:opencode","agent":"opencode","kind":"id","value":"ses_abc"}}]}`), nil
+	})
+	g := newGateway(t, s)
+
+	got, err := g.AgentSessions(ctxT(t))
+	if err != nil {
+		t.Fatalf("AgentSessions: %v", err)
+	}
+	want := map[string]domain.SessionTuple{
+		"p2": {Source: "herdr:claude", Agent: "claude", Kind: "id", Value: "first"},
+		"p3": {Source: "herdr:opencode", Agent: "opencode", Kind: "id", Value: "ses_abc"},
+	}
+	if len(got) != len(want) || got["p2"] != want["p2"] || got["p3"] != want["p3"] {
+		t.Fatalf("AgentSessions = %+v, want %+v", got, want)
+	}
+	if one, err := g.AgentSession(ctxT(t), "p2"); err != nil || one != want["p2"] {
+		t.Fatalf("AgentSession(p2) = %+v, %v; want the first entry", one, err)
+	}
+}
+
+func TestGatewayAgentSessionsError(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.list", func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return nil, &testkit.APIError{Code: "internal", Message: "boom"}
+	})
+	g := newGateway(t, s)
+
+	if got, err := g.AgentSessions(ctxT(t)); err == nil || got != nil {
+		t.Fatalf("AgentSessions = %+v, %v; want an error", got, err)
+	}
+}
+
 func TestGatewayPaneProcesses(t *testing.T) {
 	s := testkit.NewNDJSONServer(t, nil)
 	s.Handle("pane.process_info", func(id string, params json.RawMessage) (any, *testkit.APIError) {
@@ -298,7 +337,7 @@ func TestGatewayPromptAndSendKeys(t *testing.T) {
 	s.Handle("agent.send_keys", ackHandler)
 	g := newGateway(t, s)
 
-	if err := g.Prompt(ctxT(t), "reviewer", "fix the tests"); err != nil {
+	if _, err := g.Prompt(ctxT(t), "reviewer", "fix the tests"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
 	want := map[string]any{"target": "reviewer", "text": "fix the tests"}
@@ -325,7 +364,7 @@ func TestGatewayPromptFallsBackToPaneInput(t *testing.T) {
 	s.Handle("pane.send_keys", ackHandler)
 	g := newGateway(t, s)
 
-	if err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil {
+	if _, err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
 	want := map[string]any{"pane_id": "w1:p1", "text": "fix the tests"}
@@ -348,12 +387,52 @@ func TestGatewayPromptFallbackFoldsLineBreaks(t *testing.T) {
 	s.Handle("pane.send_keys", ackHandler)
 	g := newGateway(t, s)
 
-	if err := g.Prompt(ctxT(t), "w1:p1", "first line\n\n  second line \r\nthird\n"); err != nil {
+	if _, err := g.Prompt(ctxT(t), "w1:p1", "first line\n\n  second line \r\nthird\n"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
 	want := map[string]any{"pane_id": "w1:p1", "text": "first line second line third"}
 	if got := lastParams(t, s, "pane.send_text"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("pane.send_text params = %v, want %v", got, want)
+	}
+}
+
+// screenAfter answers agent.read with the given visible screen.
+func screenAfter(text string) testkit.HandlerFunc {
+	return func(id string, params json.RawMessage) (any, *testkit.APIError) {
+		return map[string]any{"type": "pane_read", "read": map[string]any{
+			"pane_id": "w1:p1", "source": "visible", "format": "text", "text": text, "revision": 7,
+		}}, nil
+	}
+}
+
+// The typed fallback returns as soon as the enter went out: the bridge
+// goroutine that calls Prompt also posts for every other agent, so the
+// gateway never waits for the screen; the app checks it later.
+func TestGatewayPromptFallbackDoesNotWait(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", notDrivenHandler)
+	s.Handle("agent.list", listedAs("idle"))
+	s.Handle("pane.send_text", ackHandler)
+	s.Handle("pane.send_keys", ackHandler)
+	s.Handle("agent.read", screenAfter("❯ fix the tests\n────"))
+	g := newGateway(t, s)
+
+	if typed, err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil || !typed {
+		t.Fatalf("Prompt = %v, %v; want typed", typed, err)
+	}
+	if reqs := s.WaitRequests("agent.read", 1, 200*time.Millisecond); len(reqs) != 0 {
+		t.Fatalf("Prompt read the screen back %d times, want none", len(reqs))
+	}
+}
+
+// A driven agent submits through agent.prompt itself: nothing to check.
+func TestGatewayPromptDrivenIsNotTyped(t *testing.T) {
+	s := testkit.NewNDJSONServer(t, nil)
+	s.Handle("agent.prompt", ackHandler)
+	g := newGateway(t, s)
+
+	if typed, err := g.Prompt(ctxT(t), "w1:p1", "fix the tests"); err != nil || typed {
+		t.Fatalf("Prompt = %v, %v; want not typed", typed, err)
 	}
 }
 
@@ -382,7 +461,7 @@ func TestGatewayPromptKeepsBlocked(t *testing.T) {
 	s.Handle("pane.send_text", ackHandler)
 	g := newGateway(t, s)
 
-	err := g.Prompt(ctxT(t), "w1:p1", "yes")
+	_, err := g.Prompt(ctxT(t), "w1:p1", "yes")
 	if !errors.Is(err, domain.ErrAgentBlocked) {
 		t.Fatalf("Prompt error = %v, want ErrAgentBlocked", err)
 	}
@@ -399,7 +478,7 @@ func TestGatewayPromptKeepsRefusalForAgentName(t *testing.T) {
 	s.Handle("pane.send_text", ackHandler)
 	g := newGateway(t, s)
 
-	err := g.Prompt(ctxT(t), "crusher", "fix the tests")
+	_, err := g.Prompt(ctxT(t), "crusher", "fix the tests")
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != codeNotDriven {
 		t.Fatalf("Prompt error = %v, want %s", err, codeNotDriven)
@@ -421,7 +500,7 @@ func TestGatewayPromptRefusesBlockedNotDriven(t *testing.T) {
 	s.Handle("pane.send_keys", ackHandler)
 	g := newGateway(t, s)
 
-	err := g.Prompt(ctxT(t), "w1:p1", "stop, do not delete that")
+	_, err := g.Prompt(ctxT(t), "w1:p1", "stop, do not delete that")
 	if !errors.Is(err, domain.ErrAgentBlocked) {
 		t.Fatalf("Prompt error = %v, want ErrAgentBlocked", err)
 	}
@@ -463,7 +542,7 @@ func TestGatewayPromptKeepsRefusalWhenInDoubt(t *testing.T) {
 			s.Handle("pane.send_keys", ackHandler)
 			g := newGateway(t, s)
 
-			err := g.Prompt(ctxT(t), "w1:p1", tc.text)
+			_, err := g.Prompt(ctxT(t), "w1:p1", tc.text)
 			var apiErr *APIError
 			if !errors.As(err, &apiErr) || apiErr.Code != codeNotDriven {
 				t.Fatalf("Prompt error = %v, want %s", err, codeNotDriven)
@@ -487,7 +566,7 @@ func TestGatewayPromptTypesIntoWorkingNotDriven(t *testing.T) {
 			s.Handle("pane.send_keys", ackHandler)
 			g := newGateway(t, s)
 
-			if err := g.Prompt(ctxT(t), "w1:p1", "next step"); err != nil {
+			if _, err := g.Prompt(ctxT(t), "w1:p1", "next step"); err != nil {
 				t.Fatalf("Prompt: %v", err)
 			}
 			want := map[string]any{"pane_id": "w1:p1", "text": "next step"}
@@ -548,7 +627,7 @@ func TestGatewayAgentBlockedMapsBlockedAndPreservesAPIError(t *testing.T) {
 	})
 	g := newGateway(t, s)
 
-	err := g.Prompt(ctxT(t), "wB:p15", "yes, go ahead")
+	_, err := g.Prompt(ctxT(t), "wB:p15", "yes, go ahead")
 	if !errors.Is(err, domain.ErrAgentBlocked) {
 		t.Fatalf("err = %v, want ErrAgentBlocked", err)
 	}
@@ -661,7 +740,7 @@ func TestGatewayNotFoundIsAgentGone(t *testing.T) {
 	})
 	g := newGateway(t, s)
 
-	err := g.Prompt(ctxT(t), "w9:p9", "hi")
+	_, err := g.Prompt(ctxT(t), "w9:p9", "hi")
 	if !errors.Is(err, domain.ErrAgentGone) {
 		t.Fatalf("err = %v, want ErrAgentGone", err)
 	}
@@ -725,7 +804,7 @@ func TestGatewayRetriesDialOnce(t *testing.T) {
 		}
 		return dial(ctx, path)
 	}
-	if err := g.Prompt(ctxT(t), "a", "one"); err != nil {
+	if _, err := g.Prompt(ctxT(t), "a", "one"); err != nil {
 		t.Fatalf("prompt after transient dial failure: %v", err)
 	}
 	if got := s.WaitRequests("agent.prompt", 1, 2*time.Second); len(got) != 1 {
@@ -739,7 +818,7 @@ func TestGatewayGivesUpWhenServerGone(t *testing.T) {
 	g := newGateway(t, s)
 	s.Close()
 
-	err := g.Prompt(ctxT(t), "a", "x")
+	_, err := g.Prompt(ctxT(t), "a", "x")
 	if !errors.Is(err, domain.ErrDisconnected) {
 		t.Fatalf("err = %v, want ErrDisconnected", err)
 	}
@@ -750,7 +829,7 @@ func TestGatewayEachCallUsesOwnConnection(t *testing.T) {
 	s.Handle("agent.prompt", ackHandler)
 	g := newGateway(t, s)
 	for i := 0; i < 3; i++ {
-		if err := g.Prompt(ctxT(t), "a", "x"); err != nil {
+		if _, err := g.Prompt(ctxT(t), "a", "x"); err != nil {
 			t.Fatalf("prompt %d: %v", i, err)
 		}
 	}

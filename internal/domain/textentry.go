@@ -29,12 +29,59 @@ func (d Dialog) Same(o Dialog) bool {
 }
 
 // TypedAnswerable reports whether a plain message may answer d through its
-// free-text entry: a single-select dialog with a "Type something" entry,
-// the one shape whose typing state was verified on a real screen (see
-// textEntryEditHint). A permission dialog has no such entry; a
-// multi-select one toggles on a digit.
+// free-text entry: a single-select dialog with a "Type something" entry or
+// a framed "Other" entry, the shapes whose typing state was verified on a
+// real screen (see textEntryEditHint and otherEditorPrefix). A permission
+// dialog has no such entry; a multi-select one toggles on a digit. Which
+// entry counts depends on the agent: see TypedAnswerableBy.
 func (d Dialog) TypedAnswerable() bool {
-	return d.TextEntry > 0 && !d.Multi && d.TextLabel == ServiceTypeSomething
+	return d.TextEntry > 0 && !d.Multi && (d.TextLabel == ServiceTypeSomething || d.TextLabel == ServiceOther)
+}
+
+// TypedEntryLabel is the free-text entry whose typing state was read live
+// for an agent kind: Claude Code's "Type something" and pi-questionnaire's
+// framed "Other". Any other kind has none and gets "".
+func TypedEntryLabel(kind string) string {
+	switch kind {
+	case ClaudeKind:
+		return ServiceTypeSomething
+	case PiKind:
+		return ServiceOther
+	}
+	return ""
+}
+
+// TypedAnswerableBy reports whether a plain message to an agent of kind may
+// answer d through its free-text entry: d is TypedAnswerable and its entry
+// is the one read live for that kind. A Claude Code screen drawn in a box
+// can carry a plain "Other" option, whose digit answers the question
+// instead of opening an editor.
+func (d Dialog) TypedAnswerableBy(kind string) bool {
+	return d.TypedAnswerable() && d.TextLabel == TypedEntryLabel(kind)
+}
+
+// ForKind returns d as an agent of kind draws it. A framed "Other" is
+// pi-questionnaire's editor only on pi; for any other kind it is a plain
+// option whose digit answers the question, so it goes back among the
+// choices in its place and d keeps no free-text entry.
+func (d Dialog) ForKind(kind string) Dialog {
+	if d.TextLabel != ServiceOther || kind == PiKind {
+		return d
+	}
+	other := Choice{Number: d.TextEntry, Label: ServiceOther}
+	choices := make([]Choice, 0, len(d.Choices)+1)
+	for _, c := range d.Choices {
+		if other.Number > 0 && c.Number > other.Number {
+			choices = append(choices, other)
+			other.Number = 0
+		}
+		choices = append(choices, c)
+	}
+	if other.Number > 0 {
+		choices = append(choices, other)
+	}
+	d.Choices, d.TextEntry, d.TextLabel = choices, 0, ""
+	return d
 }
 
 // TextEntryOpen reports whether screen shows the dialog want with its
@@ -50,7 +97,34 @@ func TextEntryOpen(screen string, want Dialog) bool {
 		return false
 	}
 	d := ParseDialog(screen)
-	return d.Same(want) && d.Cursor == want.TextEntry && strings.Contains(lastLine(screen), textEntryEditHint)
+	if !d.Same(want) || d.Cursor != want.TextEntry {
+		return false
+	}
+	if want.TextLabel == ServiceOther {
+		return otherEditorOpen(screen)
+	}
+	return strings.Contains(lastLine(screen), textEntryEditHint)
+}
+
+// otherEditorPrefix starts the inline editor line pi-questionnaire draws
+// under its "Other" entry once that entry's digit is pressed ("Other:
+// (type a custom answer)" while empty); typed text then goes into it and
+// enter submits it. Read live on 2026-10-26 (pi-questionnaire 2.1.8).
+const otherEditorPrefix = "Other:"
+
+// otherEditorOpen reports whether the bottom-most dialog frame of screen
+// shows pi-questionnaire's open "Other" editor.
+func otherEditorOpen(screen string) bool {
+	inner, ok := lastFrame(strings.Split(strings.ReplaceAll(screen, "\r\n", "\n"), "\n"))
+	if !ok {
+		return false
+	}
+	for _, line := range inner {
+		if strings.HasPrefix(strings.TrimSpace(line), otherEditorPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // lastLine returns the last non-blank line of text.

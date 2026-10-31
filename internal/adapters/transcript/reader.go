@@ -1,11 +1,11 @@
 // Package transcript reads an agent's last reply from the session
-// transcript the agent writes for itself, outside Herdr. Herdr 0.7.5 does
-// not tell which session a pane runs, so the reader finds the transcript by
-// the pane's working directory: Claude Code keeps one directory per
-// project under ~/.claude/projects and one .jsonl per session, and the
-// newest file is the session that just finished. Two Claude panes in the
-// same directory cannot be told apart; that limitation is documented and
-// the caller falls back to the screen whenever the reader is unsure.
+// transcript the agent writes for itself, outside Herdr. Claude Code keeps
+// one directory per project under ~/.claude/projects and one .jsonl per
+// session, named after the session id. When Herdr reports the pane's
+// Claude session id the reader opens that file; otherwise it takes the
+// newest file in the directory of the pane's working directory, the session
+// that just finished, unless that file is the session of another pane.
+// Whenever the reader cannot tell, the caller falls back to the screen.
 package transcript
 
 import (
@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,26 +36,36 @@ const (
 // projectsDir is Claude Code's transcript root, relative to the home.
 var projectsDir = []string{".claude", "projects"}
 
+// claudeSessionID is the shape of a Claude Code session id, the name of its
+// transcript file: a lower-case UUID. Anything else, a path separator or
+// ".." included, is refused before it can reach the file system.
+var claudeSessionID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 // Reader implements domain.ReplySource for Claude Code transcripts.
 type Reader struct {
-	home    func() (string, error)
-	now     func() time.Time
-	log     *slog.Logger
-	maxScan int64
+	// sessions lists the agent_session tuple of every pane Herdr knows
+	// one for, by pane id; nil reads by working directory alone. The
+	// tuples are used for one lookup and never stored.
+	sessions func(context.Context) (map[string]domain.SessionTuple, error)
+	home     func() (string, error)
+	now      func() time.Time
+	log      *slog.Logger
+	maxScan  int64
 }
 
-// NewReader returns a reader over the current user's home directory.
-func NewReader(log *slog.Logger) *Reader {
-	return newReader(os.UserHomeDir, time.Now, log)
+// NewReader returns a reader over the current user's home directory and
+// Herdr's session list.
+func NewReader(sessions func(context.Context) (map[string]domain.SessionTuple, error), log *slog.Logger) *Reader {
+	return newReader(sessions, os.UserHomeDir, time.Now, log)
 }
 
-// newReader takes the home and clock sources so tests can point the reader
-// at a temporary directory.
-func newReader(home func() (string, error), now func() time.Time, log *slog.Logger) *Reader {
+// newReader takes the session, home and clock sources so tests can point
+// the reader at a temporary directory.
+func newReader(sessions func(context.Context) (map[string]domain.SessionTuple, error), home func() (string, error), now func() time.Time, log *slog.Logger) *Reader {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Reader{home: home, now: now, log: log, maxScan: defaultMaxScan}
+	return &Reader{sessions: sessions, home: home, now: now, log: log, maxScan: defaultMaxScan}
 }
 
 // LastReply finds the agent's transcript and returns the last text the
@@ -76,7 +87,7 @@ func (r *Reader) LastReply(ctx context.Context, agent domain.Agent) (domain.Repl
 		return domain.Reply{}, fmt.Errorf("%w: home directory: %v", domain.ErrNoReply, err)
 	}
 	dir := filepath.Join(append([]string{home}, append(projectsDir, projectSlug(agent.Cwd))...)...)
-	path, modTime, candidates, err := newestTranscript(dir)
+	path, modTime, candidates, err := r.pick(ctx, agent, dir)
 	if err != nil {
 		return domain.Reply{}, err
 	}
@@ -100,6 +111,73 @@ func (r *Reader) LastReply(ctx context.Context, agent domain.Agent) (domain.Repl
 			slog.String("chosen", filepath.Base(path)), slog.Int64("bytes", stats.bytes), slog.String("err", stats.readErr.Error()))
 	}
 	return domain.Reply{Text: text, Source: path, Age: age, Written: modTime, Meta: meta}, nil
+}
+
+// pick chooses the agent's transcript in dir. A pane whose Claude session
+// id Herdr reports reads that session's file and no other: the newest file
+// may be another pane's in the same directory. A pane without one gets the
+// newest file, unless that file is the session Herdr reports for another
+// pane; that answer is the other pane's, and ErrStaleTranscript marks the
+// fallback as expected (two panes in one directory), not a broken reader.
+func (r *Reader) pick(ctx context.Context, agent domain.Agent, dir string) (path string, modTime time.Time, candidates int, err error) {
+	own, others, err := r.claims(ctx, agent)
+	if err != nil {
+		return "", time.Time{}, 0, err
+	}
+	if own != "" {
+		path = filepath.Join(dir, own+transcriptSuffix)
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", time.Time{}, 0, fmt.Errorf("%w: no transcript for the pane's session in %s", domain.ErrNoReply, dir)
+		}
+		return path, info.ModTime(), 1, nil
+	}
+	path, modTime, candidates, err = newestTranscript(dir)
+	if err != nil {
+		return "", time.Time{}, 0, err
+	}
+	if others[strings.TrimSuffix(filepath.Base(path), transcriptSuffix)] {
+		return "", time.Time{}, 0, fmt.Errorf("%w: %w: the newest transcript in %s is another pane's session",
+			domain.ErrStaleTranscript, domain.ErrNoReply, dir)
+	}
+	return path, modTime, candidates, nil
+}
+
+// claims returns the Claude session id Herdr reports for the agent's pane
+// and the set of ids it reports for every other pane. A failed lookup reads
+// by directory alone, as before Herdr reported sessions; a pane whose
+// session no longer matches the topic's key runs another session, and its
+// reply would land in the wrong topic.
+func (r *Reader) claims(ctx context.Context, agent domain.Agent) (own string, others map[string]bool, err error) {
+	if r.sessions == nil {
+		return "", nil, nil
+	}
+	tuples, err := r.sessions(ctx)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", nil, ctxErr
+		}
+		r.log.Debug("claude session lookup failed, reading by directory",
+			slog.String("pane", agent.PaneID), slog.String("err", err.Error()))
+		return "", nil, nil
+	}
+	for pane, t := range tuples {
+		if t.Agent != kindClaude || t.Kind != "id" || !claudeSessionID.MatchString(t.Value) {
+			continue
+		}
+		if pane != agent.PaneID {
+			if others == nil {
+				others = make(map[string]bool)
+			}
+			others[t.Value] = true
+			continue
+		}
+		if agent.SessionDigest != "" && t.Digest() != agent.SessionDigest {
+			return "", nil, fmt.Errorf("%w: the pane now runs another session", domain.ErrNoReply)
+		}
+		own = t.Value
+	}
+	return own, others, nil
 }
 
 // newestTranscript returns the most recently modified session file in dir

@@ -20,7 +20,7 @@ import (
 // fallback ran and pressed enter; it is also true when the text was typed
 // but the enter failed. Any other prompt error is returned unchanged.
 func deliverText(ctx context.Context, h domain.HerdrGateway, log *slog.Logger, paneID, text string) (typed bool, err error) {
-	err = h.Prompt(ctx, paneID, text)
+	_, err = h.Prompt(ctx, paneID, text)
 	if !errors.Is(err, domain.ErrAgentBlocked) {
 		return false, err
 	}

@@ -202,6 +202,21 @@ at DEBUG without screen text; a final failed read produces one WARN.
   default) the status line and the mode hint Claude Code draws under the
   dialog are cut from the post; the dialog's own lines never are, so the
   buttons are found as before.
+- When the screen does not end in such a dialog, the inside of the
+  bottom-most box drawn with corner characters (`┌ … └`, `╭ … ╰`) is read
+  the same way, side borders cut. This is how pi extensions draw a question
+  (read live on 2026-10-26 with pi-questionnaire 2.1.8 under pi 1.3.0): the
+  highlighted option may carry `👉`, `→` or `›` instead of `❯`, and the
+  box's key hints and status lines may follow the last option, since the
+  frame already marks the block as a dialog; pi's own footer under the box
+  is ignored. Inside a box, pi-questionnaire's `Other` entry counts as the
+  free-text entry and gets the `✏️ Other` button instead of an option
+  button: once its digit is pressed, digits are typed into its editor
+  rather than choosing an option. For any other agent kind a framed
+  `Other` stays a plain option button: its digit answers the question. A
+  box with a `┼` inside is a table (the
+  way Claude Code draws a markdown table), not a dialog, even when its
+  first column is numbered.
 - Pressing ✏️ sends that entry's number, turns the keyboard into `✏️ waiting
   for your text`, answers `now send the text` and posts a quoted `✏️ Type
   something: send the text as your next message` with Telegram's
@@ -246,13 +261,35 @@ at DEBUG without screen text; a final failed read produces one WARN.
   text. Only `agent_not_ready` takes this path; `agent_blocked` still
   reaches the dialog rules above and below, and an agent gone from Herdr
   still answers as before.
+- Typed input is checked back. An agent can take the text and drop the
+  `enter` (seen with Claude Code in a WSL pane: the prompt stayed in its
+  input box, twice after two sends, while Herdr reported every call as
+  ok). The message is handled at once, and 1.2 s after the `enter` the
+  daemon reads the visible screen without holding up other posts: when
+  the text after the last `❯` input marker still starts with the typed
+  line (its first 40 characters, white space folded), a reply to the
+  message says the text waits in the input box and to press enter in the
+  pane or send `/keys enter`. A private recipient gets the same notice on
+  the next private tick. A submitted prompt is echoed above an empty box,
+  so it does not match; a suggestion the agent shows in the empty box
+  only matches when it repeats the typed line. A failed read, or an input
+  box the check cannot recognise (only Claude Code's `❯` is known), stays
+  silent: a wrong alarm would make the operator press enter twice.
+  Attachments skip the check: their delayed `enter` covers a dropped one.
+  One WARN line per detection with the pane and the length, never the
+  text.
 - Plain text and attachment paths refused that way are never typed into a
   dialog blind: at a permission prompt the text is ignored and the `enter`
   confirms the highlighted option, usually the approval (read live on
   2026-10-09: a typed "no, fix the test first" plus `enter` ran the
   command). They go in only through a question's `Type something` entry,
   the way ✏️ does it by hand, and only for Claude Code, whose typing state
-  was read on a real screen: the dialog behind the latest buttons must
+  was read on a real screen, or for a pi agent whose boxed dialog offers
+  pi-questionnaire's `Other` entry (open once its `Other:` editor line
+  shows inside the box). Each kind gets only its own entry: for Claude
+  Code an `Other` in a box is a plain option, whose digit would answer the
+  question, so a plain message is refused there, in the topic and in a
+  private chat alike. The dialog behind the latest buttons must
   have that entry and not be multi-select, a fresh screen must still show
   that very dialog (same options and labels), the entry's digit is
   pressed (skipped when the entry already has the focus, where a digit
@@ -554,10 +591,21 @@ reply as the agent wrote it, before rendering and before the phone wraps
 them: a list of 25 short items folds, three long paragraphs do not. `Off`
 never folds. `Screen` posts are never folded, whatever the option says.
 
-Limits worth knowing: two Claude Code panes in the same directory cannot be
-told apart, so the reply of the one that wrote last wins (the stale check
-above catches the case where the other pane wrote before this turn began);
-other agents (Gemini, OMP) always get the screen; when no transcript or no
+Two Claude Code panes in the same directory are told apart by the session
+id Herdr reports for each pane (`agent_session`, which Herdr's Claude
+integration fills in; some panes have none): a pane with one reads that
+session's transcript and no other, and falls back to the screen when the
+file is not in the pane's project directory. A pane without one takes the
+newest transcript in the directory, unless that file is the session Herdr
+reports for another pane; it then gets the screen and the fallback counts
+as a stale transcript. This happens, for example, with Claude Code inside
+WSL next to a Windows Claude Code in the same project: the WSL session
+writes its transcript inside WSL, where the daemon does not look.
+
+Limits worth knowing: two Claude Code panes in the same directory that
+both lack a Herdr session cannot be told apart, so the reply of the one
+that wrote last wins (the stale check above catches the case where the
+other pane wrote before this turn began); other agents (Gemini, OMP) always get the screen; when no transcript or no
 text is found the daemon posts the screen and logs `reply source
 unavailable` with a safe category. For an agent kind the daemon can read,
 four unreadable replies in a row post one ⚠️ notice in the topic (no sound,

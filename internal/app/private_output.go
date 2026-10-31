@@ -247,7 +247,7 @@ func (p *PrivateOutput) dialogButtons(o domain.ShareOrigin, screen string, agent
 	if agent.Status != domain.StatusBlocked || !domain.SharePermits(g, domain.ShareDialog) {
 		return nil
 	}
-	d := domain.ParseDialog(screen)
+	d := domain.ParseDialog(screen).ForKind(agent.Kind)
 	var buttons []domain.Button
 	add := func(label, kind string, keys []string) {
 		ref := p.Control.button(privateButton{origin: o, kind: kind, keys: keys, expires: p.Control.Now().Add(10 * time.Minute), seq: agent.StateChangeSeq})

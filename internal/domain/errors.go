@@ -21,6 +21,11 @@ var (
 	// comes before any input reaches the pane, so typing the text instead
 	// never doubles it.
 	ErrAgentBlocked = errors.New("agent is waiting at a dialog")
+	// ErrPromptNotSubmitted means a prompt typed into the pane of an agent
+	// Herdr does not drive still sits in its input box after the enter: the
+	// agent took the text but not the submission, so the message waits
+	// there until someone presses enter in the pane.
+	ErrPromptNotSubmitted = errors.New("prompt typed but not submitted")
 	// ErrTopicGone means the Telegram topic was deleted.
 	ErrTopicGone = errors.New("topic is gone")
 	// ErrTopicClosed means the Telegram topic is closed and rejects writes.

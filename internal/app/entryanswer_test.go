@@ -142,6 +142,95 @@ func TestEntryAnswerGivesUpWhenEntryNeverOpens(t *testing.T) {
 	}
 }
 
+// piOtherScreen is a pi-questionnaire question in its box (shape read live
+// on 2026-10-26, see internal/domain/choice_framed_test.go); open shows its
+// "Other" editor after the entry's digit.
+func piOtherScreen(open bool) string {
+	red, other, editor := "│👉 1. Red     │", "│   3. Other   │", ""
+	if open {
+		red, other, editor = "│   1. Red     │", "│👉 3. Other   │", "│     Other:   │\n"
+	}
+	return "┌─ Question ───┐\n│Pick a colour │\n" + red + "\n│   2. Green   │\n" + other + "\n" + editor +
+		"│Enter select  │\n└──────────────┘\n~/projects"
+}
+
+func TestEntryAnswerTypesThroughPiOtherEntry(t *testing.T) {
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	a.Kind = domain.PiKind
+	f.agents[a.Key] = a
+	f.herdr.SetScreen("p1", piOtherScreen(false))
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	f.tg.Reset()
+	f.herdr.SetScreenAfterKeys("p1", "3", piOtherScreen(true))
+	f.herdr.FailNext("prompt", domain.ErrAgentBlocked)
+
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "teal")); err != nil {
+		t.Fatal(err)
+	}
+	if keys := f.herdr.Keys(); !reflect.DeepEqual(keys, []testkit.KeysCall{{Target: "p1", Keys: []string{"3"}}}) {
+		t.Fatalf("Keys = %+v", keys)
+	}
+	f.fireInboundAfter(t, entryPollDelay, 1)
+	if texts := f.herdr.Texts(); !reflect.DeepEqual(texts, []testkit.TextCall{{Target: "p1", Text: "teal"}}) {
+		t.Fatalf("Texts = %+v", texts)
+	}
+}
+
+// For Claude Code a framed "Other" is a plain option: its digit would answer
+// the question, so a plain message presses nothing.
+func TestEntryAnswerRefusesFramedOtherForClaude(t *testing.T) {
+	f := newBridgeFixture(t)
+	claudeBlocked(t, f, piOtherScreen(false))
+	f.herdr.FailNext("prompt", domain.ErrAgentBlocked)
+
+	if err := f.in.HandleTopic(f.ctx, topicMsg(101, 7, "teal")); err != nil {
+		t.Fatal(err)
+	}
+	if keys, texts := f.herdr.Keys(), f.herdr.Texts(); len(keys) != 0 || len(texts) != 0 {
+		t.Fatalf("Keys = %+v, Texts = %+v", keys, texts)
+	}
+	assertCallsEqual(t, f.tg, "send:101:"+entryHint+":reply=7")
+}
+
+// blockedPost posts a blocked agent of kind with screen and returns the
+// buttons of that post.
+func blockedPost(t *testing.T, kind, screen string) []domain.Button {
+	t.Helper()
+	f := newBridgeFixture(t)
+	a := f.add(t, "p1", "t1", "reviewer", domain.StatusWorking)
+	a.Kind = kind
+	f.agents[a.Key] = a
+	f.herdr.SetScreen("p1", screen)
+	f.out.Observe(AgentEvent{Kind: AgentChanged, Agent: f.setStatus(a, domain.StatusBlocked)})
+	f.fire(t, 1)
+	sent := f.tg.Sent()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d posts, want 1", len(sent))
+	}
+	return sent[0].Buttons
+}
+
+// pi-questionnaire's framed "Other" opens an editor: it gets the ✏️ row.
+func TestOutboundFramedOtherIsEntryForPi(t *testing.T) {
+	want := []domain.Button{{Text: keycap(1) + " Red", Data: "1"}, {Text: keycap(2) + " Green", Data: "2"},
+		{Text: "✏️ Other", Data: textEntryPrefix + "3"}}
+	if got := blockedPost(t, domain.PiKind, piOtherScreen(false)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Buttons = %+v, want %+v", got, want)
+	}
+}
+
+// For Claude Code a framed "Other" is a plain option: its digit answers the
+// question, so it gets an option button and no ✏️ row promising an editor.
+func TestOutboundFramedOtherIsOptionForClaude(t *testing.T) {
+	want := []domain.Button{{Text: keycap(1) + " Red", Data: "1"}, {Text: keycap(2) + " Green", Data: "2"},
+		{Text: keycap(3) + " Other", Data: "3"}}
+	if got := blockedPost(t, domain.ClaudeKind, piOtherScreen(false)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Buttons = %+v, want %+v", got, want)
+	}
+}
+
 func TestEntryAnswerRefusesOtherAgentKinds(t *testing.T) {
 	f := newBridgeFixture(t)
 	a := claudeBlocked(t, f, liveClaudeScreen(t, "question"))

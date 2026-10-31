@@ -172,22 +172,37 @@ func (g *Gateway) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 // transient: a reply source uses its value for one lookup and never stores
 // it (see domain.SessionTuple).
 func (g *Gateway) AgentSession(ctx context.Context, paneID string) (domain.SessionTuple, error) {
-	var res agentListResult
-	if err := g.call(ctx, "agent.list", "", nil, &res); err != nil {
+	sessions, err := g.AgentSessions(ctx)
+	if err != nil {
 		return domain.SessionTuple{}, err
 	}
+	return sessions[paneID], nil
+}
+
+// AgentSessions returns the agent_session tuple Herdr reports for every
+// pane that has one, by pane id, from one agent.list call. Like
+// AgentSession the tuples are transient.
+func (g *Gateway) AgentSessions(ctx context.Context) (map[string]domain.SessionTuple, error) {
+	var res agentListResult
+	if err := g.call(ctx, "agent.list", "", nil, &res); err != nil {
+		return nil, err
+	}
+	sessions := make(map[string]domain.SessionTuple, len(res.Agents))
 	for _, a := range res.Agents {
-		if a.PaneID != paneID || a.AgentSession == nil {
+		if a.AgentSession == nil {
 			continue
 		}
-		return domain.SessionTuple{
+		if _, seen := sessions[a.PaneID]; seen {
+			continue // the first entry for a pane wins
+		}
+		sessions[a.PaneID] = domain.SessionTuple{
 			Source: a.AgentSession.Source,
 			Agent:  a.AgentSession.Agent,
 			Kind:   a.AgentSession.Kind,
 			Value:  a.AgentSession.Value,
-		}, nil
+		}
 	}
-	return domain.SessionTuple{}, nil
+	return sessions, nil
 }
 
 // PaneProcesses returns the pids of the processes in the foreground of
@@ -233,7 +248,8 @@ func (g *Gateway) ReadScreen(ctx context.Context, target string, source domain.S
 	}, nil
 }
 
-// Prompt types text into the agent and submits it without waiting.
+// Prompt types text into the agent and submits it without waiting for the
+// reply.
 //
 // Herdr refuses agent.prompt for an agent it does not drive itself — one
 // that only reports its own state, such as Crush — with agent_not_ready
@@ -250,48 +266,56 @@ func (g *Gateway) ReadScreen(ctx context.Context, target string, source domain.S
 // text never lands in a dialog whose Enter confirms the highlighted option.
 // Any doubt (unknown status, pane not listed, failed lookup, nothing to
 // type) keeps the original refusal.
-func (g *Gateway) Prompt(ctx context.Context, target, text string) error {
-	err := g.call(ctx, "agent.prompt", target, promptParams{Target: target, Text: text}, nil)
+//
+// typed reports that the text went in this way, Enter included. Prompt
+// never waits to see the agent take it: an agent can drop that Enter (seen
+// with Claude Code in a WSL pane), and the caller checks the screen later
+// (domain.PromptStuck) rather than holding up its goroutine.
+func (g *Gateway) Prompt(ctx context.Context, target, text string) (typed bool, err error) {
+	err = g.call(ctx, "agent.prompt", target, promptParams{Target: target, Text: text}, nil)
 	if !isNotDriven(err, target) {
-		return err
+		return false, err
 	}
 	g.log.Debug("herdr does not drive this agent, checking its status", slog.String("target", target))
 	status, listed, lookupErr := g.paneStatus(ctx, target)
 	if lookupErr != nil {
 		g.log.Warn("herdr agent status lookup failed, not typing",
 			slog.String("target", target), slog.String("err", lookupErr.Error()))
-		return err
+		return false, err
 	}
 	if !listed {
 		g.log.Info("herdr does not drive this agent, not typing",
 			slog.String("target", target), slog.String("reason", "not_listed"))
-		return err
+		return false, err
 	}
 	switch status {
 	case domain.StatusBlocked:
 		g.log.Info("herdr does not drive this agent and it is blocked, not typing", slog.String("target", target))
 		var apiErr *APIError
 		errors.As(err, &apiErr)
-		return fmt.Errorf("herdr agent.prompt: %w: %w", domain.ErrAgentBlocked, apiErr)
+		return false, fmt.Errorf("herdr agent.prompt: %w: %w", domain.ErrAgentBlocked, apiErr)
 	case domain.StatusIdle, domain.StatusWorking, domain.StatusDone:
 	default:
 		g.log.Info("herdr does not drive this agent, not typing",
 			slog.String("target", target), slog.String("reason", "unknown_status"), slog.String("status", string(status)))
-		return err
+		return false, err
 	}
 	line, lines := domain.DialogText(text)
 	if line == "" {
 		g.log.Info("herdr does not drive this agent, not typing",
 			slog.String("target", target), slog.String("reason", "empty_text"))
-		return err
+		return false, err
 	}
 	g.log.Info("herdr does not drive this agent, typing into the pane",
 		slog.String("target", target), slog.String("status", string(status)),
 		slog.Int("text_len", len(line)), slog.Int("lines", lines))
 	if err := g.call(ctx, "pane.send_text", target, sendTextParams{PaneID: target, Text: line}, nil); err != nil {
-		return err
+		return false, err
 	}
-	return g.call(ctx, "pane.send_keys", target, paneSendKeysParams{PaneID: target, Keys: []string{domain.KeyEnter}}, nil)
+	if err := g.call(ctx, "pane.send_keys", target, paneSendKeysParams{PaneID: target, Keys: []string{domain.KeyEnter}}, nil); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // paneStatus returns the status the agent in paneID reports through

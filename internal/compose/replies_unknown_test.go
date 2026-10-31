@@ -13,6 +13,7 @@ import (
 // fallback (nothing for the unreadable-replies notice to count).
 func TestReplySourcesUnknownKindIsUnsupported(t *testing.T) {
 	src := replySources(
+		nil,
 		func(context.Context, string) (domain.SessionTuple, error) { return domain.SessionTuple{}, nil },
 		func(context.Context, string) ([]byte, error) { return nil, nil },
 		func(context.Context, string) ([]int, error) { return nil, nil },
