@@ -18,8 +18,9 @@ import (
 // ccTestSessionID is made up; ccTestSecret marks text that must never reach
 // a log line.
 const (
-	ccTestSessionID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-	ccTestSecret    = "PRIVATE-CC-OUTPUT"
+	ccTestSessionID  = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	ccOtherSessionID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+	ccTestSecret     = "PRIVATE-CC-OUTPUT"
 )
 
 var (
@@ -110,13 +111,20 @@ func ccTurn(prefix, prompt, answer string) []string {
 }
 
 type ccFixture struct {
-	t      *testing.T
-	home   string
-	dir    string
-	path   string
-	tuple  domain.SessionTuple
+	t *testing.T
+	// home is the fake user home holding .commandcode/projects.
+	home string
+	// dir is the project directory the session file is written into.
+	dir string
+	// path is the session file itself.
+	path string
+	// tuple is what Herdr reports for this pane.
+	tuple domain.SessionTuple
+	// others are the tuples Herdr reports for other panes.
+	others map[string]domain.SessionTuple
 	digest string
 	logBuf bytes.Buffer
+	now    time.Time
 }
 
 func newCCFixture(t *testing.T) *ccFixture {
@@ -124,7 +132,8 @@ func newCCFixture(t *testing.T) *ccFixture {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".commandcode", "projects", "work-project")
 	tuple := domain.SessionTuple{Source: "herdr:command-code", Agent: "command-code", Kind: "id", Value: ccTestSessionID}
-	return &ccFixture{t: t, home: home, dir: dir, path: filepath.Join(dir, ccTestSessionID+".jsonl"), tuple: tuple, digest: tuple.Digest()}
+	return &ccFixture{t: t, home: home, dir: dir, path: filepath.Join(dir, ccTestSessionID+".jsonl"),
+		tuple: tuple, others: map[string]domain.SessionTuple{}, digest: tuple.Digest(), now: ccT1.Add(5 * time.Second)}
 }
 
 // write puts the header and lines into the session file.
@@ -143,11 +152,33 @@ func (f *ccFixture) writeRaw(body string) {
 	}
 }
 
+// writeSession puts another pane's session file into the fake projects tree
+// with its own header (cwd included) and lines.
+func (f *ccFixture) writeSession(dir, id, cwd string, lines ...string) string {
+	f.t.Helper()
+	header := ccLine(map[string]any{"type": "session", "version": 3, "id": id,
+		"timestamp": ccT0.Add(-time.Minute).Format(time.RFC3339Nano), "cwd": cwd})
+	path := filepath.Join(f.home, ".commandcode", "projects", dir, id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(append([]string{header}, lines...), "\n")+"\n"), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	return path
+}
+
 func (f *ccFixture) reader() *CommandCodeReader {
-	session := func(context.Context, string) (domain.SessionTuple, error) { return f.tuple, nil }
-	now := func() time.Time { return ccT1.Add(5 * time.Second) }
+	sessions := func(context.Context) (map[string]domain.SessionTuple, error) {
+		tuples := map[string]domain.SessionTuple{"w1:p1": f.tuple}
+		for pane, t := range f.others {
+			tuples[pane] = t
+		}
+		return tuples, nil
+	}
+	now := func() time.Time { return f.now }
 	home := func() (string, error) { return f.home, nil }
-	return newCommandCodeReader(home, session, now, slog.New(slog.NewJSONHandler(&f.logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	return newCommandCodeReader(home, sessions, now, slog.New(slog.NewJSONHandler(&f.logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 func (f *ccFixture) agent() domain.Agent {
@@ -163,7 +194,7 @@ func (f *ccFixture) read() (domain.Reply, error) {
 func (f *ccFixture) assertLogClean() {
 	f.t.Helper()
 	logs := f.logBuf.String()
-	for _, secret := range []string{ccTestSessionID, ccTestSecret, f.dir, f.home, "work-project", "the answer"} {
+	for _, secret := range []string{ccTestSessionID, ccOtherSessionID, ccTestSecret, f.dir, f.home, "work-project", "the answer"} {
 		if strings.Contains(logs, secret) {
 			f.t.Fatalf("log leaks %q: %s", secret, logs)
 		}
@@ -320,6 +351,92 @@ func TestCommandCodeFindsSessionByID(t *testing.T) {
 	r, err := f.reader().LastReply(context.Background(), agent)
 	if err != nil || r.Text != "the answer" {
 		t.Fatalf("reply = %q, %v; want the answer from its own project directory", r.Text, err)
+	}
+}
+
+// Command Code reports the session the CLI started with, and a pane that
+// resumed an older conversation keeps writing the file of that conversation,
+// so the reported id may have no file at all. The reader then takes the
+// newest transcript whose own header names the pane's working directory.
+func TestCommandCodeFallsBackToWorkingDirectory(t *testing.T) {
+	f := newCCFixture(t)
+	f.dir = filepath.Join(f.home, ".commandcode", "projects", "some-other-project")
+	f.path = filepath.Join(f.dir, ccTestSessionID+".jsonl") // never written: the report has no file
+	path := f.writeSession("other-project", ccOtherSessionID, "/work/project", ccAnswer("a1", ccT1, "the resumed answer", 11))
+	if err := os.Chtimes(path, f.now, f.now); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := f.read()
+	if err != nil || r.Text != "the resumed answer" {
+		t.Fatalf("reply = %q, %v; want the answer of the pane's own directory", r.Text, err)
+	}
+	if !strings.Contains(f.logBuf.String(), `"how":"working directory"`) {
+		t.Fatalf("no fallback line: %s", f.logBuf.String())
+	}
+	f.assertLogClean()
+}
+
+// A candidate that is another pane's session is never read, even when it is
+// the only recent file of the directory.
+func TestCommandCodeFallbackRejectsAnotherPanesSession(t *testing.T) {
+	f := newCCFixture(t)
+	f.dir = filepath.Join(f.home, ".commandcode", "projects", "elsewhere")
+	f.path = filepath.Join(f.dir, ccTestSessionID+".jsonl")
+	path := f.writeSession("other-project", ccOtherSessionID, "/work/project", ccAnswer("a1", ccT1, "not mine", 4))
+	if err := os.Chtimes(path, f.now, f.now); err != nil {
+		t.Fatal(err)
+	}
+	f.others["w1:p2"] = domain.SessionTuple{Source: "herdr:command-code", Agent: "command-code", Kind: "id", Value: ccOtherSessionID}
+
+	if _, err := f.read(); !errors.Is(err, domain.ErrNoReply) {
+		t.Fatalf("err = %v, want ErrNoReply for another pane's session", err)
+	}
+}
+
+// Two recent sessions of the same directory cannot be told apart, so the
+// reader answers the screen instead of guessing.
+func TestCommandCodeFallbackAmbiguous(t *testing.T) {
+	f := newCCFixture(t)
+	f.dir = filepath.Join(f.home, ".commandcode", "projects", "elsewhere")
+	f.path = filepath.Join(f.dir, ccTestSessionID+".jsonl")
+	first := f.writeSession("a", ccOtherSessionID, "/work/project", ccAnswer("a1", ccT1, "one", 4))
+	second := f.writeSession("b", "cccccccc-dddd-4eee-8fff-000000000000", "/work/project", ccAnswer("a1", ccT1, "two", 4))
+	for i, p := range []string{first, second} {
+		if err := os.Chtimes(p, f.now.Add(-time.Duration(i)*time.Minute), f.now.Add(-time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := f.read(); !errors.Is(err, domain.ErrNoReply) {
+		t.Fatalf("err = %v, want ErrNoReply for two candidates", err)
+	}
+}
+
+// A session nobody wrote recently is not the pane's current one.
+func TestCommandCodeFallbackIgnoresOldSessions(t *testing.T) {
+	f := newCCFixture(t)
+	f.dir = filepath.Join(f.home, ".commandcode", "projects", "elsewhere")
+	f.path = filepath.Join(f.dir, ccTestSessionID+".jsonl")
+	path := f.writeSession("other-project", ccOtherSessionID, "/work/project", ccAnswer("a1", ccT1, "stale", 4))
+	old := f.now.Add(-time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.read(); !errors.Is(err, domain.ErrNoReply) {
+		t.Fatalf("err = %v, want ErrNoReply without a recent candidate", err)
+	}
+}
+
+// Without a reported session and without a working directory there is
+// nothing to look for.
+func TestCommandCodeFallbackNeedsWorkingDirectory(t *testing.T) {
+	f := newCCFixture(t)
+	agent := f.agent()
+	agent.Cwd = ""
+	if _, err := f.reader().LastReply(context.Background(), agent); !errors.Is(err, domain.ErrNoReply) {
+		t.Fatalf("err = %v, want ErrNoReply without a working directory", err)
 	}
 }
 

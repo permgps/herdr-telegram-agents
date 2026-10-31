@@ -529,11 +529,18 @@ option of the Posts group:
   reply's model, the output tokens (summed once per entry) and the
   `edit_file` / `write_file` paths feed the summary line like Claude Code's
   records do. `model_change`, `session_info`, `effort_change` and
-  `compaction` lines are skipped. A pane whose reported session id has no
-  such file — a resumed session whose report named another id, a config
-  directory that is not `~/.commandcode` — gets the screen. The session
-  value and the path are used for that one lookup and never stored or
-  logged, and `XDG_` variables do not move the directory.
+  `compaction` lines are skipped. The id Herdr reports is the session the
+  CLI opened, which is not always the one it writes: a pane that resumed an
+  older conversation reports the id it started with and keeps appending to
+  the file of the resumed conversation (seen live on 2026-10-31, when both
+  running panes reported ids with no file). When the reported id has no
+  file, the daemon takes the most recently written transcript whose own
+  header names the pane's working directory, among those touched in the last
+  30 minutes and never one Herdr reports for another pane; two candidates
+  that both fit mean a sibling pane cannot be told apart, and that post (and
+  a session outside `~/.commandcode`) gets the screen. The session values
+  and the paths are used for that one lookup and never stored or logged, and
+  `XDG_` variables do not move the directory.
 - **Formatted** (default): the same reply rendered for Telegram: headings become bold,
   `- ` lists become `•`, quotes get a bar, `[text](url)` becomes a link,
   inline code and fenced blocks keep their monospace, pipe tables are

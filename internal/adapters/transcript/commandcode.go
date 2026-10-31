@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,17 @@ const kindCommandCode = "command-code"
 
 // commandCodeHeaderMax bounds the read of a session file's first line.
 const commandCodeHeaderMax = 64 << 10
+
+// commandCodeRecentWindow bounds the fallback lookup: Command Code reports
+// its own session at SessionStart, so a pane that resumed an older
+// conversation writes a file named after that conversation, and the report
+// never names it. The file the pane is writing was touched inside this
+// window, since the done post fires right after the turn.
+const commandCodeRecentWindow = 30 * time.Minute
+
+// commandCodeHeaderCap bounds how many file headers the fallback reads
+// before it gives up and lets the done post fall back to the screen.
+const commandCodeHeaderCap = 25
 
 // errCommandCodeNoRecord means the session holds no message to answer from.
 var errCommandCodeNoRecord = fmt.Errorf("%w: the command-code session has no answer", domain.ErrNoReply)
@@ -37,9 +49,17 @@ var commandCodeDir = []string{".commandcode", "projects"}
 // CommandCodeReader implements domain.ReplySource for command-code. Herdr's
 // Command Code integration reports the pane's session id as agent_session
 // {kind: "id"}, and Command Code writes one file per session under
-// ~/.commandcode/projects/<slug of the working directory>/, named after that
-// id. The reader opens exactly that file and never guesses between sessions;
-// two panes in one directory each keep their own answer.
+// ~/.commandcode/projects/<directory>/, named after that id. The reader
+// opens exactly that file and never guesses between sessions.
+//
+// The reported id is the session the CLI opened, not always the one it
+// writes: a pane that resumed an older conversation reports the id of the
+// session it started with and keeps appending to the file of the
+// conversation it resumed (verified live on 2026-10-31: the report named a
+// session with no file while the resumed file kept being written). The
+// reader then takes the newest transcript whose own header names the pane's
+// working directory, and refuses the answer when two candidates fit, so a
+// sibling pane in one directory is never answered for.
 //
 // The transcript is Claude Code-shaped: one message entry per API response
 // with content blocks (thinking, text, tool_use for the agent; text,
@@ -49,32 +69,35 @@ var commandCodeDir = []string{".commandcode", "projects"}
 // or a new prompt, means the turn is still running and answers
 // domain.ErrReplyPending.
 //
-// The session value and the path are used for that one lookup and never
+// The session values and the paths are used for that one lookup and never
 // stored or logged. A tuple whose digest differs from the topic's key means
 // the pane now runs another session: the reader answers ErrNoReply rather
 // than post that session's answer into this topic.
 type CommandCodeReader struct {
-	home    func() (string, error)
-	session func(ctx context.Context, paneID string) (domain.SessionTuple, error)
-	now     func() time.Time
-	log     *slog.Logger
-	maxScan int64
+	// sessions lists the agent_session tuple of every pane Herdr knows one
+	// for, by pane id; nil reads by working directory alone. The tuples are
+	// used for one lookup and never stored.
+	sessions func(context.Context) (map[string]domain.SessionTuple, error)
+	home     func() (string, error)
+	now      func() time.Time
+	log      *slog.Logger
+	maxScan  int64
 }
 
 // NewCommandCodeReader wires the reader over Herdr's session lookup.
-func NewCommandCodeReader(session func(context.Context, string) (domain.SessionTuple, error), log *slog.Logger) *CommandCodeReader {
-	return newCommandCodeReader(os.UserHomeDir, session, time.Now, log)
+func NewCommandCodeReader(sessions func(context.Context) (map[string]domain.SessionTuple, error), log *slog.Logger) *CommandCodeReader {
+	return newCommandCodeReader(os.UserHomeDir, sessions, time.Now, log)
 }
 
 // newCommandCodeReader takes the home and clock sources so tests can point
 // the reader at a temporary directory.
 func newCommandCodeReader(home func() (string, error),
-	session func(context.Context, string) (domain.SessionTuple, error),
+	sessions func(context.Context) (map[string]domain.SessionTuple, error),
 	now func() time.Time, log *slog.Logger) *CommandCodeReader {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &CommandCodeReader{home: home, session: session, now: now, log: log, maxScan: defaultMaxScan}
+	return &CommandCodeReader{home: home, sessions: sessions, now: now, log: log, maxScan: defaultMaxScan}
 }
 
 // LastReply returns the newest finished answer of the pane's command-code
@@ -88,25 +111,9 @@ func (r *CommandCodeReader) LastReply(ctx context.Context, agent domain.Agent) (
 	if agent.Kind != kindCommandCode {
 		return domain.Reply{}, fmt.Errorf("%w: unsupported agent %q", domain.ErrUnsupportedAgent, agent.Kind)
 	}
-	tuple, err := r.session(ctx, agent.PaneID)
+	own, others, err := r.claims(ctx, agent)
 	if err != nil {
-		return domain.Reply{}, classifySessionError(ctx, err, "session lookup failed")
-	}
-	if err := ctx.Err(); err != nil {
 		return domain.Reply{}, err
-	}
-	if tuple.Agent != kindCommandCode || tuple.Kind != "id" || tuple.Value == "" {
-		return domain.Reply{}, fmt.Errorf("%w: herdr reports no command-code session for the pane", domain.ErrNoReply)
-	}
-	if !commandCodeSessionIDPattern.MatchString(tuple.Value) {
-		return domain.Reply{}, fmt.Errorf("%w: the command-code session id is malformed", domain.ErrNoReply)
-	}
-	digest := tuple.Digest()
-	if digest == "" {
-		return domain.Reply{}, fmt.Errorf("%w: herdr reports an incomplete session for the pane", domain.ErrNoReply)
-	}
-	if agent.SessionDigest == "" || digest != agent.SessionDigest {
-		return domain.Reply{}, fmt.Errorf("%w: the pane now runs another session", domain.ErrNoReply)
 	}
 	home, err := r.home()
 	if err != nil {
@@ -118,11 +125,11 @@ func (r *CommandCodeReader) LastReply(ctx context.Context, agent domain.Agent) (
 		return domain.Reply{}, fmt.Errorf("%w: no command-code projects directory", domain.ErrNoReply)
 	}
 	defer root.Close()
-	dir, dirsScanned, err := findCommandCodeSession(root, tuple.Value+".jsonl")
+	id, dir, how, err := r.locate(ctx, root, agent, own, others)
 	if err != nil {
 		return domain.Reply{}, err
 	}
-	f, info, err := openRegular(root, filepath.Join(dir, tuple.Value+".jsonl"))
+	f, info, err := openRegular(root, filepath.Join(dir, id+".jsonl"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return domain.Reply{}, fmt.Errorf("%w: the command-code session has no file", domain.ErrNoReply)
 	}
@@ -130,11 +137,167 @@ func (r *CommandCodeReader) LastReply(ctx context.Context, agent domain.Agent) (
 		return domain.Reply{}, fmt.Errorf("%w: the command-code session %v", domain.ErrNoReply, err)
 	}
 	defer f.Close()
-	if err := commandCodeCheckHeader(f, info.Size(), tuple.Value); err != nil {
+	if err := commandCodeCheckHeader(f, info.Size(), id); err != nil {
 		return domain.Reply{}, err
 	}
-	r.log.Debug("command-code session located", slog.String("pane", agent.PaneID), slog.Int("dirs", dirsScanned))
+	r.log.Debug("command-code session located", slog.String("pane", agent.PaneID), slog.String("how", how))
 	return r.readSession(ctx, f, info, agent.PaneID)
+}
+
+// claims returns the command-code session id Herdr reports for the pane and
+// the set of ids it reports for every other pane. A failed lookup reads by
+// working directory alone; a pane whose reported session no longer matches
+// the topic's key runs another session, and its reply belongs elsewhere.
+func (r *CommandCodeReader) claims(ctx context.Context, agent domain.Agent) (own string, others map[string]bool, err error) {
+	if r.sessions == nil {
+		return "", nil, nil
+	}
+	tuples, err := r.sessions(ctx)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", nil, ctxErr
+		}
+		r.log.Debug("command-code session lookup failed, reading by working directory",
+			slog.String("pane", agent.PaneID), slog.String("err", err.Error()))
+		return "", nil, nil
+	}
+	for pane, t := range tuples {
+		if t.Agent != kindCommandCode || t.Kind != "id" || !commandCodeSessionIDPattern.MatchString(t.Value) {
+			continue
+		}
+		if pane != agent.PaneID {
+			if others == nil {
+				others = make(map[string]bool)
+			}
+			others[t.Value] = true
+			continue
+		}
+		if agent.SessionDigest != "" && t.Digest() != agent.SessionDigest {
+			return "", nil, fmt.Errorf("%w: the pane now runs another session", domain.ErrNoReply)
+		}
+		own = t.Value
+	}
+	return own, others, nil
+}
+
+// locate finds the session file to read: the pane's own reported session
+// when a file carries that id, else the newest transcript of the pane's
+// working directory (see the type comment for why the two can differ).
+func (r *CommandCodeReader) locate(ctx context.Context, root *os.Root, agent domain.Agent, own string, others map[string]bool) (id, dir, how string, err error) {
+	if own != "" {
+		if dir, _, err := findCommandCodeSession(root, own+".jsonl"); err == nil {
+			return own, dir, "session", nil
+		} else if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", "", "", ctxErr
+		}
+	}
+	if strings.TrimSpace(agent.Cwd) == "" {
+		return "", "", "", fmt.Errorf("%w: herdr reports no command-code session file for the pane", domain.ErrNoReply)
+	}
+	id, dir, err = r.newestByCwd(root, agent.Cwd, others)
+	if err != nil {
+		return "", "", "", err
+	}
+	return id, dir, "working directory", nil
+}
+
+// ccCandidate is one recent session file the fallback may read.
+type ccCandidate struct {
+	dir string
+	id  string
+	mod time.Time
+}
+
+// newestByCwd picks the fallback session: the most recently written
+// transcript whose own header names cwd, among the files touched inside
+// commandCodeRecentWindow and not reported for another pane. Two candidates
+// mean a sibling pane in the same directory cannot be told apart, and the
+// caller answers the screen instead of the wrong pane's reply.
+func (r *CommandCodeReader) newestByCwd(root *os.Root, cwd string, others map[string]bool) (string, string, error) {
+	candidates, read, err := commandCodeRecentFiles(root, r.now().Add(-commandCodeRecentWindow))
+	if err != nil {
+		return "", "", err
+	}
+	var match *ccCandidate
+	for i := range candidates {
+		if i >= commandCodeHeaderCap {
+			break
+		}
+		c := candidates[i]
+		if others[c.id] {
+			// Another pane's session: never answer with it.
+			continue
+		}
+		file, info, err := openRegular(root, filepath.Join(c.dir, c.id+".jsonl"))
+		if err != nil {
+			continue
+		}
+		_, fileCwd, err := commandCodeReadHeader(file, info.Size())
+		file.Close()
+		if err != nil || fileCwd != cwd {
+			continue
+		}
+		if match != nil {
+			r.log.Debug("command-code directory has several recent sessions", slog.Int("candidates", len(candidates)),
+				slog.Int("entries", read), slog.String("cwd", cwd))
+			return "", "", fmt.Errorf("%w: several command-code sessions share the pane's working directory", domain.ErrNoReply)
+		}
+		chosen := c
+		match = &chosen
+	}
+	if match == nil {
+		return "", "", fmt.Errorf("%w: no recent command-code session for the pane's working directory", domain.ErrNoReply)
+	}
+	return match.id, match.dir, nil
+}
+
+// commandCodeRecentFiles lists the session files under root written since
+// since, newest first, with the number of directory entries read. Links are
+// passed over: the file is opened through root afterwards, so the lookup
+// never leaves the projects directory.
+func commandCodeRecentFiles(root *os.Root, since time.Time) ([]ccCandidate, int, error) {
+	top, err := root.Open(".")
+	if err != nil {
+		return nil, 0, fmt.Errorf("%w: the command-code projects directory could not be read", domain.ErrNoReply)
+	}
+	dirs, err := top.ReadDir(-1)
+	top.Close()
+	if err != nil {
+		return nil, 0, fmt.Errorf("%w: the command-code projects directory could not be read", domain.ErrNoReply)
+	}
+	var out []ccCandidate
+	read := 0
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		sub, err := root.Open(d.Name())
+		if err != nil {
+			continue
+		}
+		entries, err := sub.ReadDir(-1)
+		sub.Close()
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			read++
+			if read > commandCodeScanBudget {
+				return nil, read, fmt.Errorf("%w: no command-code session within %d project entries", domain.ErrNoReply, commandCodeScanBudget)
+			}
+			name := e.Name()
+			if !strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".checkpoints.jsonl") || !e.Type().IsRegular() {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || info.ModTime().Before(since) {
+				continue
+			}
+			out = append(out, ccCandidate{dir: d.Name(), id: strings.TrimSuffix(name, ".jsonl"), mod: info.ModTime()})
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].mod.After(out[b].mod) })
+	return out, read, nil
 }
 
 // readSession walks one checked session file and builds the reply.
@@ -222,27 +385,42 @@ func findCommandCodeSession(root *os.Root, name string) (string, int, error) {
 // Command Code writes, with the id Herdr reported. A path to any other file
 // is refused here.
 func commandCodeCheckHeader(f io.ReaderAt, size int64, want string) error {
+	id, _, err := commandCodeReadHeader(f, size)
+	if err != nil {
+		return err
+	}
+	if id != want {
+		return fmt.Errorf("%w: not a command-code session file", domain.ErrNoReply)
+	}
+	return nil
+}
+
+// commandCodeReadHeader reads the session header's id and working directory.
+// A file whose first line is not one is refused, so a path to any other file
+// yields nothing.
+func commandCodeReadHeader(f io.ReaderAt, size int64) (id, cwd string, err error) {
 	if size == 0 {
-		return errCommandCodeNoRecord
+		return "", "", errCommandCodeNoRecord
 	}
 	rd := codexReadAt{f}
 	n := min(size, int64(commandCodeHeaderMax))
 	buf := make([]byte, n)
 	if _, err := rd.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: the command-code session could not be read", domain.ErrNoReply)
+		return "", "", fmt.Errorf("%w: the command-code session could not be read", domain.ErrNoReply)
 	}
 	end := bytes.IndexByte(buf, '\n')
 	if end < 0 {
-		return fmt.Errorf("%w: not a command-code session file", domain.ErrNoReply)
+		return "", "", fmt.Errorf("%w: not a command-code session file", domain.ErrNoReply)
 	}
 	var head struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
+		Cwd  string `json:"cwd"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(buf[:end]), &head); err != nil || head.Type != "session" || head.ID != want {
-		return fmt.Errorf("%w: not a command-code session file", domain.ErrNoReply)
+	if err := json.Unmarshal(bytes.TrimSpace(buf[:end]), &head); err != nil || head.Type != "session" || head.ID == "" {
+		return "", "", fmt.Errorf("%w: not a command-code session file", domain.ErrNoReply)
 	}
-	return nil
+	return head.ID, head.Cwd, nil
 }
 
 // ccHead is the part of every line the walk needs.

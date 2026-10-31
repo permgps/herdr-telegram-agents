@@ -320,7 +320,7 @@ func replySources(sessions func(context.Context) (map[string]domain.SessionTuple
 		transcript.NewCodexReader(session, log),
 		transcript.NewAgyReader(session, log),
 		transcript.NewPiReader(session, log),
-		transcript.NewCommandCodeReader(session, log),
+		transcript.NewCommandCodeReader(sessions, log),
 		transcript.NewMuseReader(processes, started, log),
 	}
 }
