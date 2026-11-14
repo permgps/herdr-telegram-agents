@@ -303,11 +303,12 @@ func BuildSupervisor(env PluginEnv, log *slog.Logger) *Supervisor {
 // Code transcripts by session or working directory (sessions lists every
 // pane's session, so a pane never reads another pane's), then the
 // exact-session OpenCode
-// export, Codex rollout, Antigravity transcript and pi session file, then
-// the Muse session log of the pane's process (processes lists the pane's
-// pids, started reports when a pid's process started). Each reader rejects
-// the kinds it does not know with ErrNoReply, and the chain keeps a
-// reader's ErrReplyPending over a later reader's "unsupported agent".
+// export, Codex rollout, Antigravity transcript, pi session file and
+// command-code session file, then the Muse session log of the pane's
+// process (processes lists the pane's pids, started reports when a pid's
+// process started). Each reader rejects the kinds it does not know with
+// ErrNoReply, and the chain keeps a reader's ErrReplyPending over a later
+// reader's "unsupported agent".
 func replySources(sessions func(context.Context) (map[string]domain.SessionTuple, error),
 	session func(context.Context, string) (domain.SessionTuple, error),
 	openCodeExport func(context.Context, string) ([]byte, error),
@@ -319,6 +320,7 @@ func replySources(sessions func(context.Context) (map[string]domain.SessionTuple
 		transcript.NewCodexReader(session, log),
 		transcript.NewAgyReader(session, log),
 		transcript.NewPiReader(session, log),
+		transcript.NewCommandCodeReader(sessions, log),
 		transcript.NewMuseReader(processes, started, log),
 	}
 }
