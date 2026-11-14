@@ -55,7 +55,7 @@ Go toolchain on the machine where it is installed.
 Write in an agent's topic to prompt it. A short reply such as `y`, `n`, `1`,
 `enter`, or `esc` answers a blocked agent; numbered questions also have
 buttons. `/screen` shows the screen, or the last readable reply for idle or
-done OpenCode, Codex, Antigravity, Pi, Muse and Command Code agents. `/keys` sends raw keys, and `/git` shows
+done OpenCode, Codex, Antigravity, Pi and Muse agents. `/keys` sends raw keys, and `/git` shows
 allow-listed repository information. Photos, documents, voice notes, audio,
 and video sent to a topic are saved in the plugin inbox and passed to the
 agent as file paths.

@@ -18,7 +18,7 @@ import (
 
 // helpText is the command list shown by /help in a topic and in General.
 const helpText = `Commands
-/screen [N|all]: for idle or done OpenCode, Codex, Antigravity, Pi, Muse or Command Code, post its last reply when available (up to 5 messages); otherwise the visible screen; with N the screen's last N lines, with "all" everything since your last message
+/screen [N|all]: for idle or done OpenCode, Codex, Antigravity, Pi or Muse, post its last reply when available (up to 5 messages); otherwise the visible screen; with N the screen's last N lines, with "all" everything since your last message
 /keys k1 k2 ...: send raw keys to the agent (esc, enter, y, 1 ...)
 /focus: bring the agent's pane to the front in Herdr
 /git status | diff [staged] | log [N]: git in the agent's directory; long output arrives as a file

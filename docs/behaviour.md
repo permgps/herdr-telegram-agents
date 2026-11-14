@@ -507,40 +507,6 @@ option of the Posts group:
   was killed. Windows, `--no-session-log` sessions and sessions whose
   runtime file is missing get the screen. Session ids, pids and paths are
   used for the lookup and never logged.
-  For Command Code (`command-code`), Herdr reports the pane's session id at
-  session start (`agent_session` with `kind` `id`), and Command Code writes
-  one transcript per session under `~/.commandcode/projects/<directory>/`,
-  named `<session id>.jsonl`; the directory name is derived by Command Code
-  itself and the rule is not published, so the daemon looks the exact id up
-  across the project directories (`~/.commandcode/projects/*/`) instead of
-  guessing it from the working directory, and walks nothing else: a
-  directory entry that is a link is passed over, the found file is opened
-  through the projects directory, and a file that is not a regular file is
-  refused. The lookup stops after 50,000 directory entries. The first line
-  must be the session header of that very id, so a file that only carries
-  the id in its name yields nothing. The transcript is Claude
-  Code-shaped: one `message` entry per API response with content blocks
-  (`thinking`, `text`, `tool_use` for the agent; `text`, `tool_result` for
-  the user), and the model and usage at the top level of the entry. Within
-  the same 4 MiB budget the daemon posts the newest assistant entry that
-  ends in prose; an entry that ends in a tool call, a newest record that is
-  a tool result, and a session that ends mid-record are a turn still
-  running, so the done post waits and reads again as for OpenCode. The
-  reply's model, the output tokens (summed once per entry) and the
-  `edit_file` / `write_file` paths feed the summary line like Claude Code's
-  records do. `model_change`, `session_info`, `effort_change` and
-  `compaction` lines are skipped. The id Herdr reports is the session the
-  CLI opened, which is not always the one it writes: a pane that resumed an
-  older conversation reports the id it started with and keeps appending to
-  the file of the resumed conversation (seen live on 2026-10-31, when both
-  running panes reported ids with no file). When the reported id has no
-  file, the daemon takes the most recently written transcript whose own
-  header names the pane's working directory, among those touched in the last
-  30 minutes and never one Herdr reports for another pane; two candidates
-  that both fit mean a sibling pane cannot be told apart, and that post (and
-  a session outside `~/.commandcode`) gets the screen. The session values
-  and the paths are used for that one lookup and never stored or logged, and
-  `XDG_` variables do not move the directory.
 - **Formatted** (default): the same reply rendered for Telegram: headings become bold,
   `- ` lists become `•`, quotes get a bar, `[text](url)` becomes a link,
   inline code and fenced blocks keep their monospace, pipe tables are
@@ -549,7 +515,7 @@ option of the Posts group:
   Should Telegram reject the markup (`can't parse entities`), that part is
   sent once more as a plain code block and the log says so. An agent with
   no readable reply (any kind other than Claude Code, Codex, OpenCode,
-  Antigravity, Pi, Muse and Command Code,
+  Antigravity, Pi and Muse,
   or a missing or stale transcript) gets the screen post instead.
 
 `Formatted` has been the default since 2026-10-01; before that it was
@@ -568,8 +534,7 @@ excluded) and how many output tokens it wrote (summed once per API
 response). A part the transcript does not know is left out; nothing known
 means no line. There is no cost: Claude Code writes the cost once at the
 end of the session, not per turn, and a price table would drift from what
-the status line shows. Claude Code, OpenCode, Codex, Antigravity, Pi, Muse and
-Command Code only (for OpenCode the
+the status line shows. Claude Code, OpenCode, Codex, Antigravity, Pi and Muse only (for OpenCode the
   edited files are distinct paths from completed `edit` and `write` tools; for
 Codex the line has the duration, the model and the output tokens, but no files,
 as its rollout does not name them reliably; for Antigravity the line has the
@@ -577,8 +542,7 @@ duration only, as its transcript names neither the model nor the files, and
 so has Muse; for
 Pi the line has the duration, the model, the distinct paths of the turn's
 `edit` and `write` tool calls and the output tokens summed over the turn's
-assistant messages; for Command Code the distinct paths of the turn's
-`edit_file` and `write_file` calls and the output tokens of its entries): a pane of another kind, a
+assistant messages): a pane of another kind, a
   pane without a working directory or one without a transcript directory
 posts as before and the log says why at debug (`turn meta unavailable`). In `Screen` mode
 the transcript is read for the line alone. A transcript last written
@@ -698,8 +662,8 @@ The options today:
 | `Hold topic edits` | Quiet | Default on. While at the desk no topic is created, renamed, closed, reopened or given a new icon; each of those is a Telegram service message that rings the phone. Off keeps topic edits live while at the desk. |
 | `Screen posts` | Quiet | Default `Silent`. What happens to blocked and done screens while at the desk: `Silent` posts without a sound (Telegram still shows a silent banner), `Held` posts nothing until you leave, `Normal` posts as usual. |
 | `Re-announce on leaving` | Quiet | Default on. When you leave, the screen of every agent still waiting for an answer is posted again with a sound, once per question. Off: only agents that have no post at all yet are posted. |
-| `Done post` | Posts | Default `Formatted`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. For OpenCode the message comes from the CLI export for the pane's session; for Codex it is the final answer of the last completed turn, read from the pane's rollout file; for Command Code it is the last entry that ends in prose, read from the pane's session file under `~/.commandcode/projects/`. Falls back to `Screen` for other agents or when no reply is found, see [Done posts](#done-posts). |
-| `Turn summary line` | Posts | Default on. Every done post (`Screen`, `Reply` and `Formatted`) ends with one line from the agent's transcript: `⏱ 4 min · fable-5-1 · ✏️ 3 files · ↑ 12k tokens` (turn duration, model, distinct files edited, output tokens). Claude Code, OpenCode, Codex, Antigravity, Pi, Muse and Command Code only (no file count for Codex); without a transcript the post ends as before and the log has `turn meta unavailable` at debug. A transcript written before the turn began is skipped. Off: no line and, in `Screen` mode, no transcript read. See [Done posts](#done-posts). |
+| `Done post` | Posts | Default `Formatted`. What a topic receives when its agent finishes: `Screen` posts the last 12 terminal lines in monospace; `Reply` posts the agent's last message from its Claude Code transcript (`~/.claude/projects/<cwd slug>/`, newest session file) in monospace; `Formatted` renders that message: headings and bold, `•` lists, links, inline and fenced code, tables in monospace. A reply longer than five messages is cut with `… (+N chars)`. For OpenCode the message comes from the CLI export for the pane's session; for Codex it is the final answer of the last completed turn, read from the pane's rollout file. Falls back to `Screen` for other agents or when no reply is found, see [Done posts](#done-posts). |
+| `Turn summary line` | Posts | Default on. Every done post (`Screen`, `Reply` and `Formatted`) ends with one line from the agent's transcript: `⏱ 4 min · fable-5-1 · ✏️ 3 files · ↑ 12k tokens` (turn duration, model, distinct files edited, output tokens). Claude Code, OpenCode and Codex only (no file count for Codex); without a transcript the post ends as before and the log has `turn meta unavailable` at debug. A transcript written before the turn began is skipped. Off: no line and, in `Screen` mode, no transcript read. See [Done posts](#done-posts). |
 | `Fold long replies after` | Posts | Default `20 lines`. A `Reply` or `Formatted` done post whose message part has more lines than this arrives collapsed in Telegram's expandable quote: the first lines and an arrow that opens the rest; the summary line stays visible under it. `Off` never folds; `Screen` posts are never folded. Any integer of lines up to 1000 can be typed into `options.json`. See [Done posts](#done-posts). |
 | `Trim the input frame` | Posts | Default on. Every screen post (done and blocked screens, `/screen`, `/screen all`, the tails of the Claude Code commands, the pager's six lines) loses Claude Code's input frame at the bottom: the `─` rule, the empty `❯` row, the second rule, the status line (`… │ main ✓ │ 14%: …`) and the mode hint (`⏵⏵ auto mode on (shift+tab to cycle)` or `? for shortcuts`). The cut walks up from the bottom and stops at the first line that is none of these, so a dialog and its options are never touched, a `❯` row with typed text is left alone and a screen without the frame (Codex, any other agent) passes through unchanged. The duplicate check runs after the cut, so a screen that differs only in the status line's clock is not posted twice. Off posts the screen as captured. |
 | `React to prompts` | Posts | Default off: prompts are delivered silently. On: 👀 on your message once the agent took the prompt, 👌 when that turn ends (done, or 5 s of idle). Telegram may ring for each reaction, which is why it is off. See [Turns and reactions](#turns-and-reactions). |
