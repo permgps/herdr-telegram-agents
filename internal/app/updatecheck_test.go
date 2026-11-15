@@ -96,3 +96,33 @@ func TestUpdatePreflightBlockers(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdatePreflightPreservesVerifiedPinAfterStoppedJournalFailure(t *testing.T) {
+	root := t.TempDir()
+	old := strings.Repeat("a", 40)
+	next := strings.Repeat("b", 40)
+	version, _ := domain.ParseVersion("1.2.0")
+	release := domain.Release{Tag: "v1.2.0", Version: version}
+	install := domain.PluginInstallation{Root: root, ManagedPath: root, ManifestVersion: "1.0.0", BinaryVersion: "1.0.0", SourceKind: "github", Owner: "permgps", Repo: "herdr-telegram-agents", RequestedRef: old, ResolvedCommit: old}
+	job := domain.UpdateJob{ID: "job", Phase: "failed", ErrorCode: "journal_failed", OldCommit: old, TargetCommit: next, PreviousOwnedRef: old, PreviousOwnedCommit: old}
+	for _, tc := range []struct {
+		name   string
+		change func(*domain.PluginInstallation, *domain.UpdateJob)
+		want   string
+	}{
+		{"verified old pin", func(*domain.PluginInstallation, *domain.UpdateJob) {}, ""},
+		{"changed pin", func(i *domain.PluginInstallation, _ *domain.UpdateJob) { i.RequestedRef = next }, "pinned"},
+		{"changed commit", func(i *domain.PluginInstallation, _ *domain.UpdateJob) { i.ResolvedCommit = next }, "pinned"},
+		{"other failure", func(_ *domain.PluginInstallation, j *domain.UpdateJob) { j.ErrorCode = "install_failed" }, "pinned"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i, j := install, job
+			tc.change(&i, &j)
+			p := UpdatePreflight{Installation: installReader{i}, History: &memoryUpdateStore{job: j}}
+			got, err := p.Check(context.Background(), release)
+			if err != nil || got.Code != tc.want {
+				t.Fatalf("got=%q want=%q err=%v", got.Code, tc.want, err)
+			}
+		})
+	}
+}

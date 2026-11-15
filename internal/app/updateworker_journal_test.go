@@ -15,10 +15,14 @@ type stoppedPhaseFailureStore struct {
 	memoryUpdateStore
 	cancel       context.CancelFunc
 	failRecovery bool
+	onFailure    func()
 }
 
 func (s *stoppedPhaseFailureStore) Save(ctx context.Context, j domain.UpdateJob) error {
 	if j.Phase == "daemon_stopped" {
+		if s.onFailure != nil {
+			s.onFailure()
+		}
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -31,6 +35,39 @@ func (s *stoppedPhaseFailureStore) Save(ctx context.Context, j domain.UpdateJob)
 		return ctx.Err()
 	}
 	return s.memoryUpdateStore.Save(ctx, j)
+}
+
+func TestUpdateWorkerStoppedJournalRecoverySafety(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		otherDaemon  bool
+		wantError    string
+	}{
+		{"health timeout", "version=wrong herdr=ok telegram=ready", false, "did not become healthy"},
+		{"already running", "version=1.0.0 herdr=ok telegram=ready", true, "already running"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &quickClock{now: time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)}
+			proc := testkit.NewFakeProcess(clock.Now)
+			if _, err := proc.Spawn(context.Background(), []string{"daemon"}); err != nil {
+				t.Fatal(err)
+			}
+			proc.SetStatusLine(tc.status)
+			reader := &changingReader{value: domain.PluginInstallation{Root: "/old", ManifestVersion: "1.0.0", BinaryVersion: "1.0.0"}}
+			store := &stoppedPhaseFailureStore{memoryUpdateStore: memoryUpdateStore{job: domain.UpdateJob{ID: "job", Phase: "queued", OldVersion: "1.0.0", SourceRoot: "/old", PriorRunning: true}}}
+			if tc.otherDaemon {
+				store.onFailure = func() { _, _ = proc.Spawn(context.Background(), []string{"daemon"}) }
+			}
+			worker := &UpdateWorker{Store: store, Lock: &memoryUpdateLock{}, Installer: &fakeUpdateInstaller{reader: reader, proc: proc}, Reader: reader, Supervisor: NewSupervisor(proc, proc, clock, nil), HealthTimeout: time.Second}
+			job, err := worker.Run(context.Background(), "job")
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) || job.Phase != "stuck" || store.job.Phase != "stuck" {
+				t.Fatalf("job=%+v saved=%+v err=%v", job, store.job, err)
+			}
+			if tc.otherDaemon && len(proc.Spawned()) != 2 {
+				t.Fatalf("unexpected extra daemon start: %v", proc.Spawned())
+			}
+		})
+	}
 }
 
 func TestUpdateWorkerStoppedJournalFailure(t *testing.T) {

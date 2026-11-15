@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
+	"github.com/permgps/herdr-telegram-agents/internal/testkit"
 )
 
 func TestPanelUpdateCheckAuthorizationAndDuplicatePresses(t *testing.T) {
@@ -124,5 +125,47 @@ func TestPanelRestoresPersistedUpdateProgress(t *testing.T) {
 	}
 	if p.lastID != id || !strings.Contains(f.tg.Text(id), "Phase: installed") || len(f.tg.Buttons(id)) != 0 {
 		t.Fatalf("last=%d text=%q buttons=%v", p.lastID, f.tg.Text(id), f.tg.Buttons(id))
+	}
+}
+
+// An updater-owned managed pin remains eligible when the next update stops
+// before installation because the stopped-phase journal write failed.
+func TestPanelPreservesOwnedPinOnStoppedJournalFailure(t *testing.T) {
+	f := newBridgeFixture(t)
+	root := t.TempDir()
+	old := strings.Repeat("a", 40)
+	v, _ := domain.ParseVersion("1.2.0")
+	install := domain.PluginInstallation{Root: root, ManagedPath: root, ManifestVersion: "1.0.0", BinaryVersion: "1.0.0", SourceKind: "github", Owner: "permgps", Repo: "herdr-telegram-agents", RequestedRef: old, ResolvedCommit: old}
+	store := &stoppedPhaseFailureStore{memoryUpdateStore: memoryUpdateStore{job: domain.UpdateJob{ID: "previous", Phase: "succeeded", TargetCommit: old, NewCommit: old}}}
+	preflight := &UpdatePreflight{Installation: installReader{install}, History: store}
+	source := &fakeReleaseSource{release: domain.Release{Tag: "v1.2.0", Version: v, AssetURL: "asset", ChecksumsURL: "sums"}, checksum: "digest"}
+	manager := &UpdateManager{Releases: source, Preflight: preflight, Herdr: fakeHerdrProber{}, Now: f.clock.Now}
+	p := f.in.panel
+	p.chatID = 42
+	p.updates = manager
+	p.jobs = store
+	p.launch = func(context.Context, string) (int, error) { return 22, nil }
+	p.running = func() bool { return false }
+	check, err := manager.Check(f.ctx, 42, 10, 1)
+	if err != nil || check.IntentID == "" {
+		t.Fatalf("check=%+v err=%v", check, err)
+	}
+	job, err := p.startUpdate(f.ctx, check.IntentID, 10, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.PreviousOwnedRef != old || job.PreviousOwnedCommit != old {
+		t.Fatalf("previous pin lost: %+v", job)
+	}
+	proc := testkit.NewFakeProcess(f.clock.Now)
+	reader := &changingReader{value: install}
+	worker := &UpdateWorker{Store: store, Lock: &memoryUpdateLock{}, Installer: &fakeUpdateInstaller{reader: reader, proc: proc}, Reader: reader, Supervisor: NewSupervisor(proc, proc, f.clock, nil)}
+	job, err = worker.Run(f.ctx, job.ID)
+	if err == nil || job.Phase != "failed" || job.ErrorCode != "journal_failed" {
+		t.Fatalf("job=%+v err=%v", job, err)
+	}
+	got, err := preflight.Check(f.ctx, domain.Release{Tag: "v1.2.0", Version: v})
+	if err != nil || got.Code != "" {
+		t.Fatalf("next update blocked: %+v err=%v", got, err)
 	}
 }
