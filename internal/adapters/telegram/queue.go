@@ -310,6 +310,20 @@ type noRetryError struct{ error }
 
 func (e noRetryError) Unwrap() error { return e.error }
 
+// DoCreateGuard retries only a confirmed rate-limit rejection. Transport,
+// decoding, and server failures may follow a successful remote creation.
+func (q *Queue) DoCreateGuard(ctx context.Context, guard domain.DispatchGuard, op func(context.Context) error) error {
+	return q.DoGuard(ctx, guard, func(ctx context.Context) error {
+		err := op(ctx)
+		if err != nil {
+			if _, limited := retryAfter(err); !limited {
+				return noRetryError{err}
+			}
+		}
+		return err
+	})
+}
+
 func (q *Queue) DoOnceGuard(ctx context.Context, guard domain.DispatchGuard, op func(context.Context) error) error {
 	return q.DoGuard(ctx, guard, func(ctx context.Context) error {
 		err := op(ctx)

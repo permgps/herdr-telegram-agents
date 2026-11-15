@@ -387,3 +387,18 @@ func TestQueueManyConcurrentCallers(t *testing.T) {
 		t.Fatalf("50 calls took %s of simulated time, want at least %s", elapsed, want)
 	}
 }
+
+func TestCreateGuardRetriesOnlyConfirmedRateLimit(t *testing.T) {
+	q, _, _ := startQueue(t, QueueConfig{})
+	calls := 0
+	err := q.DoCreateGuard(context.Background(), nil, func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return &bot.TooManyRequestsError{Message: "rate limited", RetryAfter: 1}
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
