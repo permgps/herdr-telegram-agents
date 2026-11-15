@@ -41,14 +41,20 @@ func (r *Reconciler) Sweep(ctx context.Context, maxAge time.Duration, rights dom
 		r.log.Debug("sweep skipped", slog.String("reason", "no_candidates"), slog.Int("max_age_days", days(maxAge)))
 		return 0, nil
 	}
-	cut := false
-	if len(keys) > sweepBatch {
-		keys = keys[:sweepBatch]
-		cut = true
+	start := r.sweepOffset % candidates
+	if start > 0 {
+		rotated := make([]domain.Key, 0, candidates)
+		rotated = append(rotated, keys[start:]...)
+		keys = append(rotated, keys[:start]...)
 	}
-	deleted, failed := 0, 0
+	cut := len(keys) > sweepBatch
+	if cut {
+		keys = keys[:sweepBatch]
+	}
+	deleted, failed, attempted := 0, 0, 0
 	var stop error
 	for _, key := range keys {
+		attempted++
 		entry, ok := r.mapping.TopicFor(key)
 		if !ok {
 			continue
@@ -82,6 +88,11 @@ func (r *Reconciler) Sweep(ctx context.Context, maxAge time.Duration, rights dom
 		if stop != nil {
 			break
 		}
+	}
+	// Advance even when deletions fail; failed mappings remain eligible on
+	// subsequent passes, and modulo wraps the cursor as the backlog changes.
+	if stop == nil {
+		r.sweepOffset = (start + attempted) % candidates
 	}
 	r.log.Info("stale topics sweep", slog.Int("max_age_days", days(maxAge)), slog.Int("candidates", candidates),
 		slog.Int("deleted", deleted), slog.Int("failed", failed), slog.Bool("batch_cut", cut))
