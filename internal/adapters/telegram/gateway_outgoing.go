@@ -161,6 +161,9 @@ func (g *Gateway) sendPart(ctx context.Context, params *bot.SendMessageParams, g
 		}
 		return translate(err)
 	})
+	if err != nil {
+		return 0, err
+	}
 	return id, err
 }
 

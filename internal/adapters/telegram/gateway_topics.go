@@ -38,6 +38,10 @@ func (g *Gateway) CreateTopicAt(ctx context.Context, chatID int64, name string, 
 		topic = domain.Topic{ThreadID: t.MessageThreadID, Name: t.Name, IconEmojiID: t.IconCustomEmojiID}
 		return nil
 	})
+	if err != nil {
+		return domain.Topic{}, g.finish("createForumTopic", err,
+			slog.Int("name_len", utf8.RuneCountInString(name)), slog.String("icon", icon.EmojiID))
+	}
 	return topic, g.finish("createForumTopic", err,
 		slog.Int("thread_id", topic.ThreadID),
 		slog.Int("name_len", utf8.RuneCountInString(name)),
@@ -125,19 +129,24 @@ func (g *Gateway) Rights(ctx context.Context) (domain.Rights, error) {
 		return nil
 	})
 	if err != nil {
-		return rights, g.finish("getChat", err, slog.Int64("chat_id", g.chatID))
+		return domain.Rights{}, g.finish("getChat", err, slog.Int64("chat_id", g.chatID))
 	}
+	var membership domain.Rights
 	err = g.queue.Do(ctx, func(ctx context.Context) error {
 		member, err := g.api.GetChatMember(ctx, &bot.GetChatMemberParams{ChatID: g.chatID, UserID: g.botID})
 		if err != nil {
 			return fmt.Errorf("getChatMember: %w", translate(err))
 		}
-		rights.IsAdmin = member.Type == models.ChatMemberTypeAdministrator || member.Type == models.ChatMemberTypeOwner
-		rights.CanManageTopics = canManageTopics(*member) || member.Type == models.ChatMemberTypeOwner
-		rights.CanDeleteMessages = canDeleteMessages(*member) || member.Type == models.ChatMemberTypeOwner
-		rights.CanPinMessages = canPinMessages(*member) || member.Type == models.ChatMemberTypeOwner
+		membership.IsAdmin = member.Type == models.ChatMemberTypeAdministrator || member.Type == models.ChatMemberTypeOwner
+		membership.CanManageTopics = canManageTopics(*member) || member.Type == models.ChatMemberTypeOwner
+		membership.CanDeleteMessages = canDeleteMessages(*member) || member.Type == models.ChatMemberTypeOwner
+		membership.CanPinMessages = canPinMessages(*member) || member.Type == models.ChatMemberTypeOwner
 		return nil
 	})
+	if err == nil {
+		membership.IsForum = rights.IsForum
+		rights = membership
+	}
 	return rights, g.finish("getChatMember", err,
 		slog.Bool("forum", rights.IsForum), slog.Bool("admin", rights.IsAdmin),
 		slog.Bool("manage_topics", rights.CanManageTopics), slog.Bool("delete_messages", rights.CanDeleteMessages),
