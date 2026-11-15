@@ -68,7 +68,7 @@ func (w *UpdateWorker) Run(ctx context.Context, id string) (domain.UpdateJob, er
 		}
 	}
 	if err := w.phase(ctx, &job, "daemon_stopped"); err != nil {
-		return job, err
+		return w.recoverStoppedJournal(job, err)
 	}
 	if err := w.Installer.Install(ctx, job); err != nil {
 		return w.rollback(ctx, job, "install_failed", err)
@@ -117,6 +117,40 @@ func (w *UpdateWorker) Run(ctx context.Context, id string) (domain.UpdateJob, er
 		return job, err
 	}
 	return job, nil
+}
+
+// recoverStoppedJournal restores the original process before any installation
+// has occurred, even when the caller's context was cancelled. Persist a
+// terminal outcome so the journal does not indefinitely block later updates.
+func (w *UpdateWorker) recoverStoppedJournal(job domain.UpdateJob, journalErr error) (domain.UpdateJob, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	job.ErrorCode = "journal_failed"
+	job.ErrorMessage = "Update stopped before installation; the previous daemon state was restored. Check daemon.log and update.json."
+	if job.PriorRunning {
+		pid, already, err := w.Supervisor.StartAt(ctx, job.SourceRoot)
+		if err == nil && already {
+			err = fmt.Errorf("another daemon is already running")
+		}
+		if err == nil {
+			version := job.OldBinaryVersion
+			if version == "" {
+				version = job.OldVersion
+			}
+			err = w.Supervisor.WaitHealthy(ctx, pid, version, w.healthTimeout())
+		}
+		if err != nil {
+			job.Phase = "stuck"
+			job.ErrorMessage = "The previous daemon could not be restored. Inspect daemon.log and update.json."
+			saveErr := w.Store.Save(ctx, job)
+			return job, errors.Join(journalErr, fmt.Errorf("restart old daemon: %w", err), saveErr)
+		}
+	}
+	job.Phase = "failed"
+	if err := w.Store.Save(ctx, job); err != nil {
+		return job, errors.Join(journalErr, fmt.Errorf("save recovery outcome: %w", err))
+	}
+	return job, journalErr
 }
 
 // logReceipt records what the install script saw. It never decides the
