@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,41 @@ func TestInboxTotalQuota(t *testing.T) {
 	}
 	if _, err := in.Save(ctx, "huge.bin", make([]byte, 26)); !errors.Is(err, domain.ErrFileTooBig) {
 		t.Fatalf("file over the whole quota = %v", err)
+	}
+}
+
+func TestInboxSaveFailurePreservesFiles(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 2 }
+	old, err := in.Save(context.Background(), "old.bin", []byte("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-regular entries are ignored by quota accounting but still occupy
+	// every safe destination name, making name resolution fail after room
+	// would otherwise have been freed.
+	for n := 0; n <= 1000; n++ {
+		name := "blocked.bin"
+		if n >= 2 {
+			name = "blocked-" + strconv.Itoa(n) + ".bin"
+		} else if n == 1 {
+			continue
+		}
+		if err := os.Mkdir(filepath.Join(in.Dir(), name), 0o700); err != nil {
+			t.Fatalf("mkdir collision %s: %v", name, err)
+		}
+	}
+
+	if _, err := in.Save(context.Background(), "blocked.bin", []byte("x")); err == nil {
+		t.Fatal("Save succeeded despite every destination name being occupied")
+	}
+	if data, err := os.ReadFile(old); err != nil || string(data) != "ok" {
+		t.Fatalf("existing attachment after failed save = %q, %v", data, err)
 	}
 }
 
