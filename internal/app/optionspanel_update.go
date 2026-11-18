@@ -82,7 +82,7 @@ func (p *panel) startUpdate(ctx context.Context, intentID string, panelID int, o
 			recoveryErr := p.jobs.Save(recoveryCtx, failed)
 			cancel()
 			if recoveryErr != nil {
-				return domain.UpdateJob{}, fmt.Errorf("recover failed worker launch before retry: %w", recoveryErr)
+				return failed, fmt.Errorf("recover failed worker launch before retry: %w", recoveryErr)
 			}
 			p.updates.clearFailedLaunch(previous.ID)
 			previous = failed
