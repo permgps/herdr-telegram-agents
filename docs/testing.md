@@ -13,7 +13,7 @@ notes below record the state at the time and are superseded by this report.
 |---------|----------------|
 | `make lint` | gofmt, `go vet`, staticcheck, the import layering gate, and a build plus vet of all five release targets |
 | `make test` | `go test -race ./...`: domain, use cases, both adapters, the CLI, against fakes and a fake Herdr socket server |
-| CI (`.github/workflows/ci.yml`) | the two above on Ubuntu, `go test -race` on macOS, and `go test` on Windows, for every push to `main` and every pull request |
+| CI (`.github/workflows/ci.yml`) | the two above on Ubuntu, `go test -race` on macOS, and `go test` on Windows, for every branch push and every pull request |
 | Release (`.github/workflows/release.yml`) | on a `v*` tag: the module files must be tidy (`go mod tidy -diff`, nothing is rewritten at release time), the manifest version must equal the tag, tests pass, then GoReleaser (an exact version) publishes five binaries and `checksums.txt`. Every action in both workflows is pinned to a commit SHA, updated by hand |
 
 No test touches the network or real time: the Herdr adapter talks to a fake
