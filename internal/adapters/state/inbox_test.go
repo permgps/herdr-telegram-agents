@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,59 @@ func TestInboxTotalQuota(t *testing.T) {
 	}
 }
 
+func TestInboxSaveFailurePreservesFiles(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 2 }
+	old, err := in.Save(context.Background(), "old.bin", []byte("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-regular entries are ignored by quota accounting but still occupy
+	// every safe destination name, making name resolution fail after room
+	// would otherwise have been freed.
+	for n := 0; n <= 1000; n++ {
+		name := "blocked.bin"
+		if n >= 2 {
+			name = "blocked-" + strconv.Itoa(n) + ".bin"
+		} else if n == 1 {
+			continue
+		}
+		if err := os.Mkdir(filepath.Join(in.Dir(), name), 0o700); err != nil {
+			t.Fatalf("mkdir collision %s: %v", name, err)
+		}
+	}
+
+	if _, err := in.Save(context.Background(), "blocked.bin", []byte("x")); err == nil {
+		t.Fatal("Save succeeded despite every destination name being occupied")
+	}
+	if data, err := os.ReadFile(old); err != nil || string(data) != "ok" {
+		t.Fatalf("existing attachment after failed save = %q, %v", data, err)
+	}
+}
+
+func TestInboxQuotaCanEvictLongBasename(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 1 }
+	name := strings.Repeat("a", 240)
+	old, err := in.Save(context.Background(), name, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Save(context.Background(), "new.bin", []byte("y")); err != nil {
+		t.Fatalf("evict file with valid long basename: %v", err)
+	}
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("long victim still exists: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(in.Dir(), "new.bin")); err != nil || string(data) != "y" {
+		t.Fatalf("new file = %q, %v", data, err)
+	}
+}
 // saveAged saves a file through save and backdates it by age.
 func saveAged(t *testing.T, save func(context.Context, string, []byte) (string, error), name string, size int, age time.Duration) string {
 	t.Helper()

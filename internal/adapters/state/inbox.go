@@ -26,6 +26,8 @@ const (
 	inboxFileMode = 0o600
 )
 
+const inboxQuarantineDirName = ".inbox-quarantine"
+
 // defaultInboxMaxTotal is the total size the inbox keeps when MaxTotal is
 // not set; it matches the default of domain.OptionInboxMaxTotalMB.
 const defaultInboxMaxTotal = 500 << 20
@@ -34,6 +36,10 @@ const defaultInboxMaxTotal = 500 << 20
 // adds it itself; owner names never start with it (domain.InboxFileName
 // starts with a date).
 const inboxSharedPrefix = "shared-"
+
+// inboxQuarantinePrefix marks an interrupted quota transaction. The original
+// basename follows it so a new Inbox can restore the file after a crash.
+const inboxQuarantinePrefix = ".inbox-quarantine-"
 
 // inboxSharedShare is the part of the total quota the shared files hold
 // together: at most MaxTotal()/inboxSharedShare.
@@ -47,7 +53,10 @@ type Inbox struct {
 	// MaxTotal is the most the inbox holds in bytes, read on every Save;
 	// nil means defaultInboxMaxTotal.
 	MaxTotal func() int64
-	mu       sync.Mutex
+	// These filesystem operations are injectable for deterministic failure tests.
+	stageForSave  func(string, []byte, os.FileMode) (string, error)
+	renameForSave func(string, string) error
+	mu            sync.Mutex
 }
 
 var _ domain.InboxStore = (*Inbox)(nil)
@@ -58,7 +67,11 @@ func NewInbox(stateDir string, log *slog.Logger) *Inbox {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Inbox{dir: filepath.Join(stateDir, InboxDirName), log: log, now: time.Now}
+	inbox := &Inbox{dir: filepath.Join(stateDir, InboxDirName), log: log, now: time.Now}
+	if err := inbox.recoverQuarantined(); err != nil {
+		log.Error("inbox quota recovery failed", slog.String("err", err.Error()))
+	}
+	return inbox
 }
 
 // Dir returns the inbox directory.
@@ -70,7 +83,7 @@ func (i *Inbox) Dir() string { return i.dir }
 // ".." component is refused. Room is made from the oldest files, shared
 // ones included.
 func (i *Inbox) Save(_ context.Context, name string, data []byte) (string, error) {
-	return i.save(name, data, i.makeRoom)
+	return i.save(name, data, false)
 }
 
 // SaveShared is Save for a file a private recipient sent: it is stored as
@@ -81,15 +94,18 @@ func (i *Inbox) SaveShared(_ context.Context, name string, data []byte) (string,
 	if unsafeInboxName(name) {
 		return "", fmt.Errorf("inbox: unsafe name %q", name)
 	}
-	return i.save(inboxSharedPrefix+name, data, i.makeSharedRoom)
+	return i.save(inboxSharedPrefix+name, data, true)
 }
 
 // unsafeInboxName reports a name with a path separator or a ".." component.
 func unsafeInboxName(name string) bool {
+	if strings.HasPrefix(name, inboxQuarantinePrefix) {
+		return true
+	}
 	return name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || name == "." || name == ".."
 }
 
-func (i *Inbox) save(name string, data []byte, makeRoom func(need int64) error) (string, error) {
+func (i *Inbox) save(name string, data []byte, shared bool) (string, error) {
 	if unsafeInboxName(name) {
 		return "", fmt.Errorf("inbox: unsafe name %q", name)
 	}
@@ -98,15 +114,39 @@ func (i *Inbox) save(name string, data []byte, makeRoom func(need int64) error) 
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if err := makeRoom(int64(len(data))); err != nil {
-		return "", err
+	if err := i.recoverQuarantined(); err != nil {
+		return "", fmt.Errorf("inbox: recover quota transaction: %w", err)
 	}
 	path, err := i.freePath(name)
 	if err != nil {
 		return "", err
 	}
-	if err := writeAtomic(path, data, inboxFileMode); err != nil {
+	victims, err := i.quotaVictims(int64(len(data)), shared)
+	if err != nil {
+		return "", err
+	}
+	stage, err := i.stageFile(i.dir, data, inboxFileMode)
+	if err != nil {
+		if stage != "" {
+			if cleanupErr := os.Remove(stage); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("remove failed staged file: %w", cleanupErr))
+			}
+		}
 		return "", fmt.Errorf("inbox: %w", err)
+	}
+	defer os.Remove(stage)
+	quarantined, err := i.quarantine(victims)
+	if err != nil {
+		return "", err
+	}
+	if err := i.renameFile(stage, path); err != nil {
+		rollbackErr := i.restoreQuarantined(quarantined)
+		return "", errors.Join(fmt.Errorf("inbox: commit staged file: %w", err), rollbackErr)
+	}
+	for _, old := range quarantined {
+		if err := os.Remove(old.quarantine); err != nil {
+			i.log.Warn("inbox evicted file cleanup failed; old data remains in quarantine", slog.String("original", old.original), slog.String("quarantine", old.quarantine), slog.String("err", err.Error()))
+		}
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -162,89 +202,6 @@ func (i *Inbox) SharedQuota() int64 {
 	return i.limit() / inboxSharedShare
 }
 
-// makeRoom deletes the oldest files until need more bytes fit under the
-// total quota. A file larger than the whole quota is refused.
-func (i *Inbox) makeRoom(need int64) error {
-	limit := i.limit()
-	if need > limit {
-		i.log.Warn("[FIX] inbox file exceeds the total quota", slog.Int64("bytes", need), slog.Int64("quota", limit))
-		return fmt.Errorf("inbox: %d bytes exceed the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
-	}
-	files, total, err := i.list()
-	if err != nil {
-		return err
-	}
-	if total+need <= limit {
-		return nil
-	}
-	for _, f := range files {
-		if total+need <= limit {
-			break
-		}
-		if err := os.Remove(f.path); err != nil {
-			i.log.Warn("inbox delete failed", slog.String("path", f.path), slog.String("err", err.Error()))
-			continue
-		}
-		total -= f.size
-		i.log.Info("[FIX] inbox quota: oldest file deleted", slog.String("path", f.path), slog.Int64("bytes", f.size), slog.Int64("quota", limit))
-	}
-	if total+need > limit {
-		return fmt.Errorf("inbox: no room for %d bytes under the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
-	}
-	return nil
-}
-
-// makeSharedRoom deletes the oldest shared files until need more bytes fit
-// both under the shared quota (a quarter of the total) and under the total
-// quota. A file larger than the shared quota, or one that would need the
-// owner's files deleted, is refused.
-func (i *Inbox) makeSharedRoom(need int64) error {
-	limit := i.limit()
-	quota := i.SharedQuota()
-	if need > quota {
-		i.log.Warn("[FIX] inbox shared file exceeds the shared quota", slog.Int64("bytes", need), slog.Int64("quota", quota))
-		return fmt.Errorf("inbox: %d bytes exceed the %d byte shared quota: %w", need, quota, domain.ErrFileTooBig)
-	}
-	files, total, err := i.list()
-	if err != nil {
-		return err
-	}
-	var shared int64
-	for _, f := range files {
-		if f.shared {
-			shared += f.size
-		}
-	}
-	// Even with every shared file gone the owner's files leave no room:
-	// refuse without deleting anything.
-	if total-shared+need > limit {
-		i.log.Warn("[FIX] inbox shared save refused", slog.Int64("bytes", need), slog.Int64("shared_total", shared), slog.Int64("quota", quota),
-			slog.String("reason", "owner_files"))
-		return fmt.Errorf("inbox: no room for %d shared bytes under the %d byte quota: %w", need, limit, domain.ErrFileTooBig)
-	}
-	for _, f := range files {
-		if shared+need <= quota && total+need <= limit {
-			break
-		}
-		if !f.shared {
-			continue
-		}
-		if err := os.Remove(f.path); err != nil {
-			i.log.Warn("inbox delete failed", slog.String("file", filepath.Base(f.path)), slog.String("err", err.Error()))
-			continue
-		}
-		shared -= f.size
-		total -= f.size
-		i.log.Info("[FIX] inbox shared quota: oldest shared file deleted", slog.String("file", filepath.Base(f.path)), slog.Int64("bytes", f.size), slog.Int64("quota", quota))
-	}
-	if shared+need > quota || total+need > limit {
-		i.log.Warn("[FIX] inbox shared save refused", slog.Int64("bytes", need), slog.Int64("shared_total", shared), slog.Int64("quota", quota),
-			slog.String("reason", "no_room"))
-		return fmt.Errorf("inbox: no room for %d shared bytes under the %d byte shared quota: %w", need, quota, domain.ErrFileTooBig)
-	}
-	return nil
-}
-
 // freePath returns dir/name, or dir/name-N.ext for the first N from 2 that
 // does not exist yet.
 func (i *Inbox) freePath(name string) (string, error) {
@@ -271,6 +228,11 @@ func (i *Inbox) freePath(name string) (string, error) {
 // temp files of a Save in flight are left alone; a missing inbox counts
 // as empty.
 func (i *Inbox) Sweep(ctx context.Context, olderThan time.Duration) (int, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if err := i.recoverQuarantined(); err != nil {
+		return 0, fmt.Errorf("inbox: recover quota transaction: %w", err)
+	}
 	entries, err := os.ReadDir(i.dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
