@@ -173,6 +173,46 @@ func TestTailerPreservesWritesDuringInitialDisplay(t *testing.T) {
 	}
 }
 
+func TestLastLinesRecoversWhenSnapshotIsTruncated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("line\nlast\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lines, partial, end, err := lastLinesWithReadAt(f, 100, func(b []byte, off int64) (int, error) {
+		if err := f.Truncate(0); err != nil {
+			t.Fatal(err)
+		}
+		return f.ReadAt(b, off)
+	})
+	if err != nil || end != 0 || len(lines) != 0 || partial != "" {
+		t.Fatalf("truncated snapshot = lines %q partial %q end %d err %v", lines, partial, end, err)
+	}
+}
+
+func TestLastLinesPreservesCRInUnterminatedToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("partial\r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	_, partial, _, err := lastLines(f, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial != "partial\r" {
+		t.Fatalf("unterminated token = %q, want carriage return preserved", partial)
+	}
+}
+
 type appendDuringInitialDisplay struct {
 	buffer    *syncBuffer
 	path      string
