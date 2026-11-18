@@ -78,11 +78,12 @@ func stageInboxFile(dir string, data []byte, mode os.FileMode) (path string, err
 	if err != nil {
 		return "", fmt.Errorf("create staged file: %w", err)
 	}
-	path = file.Name()
+	stagePath := file.Name()
+	path = stagePath
 	defer func() {
 		if err != nil {
 			_ = file.Close()
-			_ = os.Remove(path)
+			_ = os.Remove(stagePath)
 		}
 	}()
 	if err = file.Chmod(mode); err != nil {
@@ -101,9 +102,13 @@ func stageInboxFile(dir string, data []byte, mode os.FileMode) (path string, err
 }
 
 func (i *Inbox) quarantine(victims []inboxFile) ([]quarantinedInboxFile, error) {
+	dir := filepath.Join(i.dir, inboxQuarantineDirName)
+	if err := os.MkdirAll(dir, inboxDirMode); err != nil {
+		return nil, fmt.Errorf("inbox: create quarantine directory: %w", err)
+	}
 	var moved []quarantinedInboxFile
 	for _, victim := range victims {
-		path := filepath.Join(i.dir, inboxQuarantinePrefix+filepath.Base(victim.path))
+		path := filepath.Join(dir, filepath.Base(victim.path))
 		if _, err := os.Lstat(path); err == nil {
 			return nil, errors.Join(fmt.Errorf("inbox: quarantine path already exists: %s", path), i.restoreQuarantined(moved))
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -141,6 +146,26 @@ func (i *Inbox) recoverQuarantined() error {
 	}
 	var failures []error
 	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() == inboxQuarantineDirName {
+			quarantined, readErr := os.ReadDir(filepath.Join(i.dir, inboxQuarantineDirName))
+			if readErr != nil {
+				failures = append(failures, fmt.Errorf("list inbox quarantine directory: %w", readErr))
+				continue
+			}
+			for _, old := range quarantined {
+				if !old.Type().IsRegular() {
+					continue
+				}
+				if unsafeInboxName(old.Name()) {
+					failures = append(failures, fmt.Errorf("invalid quarantined inbox name %q", old.Name()))
+					continue
+				}
+				if err := i.restoreQuarantinedName(filepath.Join(i.dir, inboxQuarantineDirName, old.Name()), old.Name()); err != nil {
+					failures = append(failures, err)
+				}
+			}
+			continue
+		}
 		if !entry.Type().IsRegular() || !strings.HasPrefix(entry.Name(), inboxQuarantinePrefix) {
 			continue
 		}
@@ -149,20 +174,23 @@ func (i *Inbox) recoverQuarantined() error {
 			failures = append(failures, fmt.Errorf("invalid quarantined inbox name %q", entry.Name()))
 			continue
 		}
-		quarantine := filepath.Join(i.dir, entry.Name())
-		original := filepath.Join(i.dir, name)
-		if _, err := os.Lstat(original); err == nil {
-			failures = append(failures, fmt.Errorf("cannot restore quarantined inbox file %s: destination exists", quarantine))
-			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			failures = append(failures, fmt.Errorf("inspect restore destination %s: %w", original, err))
-			continue
+		if err := i.restoreQuarantinedName(filepath.Join(i.dir, entry.Name()), name); err != nil {
+			failures = append(failures, err)
 		}
-		if err := os.Rename(quarantine, original); err != nil {
-			failures = append(failures, fmt.Errorf("restore quarantined inbox file %s: %w", original, err))
-			continue
-		}
-		i.log.Warn("restored inbox file from interrupted quota transaction", "path", original)
 	}
 	return errors.Join(failures...)
+}
+
+func (i *Inbox) restoreQuarantinedName(quarantine, name string) error {
+	original := filepath.Join(i.dir, name)
+	if _, err := os.Lstat(original); err == nil {
+		return fmt.Errorf("cannot restore quarantined inbox file %s: destination exists", quarantine)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect restore destination %s: %w", original, err)
+	}
+	if err := os.Rename(quarantine, original); err != nil {
+		return fmt.Errorf("restore quarantined inbox file %s: %w", original, err)
+	}
+	i.log.Warn("restored inbox file from interrupted quota transaction", "path", original)
+	return nil
 }

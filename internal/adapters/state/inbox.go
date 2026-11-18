@@ -26,6 +26,8 @@ const (
 	inboxFileMode = 0o600
 )
 
+const inboxQuarantineDirName = ".inbox-quarantine"
+
 // defaultInboxMaxTotal is the total size the inbox keeps when MaxTotal is
 // not set; it matches the default of domain.OptionInboxMaxTotalMB.
 const defaultInboxMaxTotal = 500 << 20
@@ -125,6 +127,11 @@ func (i *Inbox) save(name string, data []byte, shared bool) (string, error) {
 	}
 	stage, err := i.stageFile(i.dir, data, inboxFileMode)
 	if err != nil {
+		if stage != "" {
+			if cleanupErr := os.Remove(stage); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("remove failed staged file: %w", cleanupErr))
+			}
+		}
 		return "", fmt.Errorf("inbox: %w", err)
 	}
 	defer os.Remove(stage)
