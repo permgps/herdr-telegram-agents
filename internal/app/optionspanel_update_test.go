@@ -130,15 +130,16 @@ func TestPanelRestoresPersistedUpdateProgress(t *testing.T) {
 
 type failNthUpdateSave struct {
 	memoryUpdateStore
-	saves      int
-	failAt     int
-	alsoFailAt int
-	err        error
+	saves       int
+	failAt      int
+	alsoFailAt  int
+	thirdFailAt int
+	err         error
 }
 
 func (s *failNthUpdateSave) Save(ctx context.Context, job domain.UpdateJob) error {
 	s.saves++
-	if s.saves == s.failAt || s.saves == s.alsoFailAt {
+	if s.saves == s.failAt || s.saves == s.alsoFailAt || s.saves == s.thirdFailAt {
 		return s.err
 	}
 	return s.memoryUpdateStore.Save(ctx, job)
@@ -256,7 +257,7 @@ func TestPanelRetriesAfterPersistentLaunchJournalFailure(t *testing.T) {
 	p := f.in.panel
 	p.chatID, p.operators = f.cfg.ChatID, []int64{1}
 	p.updates = manager
-	store := &failNthUpdateSave{failAt: 2, alsoFailAt: 3, err: errors.New("journal unavailable")}
+	store := &failNthUpdateSave{failAt: 2, alsoFailAt: 3, thirdFailAt: 4, err: errors.New("journal unavailable")}
 	p.jobs = store
 	launches := 0
 	p.launch = func(context.Context, string) (int, error) {
@@ -285,7 +286,27 @@ func TestPanelRetriesAfterPersistentLaunchJournalFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.startUpdate(f.ctx, second.IntentID, panelID, 1); err != nil {
+	job, retryErr := p.startUpdate(f.ctx, second.IntentID, panelID, 1)
+	if retryErr == nil {
+		t.Fatal("retry succeeded despite recovery journal failure")
+	}
+	if err := p.show(f.ctx, panelID, view{"<b>Rechecking update…</b>", nil}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.startFinished(f.ctx, updateStartResult{panelID: panelID, job: job, err: retryErr}); err != nil {
+		t.Fatal(err)
+	}
+	if text := f.tg.Text(panelID); !strings.Contains(text, "Update could not start") || strings.Contains(text, "Updating to") {
+		t.Fatalf("panel after recovery journal failure = %q, want actionable error", text)
+	}
+	if buttons := f.tg.Buttons(panelID); len(buttons) == 0 || buttons[0].Text != "Check again" {
+		t.Fatalf("recovery failure buttons = %v, want Check again", buttons)
+	}
+	third, err := manager.Check(f.ctx, p.chatID, panelID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.startUpdate(f.ctx, third.IntentID, panelID, 1); err != nil {
 		t.Fatalf("retry after journal becomes writable: %v", err)
 	}
 	if launches != 2 || store.job.Phase != "queued" {
