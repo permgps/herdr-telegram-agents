@@ -14,15 +14,19 @@ import (
 // PrivateReconciler creates only after durable intent and never closes private
 // topics. Unknown creation results require an explicit owner repair.
 type PrivateReconciler struct {
-	pending   map[domain.Key]AgentEvent
-	after     map[domain.Key]string
-	Automatic func() bool
-	Sharing   *Sharing
-	Telegram  domain.DestinationTelegram
-	Agent     func(domain.Key) (domain.Agent, bool)
-	Now       func() time.Time
-	Log       *slog.Logger
-	last      map[string]string
+	pending    map[domain.Key]AgentEvent
+	after      map[domain.Key]string
+	retryAt    map[domain.Key]time.Time
+	retryIDs   map[domain.Key]map[string]struct{}
+	retryAfter map[domain.Key]string
+	lifecycle  map[domain.Key]bool
+	Automatic  func() bool
+	Sharing    *Sharing
+	Telegram   domain.DestinationTelegram
+	Agent      func(domain.Key) (domain.Agent, bool)
+	Now        func() time.Time
+	Log        *slog.Logger
+	last       map[string]string
 }
 
 func (r *PrivateReconciler) Grant(ctx context.Context, g domain.ShareGrant) error {
@@ -77,8 +81,26 @@ func (r *PrivateReconciler) Observe(ctx context.Context, e AgentEvent) error {
 		r.pending = map[domain.Key]AgentEvent{}
 		r.after = map[domain.Key]string{}
 	}
+	if e.Kind == AgentAppeared {
+		// A resumed session can keep its pane and digest while Herdr assigns a
+		// new terminal ID. Delayed lifecycle work for the old key is obsolete.
+		for key := range r.pending {
+			if key.PaneID == e.Agent.Key.PaneID && key.SessionDigest == e.Agent.Key.SessionDigest && key.TerminalID != e.Agent.Key.TerminalID {
+				delete(r.pending, key)
+				delete(r.after, key)
+				delete(r.retryAt, key)
+				delete(r.retryIDs, key)
+				delete(r.retryAfter, key)
+				delete(r.lifecycle, key)
+			}
+		}
+	}
 	r.pending[e.Agent.Key] = e
 	delete(r.after, e.Agent.Key)
+	delete(r.retryAt, e.Agent.Key)
+	delete(r.retryIDs, e.Agent.Key)
+	delete(r.retryAfter, e.Agent.Key)
+	delete(r.lifecycle, e.Agent.Key)
 	return r.flushEvent(ctx, e)
 }
 
@@ -90,43 +112,96 @@ func (r *PrivateReconciler) Flush(ctx context.Context) error {
 }
 
 func (r *PrivateReconciler) flushEvent(ctx context.Context, e AgentEvent) error {
-	if err := r.Sharing.Lifecycle(ctx, e, r.Now()); err != nil {
-		return err
+	if r.retryAt[e.Agent.Key].After(r.Now()) {
+		return nil
+	}
+	if !r.lifecycle[e.Agent.Key] {
+		if err := r.Sharing.Lifecycle(ctx, e, r.Now()); err != nil {
+			return err
+		}
+		if r.lifecycle == nil {
+			r.lifecycle = map[domain.Key]bool{}
+		}
+		r.lifecycle[e.Agent.Key] = true
 	}
 	st, ok := r.Sharing.Snapshot()
 	if !ok || !st.MatchesBot(domain.BotIdentity{ID: r.Sharing.BotID}) || (r.Automatic != nil && !r.Automatic()) {
 		delete(r.pending, e.Agent.Key)
 		delete(r.after, e.Agent.Key)
+		delete(r.retryAt, e.Agent.Key)
+		delete(r.retryIDs, e.Agent.Key)
+		delete(r.retryAfter, e.Agent.Key)
+		delete(r.lifecycle, e.Agent.Key)
 		return nil
 	}
-	ids := make([]string, 0, len(st.Grants))
-	for id := range st.Grants {
-		if id > r.after[e.Agent.Key] {
-			ids = append(ids, id)
+	for id := range r.retryIDs[e.Agent.Key] {
+		if _, exists := st.Grants[id]; !exists {
+			delete(r.retryIDs[e.Agent.Key], id)
 		}
 	}
-	sort.Strings(ids)
+	newIDs := make([]string, 0, len(st.Grants))
+	retryIDs := make([]string, 0, len(r.retryIDs[e.Agent.Key]))
+	for id := range st.Grants {
+		if _, retry := r.retryIDs[e.Agent.Key][id]; retry {
+			retryIDs = append(retryIDs, id)
+		} else if id > r.after[e.Agent.Key] {
+			newIDs = append(newIDs, id)
+		}
+	}
+	sort.Strings(newIDs)
+	sort.Strings(retryIDs)
+	if len(retryIDs) > 1 {
+		start := sort.Search(len(retryIDs), func(i int) bool { return retryIDs[i] > r.retryAfter[e.Agent.Key] })
+		retryIDs = append(retryIDs[start:], retryIDs[:start]...)
+	}
+	// New grants get their first attempt promptly; retry attempts rotate so a
+	// set of persistent failures cannot consume every capped pass.
+	ids := append(newIDs, retryIDs...)
 	calls := 0
 	for _, id := range ids {
 		if calls >= 4 {
 			return nil
 		}
-		r.after[e.Agent.Key] = id
+		if _, retry := r.retryIDs[e.Agent.Key][id]; retry {
+			if r.retryAfter == nil {
+				r.retryAfter = map[domain.Key]string{}
+			}
+			r.retryAfter[e.Agent.Key] = id
+		}
 		g := st.Grants[id]
 		if g.Key.PaneID != e.Agent.PaneID || (g.State != domain.GrantActive && g.SuspendReason != "exited") {
+			r.advanceCursor(e.Agent.Key, id)
+			delete(r.retryIDs[e.Agent.Key], id)
 			continue
 		}
 		m := st.Mirrors[g.ID]
 		if e.Agent.Key != g.Key || e.Kind == AgentGone {
 
 			status := domain.StatusExited
-			if !m.Preferences.Paused {
+			if m.Preferences.Paused {
+				delete(r.retryIDs[e.Agent.Key], id)
+			} else {
 				calls++
-				_ = r.Telegram.EditTopicAt(ctx, m.Address, domain.TopicPatch{Status: &status}, r.Sharing.BindingGuard(g.ID, g.Revision))
+				err := r.Telegram.EditTopicAt(ctx, m.Address, domain.TopicPatch{Status: &status}, r.Sharing.BindingGuard(g.ID, g.Revision))
+				if err != nil {
+					if privateTopicEditRetryable(err) {
+						r.queueTopicRetry(e.Agent.Key, id)
+					} else {
+						if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrRecipientUnavailable) {
+							_ = r.Sharing.Reachability(ctx, g.RecipientID, true, r.Now())
+						}
+						delete(r.retryIDs[e.Agent.Key], id)
+					}
+				} else {
+					delete(r.retryIDs[e.Agent.Key], id)
+				}
 			}
+			r.advanceCursor(e.Agent.Key, id)
 			continue
 		}
 		if m.Preferences.Paused {
+			r.advanceCursor(e.Agent.Key, id)
+			delete(r.retryIDs[e.Agent.Key], id)
 			continue
 		}
 		name := e.Agent.Label()
@@ -138,6 +213,8 @@ func (r *PrivateReconciler) flushEvent(ctx context.Context, e AgentEvent) error 
 		}
 		signature := fmt.Sprintf("%d:%s:%s", g.Revision, name, e.Agent.Status)
 		if r.last[g.ID] == signature {
+			r.advanceCursor(e.Agent.Key, id)
+			delete(r.retryIDs[e.Agent.Key], id)
 			continue
 		}
 		o, _ := r.Sharing.Origin(g.ID)
@@ -145,6 +222,7 @@ func (r *PrivateReconciler) flushEvent(ctx context.Context, e AgentEvent) error 
 		calls++
 		if err := r.Telegram.EditTopicAt(ctx, m.Address, domain.TopicPatch{Name: &name, Status: &e.Agent.Status}, r.Sharing.Guard(o, domain.ShareOutput)); err != nil {
 			if errors.Is(err, domain.ErrTopicGone) {
+				r.advanceCursor(e.Agent.Key, id)
 				next, saveErr := r.Sharing.MissingMirror(ctx, g.ID, g.Revision, r.Now())
 				if saveErr != nil {
 					return saveErr
@@ -154,13 +232,58 @@ func (r *PrivateReconciler) flushEvent(ctx context.Context, e AgentEvent) error 
 			if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrRecipientUnavailable) {
 				_ = r.Sharing.Reachability(ctx, g.RecipientID, true, r.Now())
 			}
+			if privateTopicEditRetryable(err) {
+				r.queueTopicRetry(e.Agent.Key, id)
+			} else {
+				delete(r.retryIDs[e.Agent.Key], id)
+			}
+			r.advanceCursor(e.Agent.Key, id)
 			continue
 		}
 		r.last[g.ID] = signature
+		r.advanceCursor(e.Agent.Key, id)
+		delete(r.retryIDs[e.Agent.Key], id)
+	}
+	if len(r.retryIDs[e.Agent.Key]) > 0 {
+		return nil
 	}
 	delete(r.pending, e.Agent.Key)
 	delete(r.after, e.Agent.Key)
+	delete(r.retryAt, e.Agent.Key)
+	delete(r.retryIDs, e.Agent.Key)
+	delete(r.retryAfter, e.Agent.Key)
+	delete(r.lifecycle, e.Agent.Key)
 	return nil
+}
+
+func (r *PrivateReconciler) advanceCursor(key domain.Key, id string) {
+	if id > r.after[key] {
+		r.after[key] = id
+	}
+}
+
+func (r *PrivateReconciler) queueTopicRetry(key domain.Key, id string) {
+	if r.retryAt == nil {
+		r.retryAt = map[domain.Key]time.Time{}
+	}
+	if r.retryIDs == nil {
+		r.retryIDs = map[domain.Key]map[string]struct{}{}
+	}
+	if r.retryIDs[key] == nil {
+		r.retryIDs[key] = map[string]struct{}{}
+	}
+	r.retryIDs[key][id] = struct{}{}
+	r.retryAt[key] = r.Now().Add(time.Second)
+}
+
+func privateTopicEditRetryable(err error) bool {
+	return !errors.Is(err, domain.ErrTopicGone) &&
+		!errors.Is(err, domain.ErrForbidden) &&
+		!errors.Is(err, domain.ErrRecipientUnavailable) &&
+		!errors.Is(err, domain.ErrBotUnauthorized) &&
+		!errors.Is(err, domain.ErrTopicClosed) &&
+		!errors.Is(err, domain.ErrPollerConflict) &&
+		!errors.Is(err, domain.ErrChatMigrated)
 }
 
 // Sweep applies the existing exited-topic retention option without group
