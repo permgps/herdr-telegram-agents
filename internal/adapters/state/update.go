@@ -80,9 +80,17 @@ func (s *UpdateStore) Recover(ctx context.Context, workerAlive bool) (domain.Upd
 		return job, err
 	}
 	if !job.Terminal() && !workerAlive {
-		job.Phase = "interrupted"
-		job.ErrorCode = "worker_interrupted"
-		job.ErrorMessage = "Update worker stopped before completion; inspect update.json and daemon.log."
+		if job.Phase == "queued" {
+			// The worker cannot change installation files until it persists
+			// backed_up, so a queued job with no live lock is safe to retry.
+			job.Phase = "failed"
+			job.ErrorCode = "worker_not_running"
+			job.ErrorMessage = "The update worker made no recorded progress; inspect daemon.log before retrying."
+		} else {
+			job.Phase = "interrupted"
+			job.ErrorCode = "worker_interrupted"
+			job.ErrorMessage = "Update worker stopped before completion; inspect update.json and daemon.log."
+		}
 		if err := s.Save(ctx, job); err != nil {
 			return job, err
 		}

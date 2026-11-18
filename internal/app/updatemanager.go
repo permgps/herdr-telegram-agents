@@ -20,13 +20,37 @@ var ErrUpdateIntent = errors.New("update button expired or installation changed"
 // UpdateManager performs both presses. It never mutates installation files;
 // the worker receives only a consumed and revalidated result.
 type UpdateManager struct {
-	Releases  domain.ReleaseSource
-	Preflight *UpdatePreflight
-	Herdr     domain.HerdrProber
-	Now       func() time.Time
-	Log       *slog.Logger
-	mu        sync.Mutex
-	intents   map[string]domain.UpdateIntent
+	Releases       domain.ReleaseSource
+	Preflight      *UpdatePreflight
+	Herdr          domain.HerdrProber
+	Now            func() time.Time
+	Log            *slog.Logger
+	mu             sync.Mutex
+	startMu        sync.Mutex
+	intents        map[string]domain.UpdateIntent
+	failedLaunches map[string]domain.UpdateJob
+}
+
+func (m *UpdateManager) rememberFailedLaunch(job domain.UpdateJob) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failedLaunches == nil {
+		m.failedLaunches = make(map[string]domain.UpdateJob)
+	}
+	m.failedLaunches[job.ID] = job
+}
+
+func (m *UpdateManager) failedLaunch(id string) (domain.UpdateJob, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.failedLaunches[id]
+	return job, ok
+}
+
+func (m *UpdateManager) clearFailedLaunch(id string) {
+	m.mu.Lock()
+	delete(m.failedLaunches, id)
+	m.mu.Unlock()
 }
 
 func (m *UpdateManager) now() time.Time {

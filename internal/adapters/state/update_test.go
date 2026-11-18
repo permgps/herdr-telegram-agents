@@ -37,3 +37,19 @@ func TestUpdateStoreAtomicRecovery(t *testing.T) {
 		t.Fatal("unsanitized error persisted")
 	}
 }
+
+func TestUpdateStoreRecoverQueuedWorkerAsFailed(t *testing.T) {
+	store := NewUpdateStore(t.TempDir(), nil)
+	job := domain.UpdateJob{ID: "queued", Phase: "queued", TargetTag: "v1.2.0"}
+	if err := store.Save(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Recover(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != "failed" || !got.Terminal() {
+		t.Fatalf("recovered queued job = %+v, want terminal failed job", got)
+	}
+}
