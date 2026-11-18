@@ -176,6 +176,25 @@ func TestInboxSaveFailurePreservesFiles(t *testing.T) {
 	}
 }
 
+func TestInboxQuotaCanEvictLongBasename(t *testing.T) {
+	in := state.NewInbox(t.TempDir(), nil)
+	in.MaxTotal = func() int64 { return 1 }
+	name := strings.Repeat("a", 240)
+	old, err := in.Save(context.Background(), name, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Save(context.Background(), "new.bin", []byte("y")); err != nil {
+		t.Fatalf("evict file with valid long basename: %v", err)
+	}
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("long victim still exists: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(in.Dir(), "new.bin")); err != nil || string(data) != "y" {
+		t.Fatalf("new file = %q, %v", data, err)
+	}
+}
+
 // saveAged saves a file through save and backdates it by age.
 func saveAged(t *testing.T, save func(context.Context, string, []byte) (string, error), name string, size int, age time.Duration) string {
 	t.Helper()
