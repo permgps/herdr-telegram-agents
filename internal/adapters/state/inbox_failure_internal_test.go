@@ -28,6 +28,29 @@ func TestInboxStageFailurePreservesOldFile(t *testing.T) {
 	}
 }
 
+func TestInboxStageFailureRemovesCreatedTemporaryFile(t *testing.T) {
+	in := NewInbox(t.TempDir(), nil)
+	wantErr := errors.New("injected post-create staging failure")
+	var staged string
+	in.stageForSave = func(dir string, _ []byte, _ os.FileMode) (string, error) {
+		f, err := os.CreateTemp(dir, ".inbox-stage-*.tmp")
+		if err != nil {
+			return "", err
+		}
+		staged = f.Name()
+		if err := f.Close(); err != nil {
+			return staged, err
+		}
+		return staged, wantErr
+	}
+	if _, err := in.Save(context.Background(), "new.bin", []byte("x")); !errors.Is(err, wantErr) {
+		t.Fatalf("Save error = %v, want injected staging failure", err)
+	}
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging file after failed save: %v", err)
+	}
+}
+
 func TestInboxFinalizationFailureRestoresOldFile(t *testing.T) {
 	in := NewInbox(t.TempDir(), nil)
 	in.MaxTotal = func() int64 { return 2 }

@@ -194,7 +194,6 @@ func TestInboxQuotaCanEvictLongBasename(t *testing.T) {
 		t.Fatalf("new file = %q, %v", data, err)
 	}
 }
-
 // saveAged saves a file through save and backdates it by age.
 func saveAged(t *testing.T, save func(context.Context, string, []byte) (string, error), name string, size int, age time.Duration) string {
 	t.Helper()
