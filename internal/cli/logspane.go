@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -99,16 +98,15 @@ func (t *tailer) run(ctx context.Context, out io.Writer, n int) error {
 		return err
 	}
 	if t.file != nil {
-		lines, err := lastLines(t.file, n)
+		lines, partial, end, err := lastLines(t.file, n)
 		if err != nil {
 			return err
 		}
 		for _, l := range lines {
 			fmt.Fprintln(out, renderLogLine(l))
 		}
-		if end, err := t.file.Seek(0, io.SeekEnd); err == nil {
-			t.offset = end
-		}
+		t.partial = partial
+		t.offset = end
 	} else {
 		fmt.Fprintln(out, "(no log file yet)")
 	}
@@ -184,23 +182,6 @@ func (t *tailer) poll(out io.Writer) error {
 		fmt.Fprintln(out, renderLogLine(l))
 	}
 	return nil
-}
-
-// lastLines returns up to n trailing lines of f.
-func lastLines(f *os.File, n int) ([]string, error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	ring := make([]string, 0, n)
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		if len(ring) == n {
-			ring = ring[1:]
-		}
-		ring = append(ring, sc.Text())
-	}
-	return ring, sc.Err()
 }
 
 // renderLogLine turns one slog JSON line into `15:04:05 LEVEL msg k=v`.
