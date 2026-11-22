@@ -135,6 +135,111 @@ func TestTailerWaitsForMissingFile(t *testing.T) {
 	}
 }
 
+func TestTailerPreservesWritesDuringInitialDisplay(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "daemon.log")
+	if err := os.WriteFile(path, []byte("ready\npartial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buffer := &syncBuffer{}
+	out := &appendDuringInitialDisplay{
+		buffer: buffer,
+		path:   path,
+		data:   []byte("-complete\nduring\n"),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- newTailer(path, 10*time.Millisecond).run(ctx, out, 100) }()
+
+	waitOutput(t, buffer, "during")
+	waitOutput(t, buffer, "partial-complete")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if out.appendErr != nil {
+		t.Fatalf("append during initial display: %v", out.appendErr)
+	}
+
+	lines := strings.Split(buffer.String(), "\n")
+	counts := map[string]int{}
+	for _, line := range lines {
+		counts[line]++
+	}
+	if counts["during"] != 1 || counts["partial-complete"] != 1 || counts["partial"] != 0 {
+		t.Fatalf("initial and appended log lines = %q", buffer.String())
+	}
+}
+
+func TestLastLinesRecoversWhenSnapshotIsTruncated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("line\nlast\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lines, partial, end, err := lastLinesWithReadAt(f, 100, func(b []byte, off int64) (int, error) {
+		if err := f.Truncate(0); err != nil {
+			t.Fatal(err)
+		}
+		return f.ReadAt(b, off)
+	})
+	if err != nil || end != 0 || len(lines) != 0 || partial != "" {
+		t.Fatalf("truncated snapshot = lines %q partial %q end %d err %v", lines, partial, end, err)
+	}
+}
+
+func TestLastLinesPreservesCRInUnterminatedToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("partial\r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	_, partial, _, err := lastLines(f, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial != "partial\r" {
+		t.Fatalf("unterminated token = %q, want carriage return preserved", partial)
+	}
+}
+
+type appendDuringInitialDisplay struct {
+	buffer    *syncBuffer
+	path      string
+	data      []byte
+	appended  bool
+	appendErr error
+}
+
+func (w *appendDuringInitialDisplay) Write(p []byte) (int, error) {
+	if !w.appended {
+		w.appended = true
+		f, err := os.OpenFile(w.path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			w.appendErr = err
+		} else {
+			_, w.appendErr = f.Write(w.data)
+			if err := f.Close(); w.appendErr == nil {
+				w.appendErr = err
+			}
+		}
+		if w.appendErr != nil {
+			return 0, w.appendErr
+		}
+	}
+	return w.buffer.Write(p)
+}
+
 func TestWatchQuitKeys(t *testing.T) {
 	for _, in := range []string{"q", "\x1b", "abc\x1b[A", "", "\x03", "\x04", "abc"} {
 		_, cancel := context.WithCancel(context.Background())
