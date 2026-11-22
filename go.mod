@@ -1,6 +1,6 @@
 module github.com/permgps/herdr-telegram-agents
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
