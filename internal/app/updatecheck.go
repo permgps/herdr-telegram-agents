@@ -84,9 +84,7 @@ func (p *UpdatePreflight) Check(ctx context.Context, release domain.Release) (Up
 			owned := false
 			if p.History != nil {
 				if previous, err := p.History.Load(ctx); err == nil {
-					ownRef := previous.TargetTag == install.RequestedRef ||
-						(previous.TargetCommit == install.RequestedRef && previous.TargetCommit == previous.NewCommit)
-					owned = previous.Phase == "succeeded" && ownRef && previous.NewCommit == install.ResolvedCommit
+					owned = ownsManagedPin(install, previous)
 				}
 			}
 			if !owned {
@@ -124,4 +122,18 @@ func (p *UpdatePreflight) Check(ctx context.Context, release domain.Release) (Up
 		p.Log.Info("update eligible", slog.String("tag", release.Tag), slog.String("source", install.SourceKind))
 	}
 	return result, nil
+}
+
+// ownsManagedPin accepts only a ref established by a completed update or an
+// attestation carried forward when stopping failed before installation.
+func ownsManagedPin(install domain.PluginInstallation, previous domain.UpdateJob) bool {
+	if previous.Phase == "succeeded" {
+		ownRef := previous.TargetTag == install.RequestedRef ||
+			(previous.TargetCommit == install.RequestedRef && previous.TargetCommit == previous.NewCommit)
+		return ownRef && previous.NewCommit != "" && previous.NewCommit == install.ResolvedCommit
+	}
+	return previous.Phase == "failed" && previous.ErrorCode == "journal_failed" &&
+		previous.PreviousOwnedRef != "" && previous.PreviousOwnedCommit != "" &&
+		previous.PreviousOwnedRef == install.RequestedRef && previous.PreviousOwnedCommit == install.ResolvedCommit &&
+		previous.OldCommit == previous.PreviousOwnedCommit
 }
