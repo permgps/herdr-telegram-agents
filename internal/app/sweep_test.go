@@ -185,3 +185,59 @@ func TestSweepPausedBySyncOff(t *testing.T) {
 		t.Fatalf("paused sweep = %d, calls %v", n, f.tg.Calls())
 	}
 }
+
+type failingSweepTelegram struct {
+	*testkit.FakeTelegram
+	failed map[int]int
+}
+
+func (f *failingSweepTelegram) DeleteTopic(ctx context.Context, id int) error {
+	if _, ok := f.failed[id]; ok {
+		f.failed[id]++
+		return errors.New("persistent delete error")
+	}
+	return f.FakeTelegram.DeleteTopic(ctx, id)
+}
+
+func TestSweepAdvancesPastPersistentFailures(t *testing.T) {
+	f := newRec(t)
+	tg := &failingSweepTelegram{FakeTelegram: f.tg, failed: make(map[int]int)}
+	f.rec = app.NewReconciler(tg, f.herdr, f.store, domain.NewMapping(-1), nil, f.clock, nil)
+	f.clock.Advance(40 * day)
+	keys := make([]domain.Key, 0, 50)
+	for i := 0; i < 50; i++ {
+		key := f.exited(t, fmt.Sprintf("fail%02d", i), t0.Add(time.Duration(i)*time.Minute))
+		entry, _ := f.rec.Mapping().TopicFor(key)
+		tg.failed[entry.ThreadID] = 0
+		keys = append(keys, key)
+	}
+	later := f.exited(t, "later", t0.Add(50*time.Minute))
+	if n, err := f.rec.Sweep(f.ctx, 30*day, fullRights); n != 0 || err != nil {
+		t.Fatalf("first pass = %d, %v", n, err)
+	}
+	if n, err := f.rec.Sweep(f.ctx, 30*day, fullRights); n != 1 || err != nil {
+		t.Fatalf("second pass = %d, %v; want later candidate deleted", n, err)
+	}
+	if _, ok := f.rec.Mapping().TopicFor(later); ok {
+		t.Fatal("later candidate still mapped")
+	}
+	for _, key := range keys {
+		if _, ok := f.rec.Mapping().TopicFor(key); !ok {
+			t.Fatal("failed candidate was forgotten")
+		}
+	}
+	before := 0
+	for _, count := range tg.failed {
+		before += count
+	}
+	if n, err := f.rec.Sweep(f.ctx, 30*day, fullRights); n != 0 || err != nil {
+		t.Fatalf("retry pass = %d, %v", n, err)
+	}
+	after := 0
+	for _, count := range tg.failed {
+		after += count
+	}
+	if after-before != 50 {
+		t.Fatalf("retry pass attempted %d failures, want 50", after-before)
+	}
+}
