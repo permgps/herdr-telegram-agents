@@ -83,19 +83,56 @@ func TestErrorsHandlerRateLimitsPollingWarnings(t *testing.T) {
 	}
 }
 
-func TestErrorsHandlerConflictStaysFatal(t *testing.T) {
+func conflictErr() error { return fmt.Errorf("getUpdates: %w", bot.ErrorConflict) }
+
+func TestErrorsHandlerToleratesBriefConflict(t *testing.T) {
 	log, buf := newHandlerLog()
-	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 11, 4, 11, 40, 0, 0, time.UTC)
+	now := start
+	h := errorsHandler("tok", log, func() { t.Error("fatal called for a brief conflict") }, func() time.Time { return now })
+
+	// The self-collision after a network drop: a few 409s inside one hold.
+	for _, d := range []time.Duration{0, 100 * time.Millisecond, 300 * time.Millisecond, 5 * time.Second} {
+		now = start.Add(d)
+		h(conflictErr())
+	}
+	if got := buf.lines("WARN"); len(got) != 1 || !strings.Contains(got[0], "getUpdates conflict, retrying") {
+		t.Fatalf("warnings = %v, want one conflict warning", got)
+	}
+
+	// A later conflict after a quiet gap starts a new streak, so it is not
+	// measured from the first one even though conflictGrace has passed.
+	now = start.Add(conflictGrace + time.Minute)
+	h(conflictErr())
+	if got := buf.lines("WARN"); len(got) != 2 {
+		t.Errorf("warnings after a new streak = %d, want 2", len(got))
+	}
+	if got := buf.lines("ERROR"); len(got) != 0 {
+		t.Errorf("error lines = %v, want none", got)
+	}
+}
+
+func TestErrorsHandlerPersistentConflictIsFatal(t *testing.T) {
+	log, buf := newHandlerLog()
+	start := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	now := start
 	calls := 0
 	h := errorsHandler("tok", log, func() { calls++ }, func() time.Time { return now })
 
 	h(errors.New("transient")) // a prior warning must not mute the fatal path
-	h(fmt.Errorf("getUpdates: %w", bot.ErrorConflict))
+	// A competing poller: the library retries at most five seconds apart.
+	for now = start; now.Sub(start) < conflictGrace; now = now.Add(5 * time.Second) {
+		h(conflictErr())
+	}
+	if calls != 0 {
+		t.Fatalf("fatal calls before conflictGrace = %d, want 0", calls)
+	}
+	h(conflictErr())
 	if calls != 1 {
 		t.Fatalf("fatal calls = %d, want 1", calls)
 	}
 	errs := buf.lines("ERROR")
-	if len(errs) != 1 || !strings.Contains(errs[0], "another poller owns this bot") {
+	if len(errs) != 1 || !strings.Contains(errs[0], "another poller owns this bot") || !strings.Contains(errs[0], "since_s=100") {
 		t.Errorf("error lines = %v", errs)
 	}
 }

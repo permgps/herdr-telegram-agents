@@ -21,8 +21,9 @@ type BotIdentity = domain.BotIdentity
 // NewBot builds the client without touching the network: the startup getMe
 // is skipped (it cannot be cancelled), handlers run inline so per-topic
 // order is kept, and only the update kinds the plugin consumes are polled.
-// fatal is called when polling can never succeed (401 invalid token, 409
-// another poller) so the daemon can stop. Extra opts are applied last; tests
+// fatal is called when polling can never succeed (401 invalid token, or a
+// 409 that outlasts conflictGrace because another poller owns the bot) so
+// the daemon can stop. Extra opts are applied last; tests
 // use them for bot.WithServerURL.
 func NewBot(token string, log *slog.Logger, fatal context.CancelFunc, opts ...bot.Option) (*bot.Bot, error) {
 	if log == nil {
@@ -55,17 +56,37 @@ func NewBot(token string, log *slog.Logger, fatal context.CancelFunc, opts ...bo
 // interval with a count keeps the outage visible without flooding the log.
 const pollWarnEvery = 10 * time.Minute
 
+// conflictGrace is how long getUpdates may keep answering 409 before the
+// daemon gives up. After a network drop Telegram can still hold the poll
+// this process sent before the drop, for up to the long-poll hold, and the
+// retry then collides with it once or twice: that is the daemon colliding
+// with itself, and it clears on its own. A second instance polling the same
+// token keeps colliding, so a streak longer than two holds is real.
+const conflictGrace = 2 * pollTimeout
+
+// conflictReset ends a conflict streak. The library retries a failed poll
+// within five seconds, so a competing poller produces 409s far closer
+// together than this; a longer quiet gap means polling recovered.
+const conflictReset = 30 * time.Second
+
 // errorsHandler receives polling and form-building errors from the library,
-// which never stops polling on its own. 401 and 409 are final: log and call
-// fatal. A cancelled context is the normal shutdown path and is ignored. Any
-// other error is warned on first sight and then at most once per
-// pollWarnEvery, with the count suppressed since the last warning; the ones
-// in between go to debug. now is injected so tests need no real time.
+// which never stops polling on its own. 401 is final: log and call fatal.
+// 409 is final only when it persists for conflictGrace; until then it is
+// warned once per streak and the library keeps retrying. A cancelled
+// context is the normal shutdown path and is ignored. Any other error is
+// warned on first sight and then at most once per pollWarnEvery, with the
+// count suppressed since the last warning; the ones in between go to debug.
+// now is injected so tests need no real time.
 func errorsHandler(token string, log *slog.Logger, fatal context.CancelFunc, now func() time.Time) bot.ErrorsHandler {
 	var (
 		mu         sync.Mutex
 		lastWarn   time.Time
 		suppressed int
+		// conflictSince is the first 409 of the current streak, zero when
+		// there is none; lastConflict is the latest one.
+		conflictSince time.Time
+		lastConflict  time.Time
+		conflicts     int
 	)
 	return func(err error) {
 		switch {
@@ -74,7 +95,27 @@ func errorsHandler(token string, log *slog.Logger, fatal context.CancelFunc, now
 			log.Error("telegram bot token rejected, stopping", slog.String("err", redact(err, token)))
 			fatal()
 		case errors.Is(err, bot.ErrorConflict):
-			log.Error("another poller owns this bot, stopping", slog.String("err", redact(err, token)))
+			mu.Lock()
+			defer mu.Unlock()
+			t := now()
+			if conflictSince.IsZero() || t.Sub(lastConflict) > conflictReset {
+				conflictSince = t
+				conflicts = 0
+			}
+			lastConflict = t
+			conflicts++
+			if held := t.Sub(conflictSince); held < conflictGrace {
+				if conflicts == 1 {
+					log.Warn("getUpdates conflict, retrying", slog.String("err", redact(err, token)),
+						slog.Int64("grace_s", int64(conflictGrace/time.Second)))
+				} else {
+					log.Debug("getUpdates conflict, retrying", slog.Int("conflicts", conflicts),
+						slog.Int64("since_s", int64(held/time.Second)))
+				}
+				return
+			}
+			log.Error("another poller owns this bot, stopping", slog.String("err", redact(err, token)),
+				slog.Int("conflicts", conflicts), slog.Int64("since_s", int64(t.Sub(conflictSince)/time.Second)))
 			fatal()
 		default:
 			mu.Lock()

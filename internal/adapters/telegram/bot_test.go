@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -116,19 +117,45 @@ func TestPollStopsOnUnauthorized(t *testing.T) {
 	assertNoSecret(t, buf)
 }
 
-func TestPollStopsOnConflict(t *testing.T) {
+// A 409 right after a network drop is usually the daemon's own poll still
+// held by Telegram: polling must ride it out instead of stopping. The
+// persistent case is covered with a fake clock in bot_errors_test.go.
+func TestPollRidesOutBriefConflict(t *testing.T) {
 	api := newFakeAPI(t)
+	var mu sync.Mutex
+	polls := 0
 	api.on("getUpdates", func(url.Values) apiReply {
-		return errReply(409, "Conflict: terminated by other getUpdates request")
+		mu.Lock()
+		defer mu.Unlock()
+		polls++
+		if polls <= 2 {
+			return errReply(409, "Conflict: terminated by other getUpdates request")
+		}
+		return okReply([]any{})
 	})
 	log, buf := newTestLog(t)
 	ctx, cancel := context.WithCancel(ctxT(t))
-	defer cancel()
-	b := api.bot(t, log, cancel)
+	fatal := false
+	b := api.bot(t, log, func() { fatal = true })
 
-	waitDone(t, runPoll(ctx, b, log), "409")
-	if !strings.Contains(buf.String(), "another poller owns this bot, stopping") {
-		t.Errorf("missing fatal log: %s", buf.String())
+	done := runPoll(ctx, b, log)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(api.callsOf("getUpdates")) < 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("polling did not continue after the conflict: %s", buf.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	waitDone(t, done, "409")
+	if fatal {
+		t.Error("fatal was called for a brief conflict")
+	}
+	if !strings.Contains(buf.String(), "level=WARN msg=\"getUpdates conflict, retrying\"") {
+		t.Errorf("missing conflict warning: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), "another poller owns this bot") {
+		t.Errorf("brief conflict logged as fatal: %s", buf.String())
 	}
 	assertNoSecret(t, buf)
 }
