@@ -2,11 +2,30 @@ package app
 
 import (
 	"fmt"
-	"github.com/permgps/herdr-telegram-agents/internal/domain"
 	"html"
 	"strings"
+
+	"github.com/permgps/herdr-telegram-agents/internal/domain"
 )
 
+func groupAt(i int) (domain.OptionGroup, bool) {
+	groups := domain.OptionGroups()
+	if i < 0 || i >= len(groups) {
+		return domain.OptionGroup{}, false
+	}
+	return groups[i], true
+}
+
+func groupIndex(name string) int {
+	for i, g := range domain.OptionGroups() {
+		if g.Name == name {
+			return i
+		}
+	}
+	return 0
+}
+
+// renderHome lists the groups with their descriptions.
 func renderHome() view {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<b>%s</b>\n%s\n", panelTitle, panelPickGroup)

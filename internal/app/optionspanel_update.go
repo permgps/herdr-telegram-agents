@@ -2,12 +2,21 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/permgps/herdr-telegram-agents/internal/domain"
 	"html"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/permgps/herdr-telegram-agents/internal/domain"
+)
+
+const (
+	updateCheckData              = "o:u:c"
+	updateInstallPrefix          = "o:u:i:"
+	updateJournalRecoveryTimeout = 10 * time.Second
 )
 
 func (p *panel) pressUpdate(ctx context.Context, ev domain.ButtonPressed) error {
@@ -57,6 +66,8 @@ func (p *panel) pressUpdate(ctx context.Context, ev domain.ButtonPressed) error 
 }
 
 func (p *panel) startUpdate(ctx context.Context, intentID string, panelID int, operatorID int64) (domain.UpdateJob, error) {
+	p.updates.startMu.Lock()
+	defer p.updates.startMu.Unlock()
 	check, err := p.updates.Consume(ctx, intentID, p.chatID, panelID, operatorID)
 	if err != nil {
 		return domain.UpdateJob{}, err
@@ -66,7 +77,19 @@ func (p *panel) startUpdate(ctx context.Context, intentID string, panelID int, o
 	}
 	previous, err := p.jobs.Load(ctx)
 	if err == nil && !previous.Terminal() {
-		return domain.UpdateJob{}, fmt.Errorf("another update job needs recovery: %s", previous.Phase)
+		if failed, ok := p.updates.failedLaunch(previous.ID); ok {
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), updateJournalRecoveryTimeout)
+			recoveryErr := p.jobs.Save(recoveryCtx, failed)
+			cancel()
+			if recoveryErr != nil {
+				return failed, fmt.Errorf("recover failed worker launch before retry: %w", recoveryErr)
+			}
+			p.updates.clearFailedLaunch(previous.ID)
+			previous = failed
+		}
+		if !previous.Terminal() {
+			return domain.UpdateJob{}, fmt.Errorf("another update job needs recovery: %s", previous.Phase)
+		}
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return domain.UpdateJob{}, err
@@ -94,7 +117,17 @@ func (p *panel) startUpdate(ctx context.Context, intentID string, panelID int, o
 	if _, err := p.launch(ctx, job.ID); err != nil {
 		job.Phase, job.ErrorCode = "failed", "worker_launch"
 		job.ErrorMessage = "The update worker could not start. Check daemon.log."
-		_ = p.jobs.Save(ctx, job)
+		if saveErr := p.jobs.Save(ctx, job); saveErr != nil {
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), updateJournalRecoveryTimeout)
+			recoveryErr := p.jobs.Save(recoveryCtx, job)
+			cancel()
+			persistErr := fmt.Errorf("persist failed worker launch state: %w", saveErr)
+			if recoveryErr != nil {
+				p.updates.rememberFailedLaunch(job)
+				persistErr = errors.Join(persistErr, fmt.Errorf("retry failed worker launch journal write: %w", recoveryErr))
+			}
+			return job, errors.Join(err, persistErr)
+		}
 		return job, err
 	}
 	p.log.Info("update worker requested", slog.String("job", job.ID), slog.String("tag", job.TargetTag), slog.Bool("prior_running", job.PriorRunning))
@@ -139,6 +172,12 @@ func (p *panel) startFinished(ctx context.Context, result updateStartResult) err
 	if result.panelID != p.lastID {
 		return nil
 	}
+	if result.err != nil && result.job.ErrorCode == "worker_launch" {
+		p.log.Warn("update start failed", slog.String("err", result.err.Error()))
+		text := "<b>Update could not start.</b> " + html.EscapeString(result.err.Error())
+		text += "\nInspect update.json and daemon.log before retrying."
+		return p.show(ctx, result.panelID, view{text, []domain.Button{{Text: "Check again", Data: updateCheckData}}})
+	}
 	if p.jobs != nil {
 		if active, err := p.jobs.Load(ctx); err == nil && active.PanelMessageID == result.panelID {
 			if active.Terminal() {
@@ -169,6 +208,3 @@ func (p *panel) restoreUpdate(ctx context.Context, job domain.UpdateJob) error {
 	p.log.Info("update progress restored", slog.String("job", job.ID), slog.String("phase", job.Phase))
 	return nil
 }
-
-// show edits the panel message; when the edit fails for a non-fatal reason
-// (the message is gone) a fresh panel is sent instead.

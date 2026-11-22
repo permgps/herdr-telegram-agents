@@ -2,10 +2,8 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 
 	"github.com/permgps/herdr-telegram-agents/internal/domain"
@@ -20,9 +18,7 @@ const (
 	iconGridRows = 7
 	// panelPrefix marks callback data that belongs to the options panel;
 	// the bridge routes such presses here, everything else to outbound.
-	panelPrefix         = "o:"
-	updateCheckData     = "o:u:c"
-	updateInstallPrefix = "o:u:i:"
+	panelPrefix = "o:"
 )
 
 // Every string an operator sees on the panel. English only, by decision
@@ -86,87 +82,6 @@ func newPanel(opts *Options, tg domain.TelegramGateway, log *slog.Logger) *panel
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &panel{opts: opts, tg: tg, log: log}
-}
-
-// panelAction is one decoded callback. Kinds: h home, g group, t toggle a
-// bool, c open a choice grid page, v pick a choice by index, r reset a
-// group, e a text option (no editor yet), x close, n no-op.
-type panelAction struct {
-	kind  byte
-	group int
-	key   string
-	page  int
-	index int
-}
-
-func dataHome() string             { return panelPrefix + "h" }
-func dataClose() string            { return panelPrefix + "x" }
-func dataNoop() string             { return panelPrefix + "n" }
-func dataGroup(gi int) string      { return fmt.Sprintf("%sg:%d", panelPrefix, gi) }
-func dataReset(gi int) string      { return fmt.Sprintf("%sr:%d", panelPrefix, gi) }
-func dataToggle(key string) string { return panelPrefix + "t:" + key }
-func dataText(key string) string   { return panelPrefix + "e:" + key }
-func dataGrid(key string, page int) string {
-	return fmt.Sprintf("%sc:%s:%d", panelPrefix, key, page)
-}
-func dataPick(key string, index int) string {
-	return fmt.Sprintf("%sv:%s:%d", panelPrefix, key, index)
-}
-
-var errPanelData = errors.New("malformed panel data")
-
-// parsePanelData decodes callback data written by the data* helpers.
-func parsePanelData(data string) (panelAction, error) {
-	if !strings.HasPrefix(data, panelPrefix) {
-		return panelAction{}, errPanelData
-	}
-	parts := strings.Split(strings.TrimPrefix(data, panelPrefix), ":")
-	if len(parts) == 0 || len(parts[0]) != 1 {
-		return panelAction{}, errPanelData
-	}
-	a := panelAction{kind: parts[0][0]}
-	num := func(s string) (int, error) {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 0 {
-			return 0, errPanelData
-		}
-		return n, nil
-	}
-	var err error
-	switch a.kind {
-	case 'h', 'x', 'n':
-		if len(parts) != 1 {
-			return panelAction{}, errPanelData
-		}
-	case 'g', 'r':
-		if len(parts) != 2 {
-			return panelAction{}, errPanelData
-		}
-		a.group, err = num(parts[1])
-	case 't', 'e':
-		if len(parts) != 2 || parts[1] == "" {
-			return panelAction{}, errPanelData
-		}
-		a.key = parts[1]
-	case 'c':
-		if len(parts) != 3 || parts[1] == "" {
-			return panelAction{}, errPanelData
-		}
-		a.key = parts[1]
-		a.page, err = num(parts[2])
-	case 'v':
-		if len(parts) != 3 || parts[1] == "" {
-			return panelAction{}, errPanelData
-		}
-		a.key = parts[1]
-		a.index, err = num(parts[2])
-	default:
-		return panelAction{}, errPanelData
-	}
-	if err != nil {
-		return panelAction{}, err
-	}
-	return a, nil
 }
 
 // Open answers /options with a fresh panel and retires the previous one.
@@ -294,45 +209,6 @@ func (p *panel) Press(ctx context.Context, ev domain.ButtonPressed) error {
 	return p.answer(ctx, ev.CallbackID, panelToastUnknown)
 }
 
-func (p *panel) show(ctx context.Context, messageID int, v view) error {
-	if err := p.edit(ctx, messageID, v.text, v.buttons); err != nil {
-		return err
-	}
-	if p.lastID == 0 {
-		p.lastID = messageID
-	}
-	return nil
-}
-
-func (p *panel) edit(ctx context.Context, messageID int, text string, buttons []domain.Button) error {
-	err := p.tg.EditText(ctx, messageID, text, true, buttons)
-	if err == nil {
-		return nil
-	}
-	if isFatal(err) {
-		return err
-	}
-	p.log.Warn("options panel edit failed, sending a new panel", slog.Int("message_id", messageID), slog.String("err", err.Error()))
-	for _, button := range buttons {
-		if strings.HasPrefix(button.Data, updateInstallPrefix) {
-			text += "\nThis panel moved. Check again before updating."
-			buttons = []domain.Button{{Text: "Check again", Data: updateCheckData}}
-			break
-		}
-	}
-	id, err := p.tg.Send(ctx, domain.Outgoing{ThreadID: 0, Text: text, HTML: true, Buttons: buttons})
-	if err != nil {
-		if isFatal(err) {
-			return err
-		}
-		p.log.Warn("options panel re-send failed", slog.String("err", err.Error()))
-		return nil
-	}
-	p.lastID = id
-	p.log.Info("options panel re-sent", slog.Int("message_id", id))
-	return nil
-}
-
 // answer closes the button spinner with a toast; failures are only logged.
 func (p *panel) answer(ctx context.Context, callbackID, text string) error {
 	p.answer0(ctx, callbackID, text)
@@ -348,22 +224,3 @@ func (p *panel) answer0(ctx context.Context, callbackID string, text ...string) 
 		p.log.Warn("options panel answer failed", slog.String("callback_id", callbackID), slog.String("err", err.Error()))
 	}
 }
-
-func groupAt(i int) (domain.OptionGroup, bool) {
-	groups := domain.OptionGroups()
-	if i < 0 || i >= len(groups) {
-		return domain.OptionGroup{}, false
-	}
-	return groups[i], true
-}
-
-func groupIndex(name string) int {
-	for i, g := range domain.OptionGroups() {
-		if g.Name == name {
-			return i
-		}
-	}
-	return 0
-}
-
-// renderHome lists the groups with their descriptions.
